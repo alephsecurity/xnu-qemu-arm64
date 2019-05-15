@@ -1,0 +1,100 @@
+/*
+ *
+ * Copyright (c) 2019 Jonathan Afek <jonyafek@me.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+#ifndef HW_ARM_XNU_H
+#define HW_ARM_XNU_H
+
+#include "qemu-common.h"
+#include "hw/arm/arm.h"
+
+//TODO: JONATHANA import into project required header data
+#include <mach-o/loader.h>
+
+// pexpert/pexpert/arm64/boot.h
+#define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
+#define xnu_arm64_kBootArgsVersion2 2
+#define xnu_arm64_BOOT_LINE_LENGTH 256
+struct xnu_arm64_Boot_Video {
+    unsigned long v_baseAddr; /* Base address of video memory */
+    unsigned long v_display;  /* Display Code (if Applicable */
+    unsigned long v_rowBytes; /* Number of bytes per pixel row */
+    unsigned long v_width;    /* Width */
+    unsigned long v_height;   /* Height */
+    unsigned long v_depth;    /* Pixel Depth and other parameters */
+};
+
+typedef struct xnu_arm64_monitor_boot_args {
+	uint64_t	version;                        /* structure version - this is version 2 */
+	uint64_t	virtBase;                       /* virtual base of memory assigned to the monitor */
+	uint64_t	physBase;                       /* physical address corresponding to the virtual base */
+	uint64_t	memSize;                        /* size of memory assigned to the monitor */
+	uint64_t	kernArgs;                       /* physical address of the kernel boot_args structure */
+	uint64_t	kernEntry;                      /* kernel entrypoint */
+	uint64_t	kernPhysBase;                   /* physical base of the kernel's address space */
+	uint64_t	kernPhysSlide;                  /* offset from kernPhysBase to kernel load address */
+	uint64_t	kernVirtSlide;                  /* virtual slide applied to kernel at load time */
+} monitor_boot_args;
+
+struct xnu_arm64_boot_args {
+    uint16_t                    Revision;                                   /* Revision of boot_args structure */
+    uint16_t                    Version;                                    /* Version of boot_args structure */
+    uint64_t                    virtBase;                                   /* Virtual base of memory */
+    uint64_t                    physBase;                                   /* Physical base of memory */
+    uint64_t                    memSize;                                    /* Size of memory */
+    uint64_t                    topOfKernelData;                            /* Highest physical address used in kernel data area */
+    struct xnu_arm64_Boot_Video Video;                                      /* Video Information */
+    uint32_t                    machineType;                                /* Machine Type */
+    uint64_t                    deviceTreeP;                                /* Base of flattened device tree */
+    uint32_t                    deviceTreeLength;                           /* Length of flattened tree */
+    char                        CommandLine[xnu_arm64_BOOT_LINE_LENGTH];    /* Passed in command line */
+    uint64_t                    bootFlags;                                  /* Additional flags specified by the bootloader */
+    uint64_t                    memSizeActual;                              /* Actual size of memory */
+};
+
+void macho_tz_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
+                             uint64_t bootargs_addr, uint64_t virt_base,
+                             uint64_t phys_base, uint64_t kern_args,
+                             uint64_t kern_entry, uint64_t kern_phys_base);
+
+void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
+                          uint64_t bootargs_addr, uint64_t virt_base,
+                          uint64_t phys_base, uint64_t top_of_kernel_data,
+                          uint64_t dtb_address, unsigned long dtb_size,
+                          char *kern_args);
+
+void arm_load_macho(char *filename, AddressSpace *as, char *name,
+                    hwaddr load_base, bool image_addr, uint64_t *pc,
+                    uint64_t *phys_next_page, uint64_t *virt_next_page,
+                    uint64_t *virt_base, uint64_t *phys_base,
+                    uint64_t *virt_load_base, uint64_t *phys_load_base);
+
+void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
+                         hwaddr load_base, uint64_t *next_page_addr,
+                         unsigned long *file_size, uint64_t *virt_base_next);
+
+void macho_load_dtb(char *filename, AddressSpace *as, char *name,
+                    hwaddr load_base, uint64_t *next_page_addr,
+                    unsigned long *file_size, uint64_t *virt_base_next,
+                    uint64_t ramdisk_addr, uint64_t ramdisk_size);
+
+#endif
