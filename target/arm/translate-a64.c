@@ -1800,29 +1800,31 @@ static void disas_exc(DisasContext *s, uint32_t insn)
          * it is required for halting debug disabled: it will UNDEF.
          * Secondly, "HLT 0xf000" is the A64 semihosting syscall instruction.
          */
-        if (semihosting_enabled() && imm16 == 0xf000) {
-#ifndef CONFIG_USER_ONLY
-            /* In system mode, don't allow userspace access to semihosting,
-             * to provide some semblance of security (and for consistency
-             * with our 32-bit semihosting).
-             */
-            if (s->current_el == 0) {
-                unsupported_encoding(s, insn);
-                break;
-            }
-#endif
-            gen_exception_internal_insn(s, 0, EXCP_SEMIHOST);
-        } else {
-            unsupported_encoding(s, insn);
-        }
-        break;
-    case 5:
-        if (op2_ll < 1 || op2_ll > 3) {
-            unallocated_encoding(s);
-            break;
-        }
-        /* DCPS1, DCPS2, DCPS3 */
-        unsupported_encoding(s, insn);
+         gen_a64_set_pc_im(s->pc - 4);
+         gen_exception_internal(EXCP_DEBUG);
+//        if (semihosting_enabled() && imm16 == 0xf000) {
+//#ifndef CONFIG_USER_ONLY
+//            /* In system mode, don't allow userspace access to semihosting,
+//             * to provide some semblance of security (and for consistency
+//             * with our 32-bit semihosting).
+//             */
+//            if (s->current_el == 0) {
+//                unsupported_encoding(s, insn);
+//                break;
+//            }
+//#endif
+//            gen_exception_internal_insn(s, 0, EXCP_SEMIHOST);
+//        } else {
+//            unsupported_encoding(s, insn);
+//        }
+//        break;
+//    case 5:
+//        if (op2_ll < 1 || op2_ll > 3) {
+//            unallocated_encoding(s);
+//            break;
+//        }
+//        /* DCPS1, DCPS2, DCPS3 */
+//        unsupported_encoding(s, insn);
         break;
     default:
         unallocated_encoding(s);
