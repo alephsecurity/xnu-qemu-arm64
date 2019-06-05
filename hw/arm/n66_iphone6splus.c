@@ -40,7 +40,6 @@
 #define RAMLIMIT_BYTES (RAMLIMIT_GB * 1024ULL * 1024 * 1024)
 
 static const MemMapEntry n66memmap[] = {
-    [N66_BTLDR_MEM] =   { 0x00010000  , 256 },
     [N66_SECURE_MEM] =  { 0x4100000000, 0x100000 },
     [N66_MEM] =         { 0x40000000  , RAMLIMIT_BYTES },
     [N66_S3C_UART] =    { 0x20a0c0000  , 0x00004000 },
@@ -143,7 +142,6 @@ static void n66_memory_setup(MachineState *machine,
 {
     N66MachineState *nms = N66_MACHINE(machine);
     MemoryRegion *ram = g_new(MemoryRegion, 1);
-    MemoryRegion *bootloader_ram = g_new(MemoryRegion, 1);
     MemoryRegion *secure_ram = g_new(MemoryRegion, 1);
 
     *sysmem = get_system_memory();
@@ -156,12 +154,6 @@ static void n66_memory_setup(MachineState *machine,
     memory_region_allocate_system_memory(ram, NULL, "n66.ram",
                                          machine->ram_size);
     memory_region_add_subregion(*sysmem, nms->memmap[N66_MEM].base, ram);
-
-    memory_region_allocate_system_memory(bootloader_ram, NULL,
-                                         "n66_btldr.ram",
-                                         nms->memmap[N66_BTLDR_MEM].size);
-    memory_region_add_subregion(*secure_sysmem, nms->memmap[N66_BTLDR_MEM].base,
-                                bootloader_ram);
 
     memory_region_allocate_system_memory(secure_ram, NULL,
                                          "n66_secure.ram",
