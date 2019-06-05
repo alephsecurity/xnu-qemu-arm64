@@ -95,6 +95,7 @@ void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
 void macho_load_dtb(char *filename, AddressSpace *as, char *name,
                     hwaddr load_base, uint64_t *next_page_addr,
                     unsigned long *file_size, uint64_t *virt_base_next,
-                    uint64_t ramdisk_addr, uint64_t ramdisk_size);
+                    uint64_t ramdisk_addr, uint64_t ramdisk_size,
+                    uint64_t tc_addr, uint64_t tc_size);
 
 #endif

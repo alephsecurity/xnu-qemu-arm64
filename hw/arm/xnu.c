@@ -41,10 +41,12 @@ struct xnu_DeviceTreeNodeProperty {
 void macho_load_dtb(char *filename, AddressSpace *as, char *name,
                     hwaddr load_base, uint64_t *next_page_addr,
                     unsigned long *file_size, uint64_t *virt_base_next,
-                    uint64_t ramdisk_addr, uint64_t ramdisk_size)
+                    uint64_t ramdisk_addr, uint64_t ramdisk_size,
+                    uint64_t tc_addr, uint64_t tc_size)
 {
     struct xnu_DeviceTreeNodeProperty *dt_node = NULL;
     uint8_t *file_data = NULL;
+    uint64_t *value_ptr;
 
     if (g_file_get_contents(filename, (char **)&file_data, file_size, NULL)) {
 
@@ -60,7 +62,7 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
             abort();
         }
         strncpy(dt_node->name, "RAMDisk", xnu_kPropNameLength);
-        uint64_t *value_ptr = (uint64_t *)&dt_node->value;
+        value_ptr = (uint64_t *)&dt_node->value;
         value_ptr[0] = ramdisk_addr;
         value_ptr[1] = ramdisk_size;
 
@@ -72,6 +74,34 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
         //    }
         //    fprintf(stderr, "\n");
         //}
+
+        dt_node = NULL;
+        for (size_t i = 0; i < *file_size; i++) {
+            if (strncmp((const char *)file_data + i, "MemoryMapReserved-1",
+                        xnu_kPropNameLength) == 0) {
+                dt_node = (struct xnu_DeviceTreeNodeProperty *)(file_data + i);
+                break;
+            }
+        }
+        if (!dt_node) {
+            fprintf(stderr, "Can't write device tree node for trustcache!\n");
+            abort();
+        }
+        strncpy(dt_node->name, "TrustCache", xnu_kPropNameLength);
+        value_ptr = (uint64_t *)&dt_node->value;
+        value_ptr[0] = tc_addr;
+        value_ptr[1] = tc_size;
+
+        //fprintf(stderr, "TrustCache dtb propery:\n");
+        //unsigned char *temp = (unsigned char *)dt_node;
+        //for (int i = 0; i < 8; i++) {
+        //    for (int j = 0; j < 8; j++) {
+        //        fprintf(stderr, "%02X ", temp[(i * 8) + j]);
+        //    }
+        //    fprintf(stderr, "\n");
+        //}
+        //fprintf(stderr, "TrustCache addr: %llx size: %lld\n",
+        //        tc_addr, tc_size);
 
         rom_add_blob_fixed_as(name, file_data, *file_size, load_base, as);
 
@@ -94,7 +124,9 @@ void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
     uint8_t* file_data = NULL;
     if (g_file_get_contents(filename, (char **)&file_data, file_size, NULL)) {
         rom_add_blob_fixed_as(name, file_data, *file_size, load_base, as);
-        *next_page_addr = (load_base + *file_size + 0xffffull) & ~0xffffull;
+        if (NULL != next_page_addr) {
+            *next_page_addr = (load_base + *file_size + 0xffffull) & ~0xffffull;
+        }
         g_free(file_data);
         //fprintf(stderr, "macho_load_raw_file() filename: %s\n", filename);
         //fprintf(stderr, "macho_load_raw_file() load_base: %llx\n", load_base);

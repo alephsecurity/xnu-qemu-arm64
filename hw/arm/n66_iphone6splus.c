@@ -218,10 +218,11 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
     uint64_t dtb_virt_addr;
     uint64_t dtb_phys_addr;
     uint64_t ramdisk_phys_addr;
-    uint64_t ramdisk_virt_addr;
     uint64_t ramdisk_virt_addr_end;
+    uint64_t tc_phys_addr;
     unsigned long kernel_file_size;
     unsigned long ramdisk_file_size;
+    unsigned long tc_file_size;
     unsigned long dtb_size;
 
     macho_load_raw_file(nms->kernel_filename, nsas,
@@ -229,14 +230,19 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
                         nms->memmap[N66_MEM].base,
                         &phys_next_page, &kernel_file_size, NULL);
 
+    tc_phys_addr = phys_next_page + 0x400000;
+    macho_load_raw_file(nms->tc_filename, nsas,
+                        (char *)"tc_raw_file.n66",
+                        tc_phys_addr, &phys_next_page,
+                        &tc_file_size, NULL);
+
     arm_load_macho(nms->kernel_filename, nsas, (char *)"kernel.n66",
                    nms->memmap[N66_MEM].base, false, &k_pc, &phys_next_page,
                    &virt_next_page, &k_virt_base, &k_phys_base,
                    &k_virt_load_base, &k_phys_load_base);
 
     ramdisk_phys_addr = phys_next_page;
-    ramdisk_virt_addr = virt_next_page;
-    ramdisk_virt_addr_end = ramdisk_virt_addr;
+    ramdisk_virt_addr_end = virt_next_page;
     macho_load_raw_file(nms->ramdisk_filename, nsas,
                         (char *)"ramdisk_raw_file.n66",
                         ramdisk_phys_addr, &phys_next_page,
@@ -247,7 +253,7 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
 
     macho_load_dtb(nms->dtb_filename, nsas, (char *)"dtb.n66", dtb_phys_addr,
                    &phys_next_page, &dtb_size, NULL, ramdisk_phys_addr,
-                   ramdisk_file_size);
+                   ramdisk_file_size, tc_phys_addr, tc_file_size);
 
     macho_setup_bootargs((char *)"k_bootargs.n66", ram_size, nsas,
                          phys_next_page,
@@ -383,6 +389,20 @@ static char *n66_get_dtb_filename(Object *obj, Error **errp)
     return g_strdup(nms->dtb_filename);
 }
 
+static void n66_set_tc_filename(Object *obj, const char *value,
+                                Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+
+    strlcpy(nms->tc_filename, value, sizeof(nms->tc_filename));
+}
+
+static char *n66_get_tc_filename(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    return g_strdup(nms->tc_filename);
+}
+
 static void n66_set_kern_args(Object *obj, const char *value,
                                      Error **errp)
 {
@@ -421,6 +441,12 @@ static void n66_instance_init(Object *obj)
                             n66_set_dtb_filename, NULL);
     object_property_set_description(obj, "dtb-filename",
                                     "Set the dev tree filename to be loaded",
+                                    NULL);
+
+    object_property_add_str(obj, "tc-filename", n66_get_tc_filename,
+                            n66_set_tc_filename, NULL);
+    object_property_set_description(obj, "tc-filename",
+                                    "Set the trust cache filename to be loaded",
                                     NULL);
 
     object_property_add_str(obj, "kern-cmd-args", n66_get_kern_args,
