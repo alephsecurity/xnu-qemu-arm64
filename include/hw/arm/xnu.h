@@ -27,13 +27,45 @@
 #include "qemu-common.h"
 #include "hw/arm/arm.h"
 
-//TODO: JONATHANA import into project required header data
-#include <mach-o/loader.h>
-
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
 #define xnu_arm64_kBootArgsVersion2 2
 #define xnu_arm64_BOOT_LINE_LENGTH 256
+
+#define LC_SEGMENT_64   0x19
+#define LC_UNIXTHREAD   0x5
+
+struct segment_command_64
+{
+    uint32_t cmd;
+    uint32_t cmdsize;
+    char segname[16];
+    uint64_t vmaddr;
+    uint64_t vmsize;
+    uint64_t fileoff;
+    uint64_t filesize;
+    uint32_t /*vm_prot_t*/ maxprot;
+    uint32_t /*vm_prot_t*/ initprot;
+    uint32_t nsects;
+    uint32_t flags;
+};
+
+struct mach_header_64 {
+    uint32_t    magic;      /* mach magic number identifier */
+    uint32_t /*cpu_type_t*/  cputype;    /* cpu specifier */
+    uint32_t /*cpu_subtype_t*/   cpusubtype; /* machine specifier */
+    uint32_t    filetype;   /* type of file */
+    uint32_t    ncmds;      /* number of load commands */
+    uint32_t    sizeofcmds; /* the size of all the load commands */
+    uint32_t    flags;      /* flags */
+    uint32_t    reserved;   /* reserved */
+};
+
+struct load_command {
+    uint32_t cmd;       /* type of load command */
+    uint32_t cmdsize;   /* total size of command in bytes */
+};
+
 struct xnu_arm64_Boot_Video {
     unsigned long v_baseAddr; /* Base address of video memory */
     unsigned long v_display;  /* Display Code (if Applicable */
