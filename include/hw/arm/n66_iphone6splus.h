@@ -64,6 +64,7 @@ typedef struct {
     char dtb_filename[1024];
     char tc_filename[1024];
     char kern_args[1024];
+    N66_CPREG_VAR_DEF(ARM64_REG_USR_NTF);
     N66_CPREG_VAR_DEF(ARM64_REG_HID11);
     N66_CPREG_VAR_DEF(ARM64_REG_HID3);
     N66_CPREG_VAR_DEF(ARM64_REG_HID5);

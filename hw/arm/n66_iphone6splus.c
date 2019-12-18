@@ -66,12 +66,33 @@ static void n66_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
     /*fprintf(stderr, "n66_cpreg_write_" #name "() value: %llx\n", value); */\
 }
 
-#define N66_CPREG_DEF(p_name, p_op0, p_op1, p_crn, p_crm, p_op2) \
+#define N66_CPREG_DEF(p_name, p_op0, p_op1, p_crn, p_crm, p_op2, ar) \
     { .cp = CP_REG_ARM64_SYSREG_CP, \
       .name = #p_name, .opc0 = p_op0, .crn = p_crn, .crm = p_crm, \
-      .opc1 = p_op1, .opc2 = p_op2, .access = PL1_RW, .type = ARM_CP_IO, \
+      .opc1 = p_op1, .opc2 = p_op2, .access = ar, .type = ARM_CP_IO, \
       .state = ARM_CP_STATE_AA64, .readfn = n66_cpreg_read_##p_name, \
       .writefn = n66_cpreg_write_##p_name }
+
+static uint64_t n66_cpreg_read_ARM64_REG_USR_NTF(CPUARMState *env,
+                                      const ARMCPRegInfo *ri)
+{
+    //TODO: could be useful for notifications from userland to qemu
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    //fprintf(stderr, "n66_cpreg_read_ARM64_REG_USR_NTF() value: %llx\n",
+    //        nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF));
+
+    return nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF);
+}
+static void n66_cpreg_write_ARM64_REG_USR_NTF(CPUARMState *env,
+                                              const ARMCPRegInfo *ri,
+                                              uint64_t value)
+{
+    //TODO: could be useful for notifications from userland to qemu
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = value;
+    //fprintf(stderr,
+    //        "n66_cpreg_write_ARM64_REG_USR_NTF() value: %llx\n", value);
+}
 
 N66_CPREG_FUNCS(ARM64_REG_HID11)
 N66_CPREG_FUNCS(ARM64_REG_HID3)
@@ -86,22 +107,24 @@ N66_CPREG_FUNCS(PMCR1)
 N66_CPREG_FUNCS(PMSR)
 
 static const ARMCPRegInfo n66_cp_reginfo[] = {
-    N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0),
-    N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0),
-    N66_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0),
-    N66_CPREG_DEF(ARM64_REG_HID4, 3, 0, 15, 4, 0),
-    N66_CPREG_DEF(ARM64_REG_HID8, 3, 0, 15, 8, 0),
-    N66_CPREG_DEF(ARM64_REG_HID7, 3, 0, 15, 7, 0),
-    N66_CPREG_DEF(ARM64_REG_LSU_ERR_STS, 3, 3, 15, 0, 0),
-    N66_CPREG_DEF(PMC0, 3, 2, 15, 0, 0),
-    N66_CPREG_DEF(PMC1, 3, 2, 15, 1, 0),
-    N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0),
-    N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0),
+    N66_CPREG_DEF(ARM64_REG_USR_NTF, 3, 3, 15, 14, 0, PL0_RW),
+    N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID4, 3, 0, 15, 4, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID8, 3, 0, 15, 8, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID7, 3, 0, 15, 7, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_LSU_ERR_STS, 3, 3, 15, 0, 0, PL1_RW),
+    N66_CPREG_DEF(PMC0, 3, 2, 15, 0, 0, PL1_RW),
+    N66_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
+    N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
+    N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
     REGINFO_SENTINEL,
 };
 
 static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
 {
+    nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID11) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID3) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID5) = 0;
