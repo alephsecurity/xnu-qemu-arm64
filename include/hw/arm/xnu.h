@@ -26,6 +26,10 @@
 
 #include "qemu-common.h"
 #include "hw/arm/arm.h"
+#include "hw/arm/xnu_ptr_ntf.h"
+#include "hw/arm/xnu_remap_dev.h"
+#include "hw/arm/xnu_mem.h"
+#include "hw/arm/xnu_fake_task_port.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
@@ -112,7 +116,8 @@ void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
                           uint64_t bootargs_addr, uint64_t virt_base,
                           uint64_t phys_base, uint64_t top_of_kernel_data,
                           uint64_t dtb_address, unsigned long dtb_size,
-                          char *kern_args);
+                          char *kern_args, hwaddr kalloc_size,
+                          hwaddr *kalloc_paddr);
 
 void arm_load_macho(char *filename, AddressSpace *as, char *name,
                     hwaddr load_base, bool image_addr, uint64_t *pc,

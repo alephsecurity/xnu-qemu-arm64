@@ -55,6 +55,8 @@ typedef struct {
 
 typedef struct {
     MachineState parent;
+    KernelTaskPortParams ktpp;
+    PtrNtfDev ptr_ntf;
     struct arm_boot_info bootinfo;
     const MemMapEntry *memmap;
     const int *irqmap;

@@ -188,7 +188,8 @@ void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
                           uint64_t bootargs_addr, uint64_t virt_base,
                           uint64_t phys_base, uint64_t top_of_kernel_data,
                           uint64_t dtb_address, unsigned long dtb_size,
-                          char *kern_args)
+                          char *kern_args, hwaddr kalloc_size,
+                          hwaddr *kalloc_paddr)
 {
     struct xnu_arm64_boot_args boot_args;
     memset(&boot_args, 0, sizeof(boot_args));
@@ -198,8 +199,9 @@ void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
     boot_args.physBase = phys_base;
     boot_args.memSize = mem_size;
     // top of kernel data (kernel, dtb, any ramdisk, any TC) +
-    // boot args size + padding to 16k
-    boot_args.topOfKernelData = ((top_of_kernel_data + sizeof(boot_args)) +
+    // boot args size + kernel task remap + fake task port +  padding to 16k
+    *kalloc_paddr = top_of_kernel_data + sizeof(boot_args);
+    boot_args.topOfKernelData = (*kalloc_paddr + kalloc_size +
                                  0xffffull) & ~0xffffull;
     boot_args.deviceTreeP = dtb_address;
     boot_args.deviceTreeLength = dtb_size;
@@ -326,6 +328,8 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
     }
     hwaddr rom_base = VAtoPA(low_addr_temp);
     rom_add_blob_fixed_as(name, rom_buf, rom_buf_size, rom_base, as);
+    //fprintf(stderr, "arm_load_macho() rom_base: %llx\n",
+    //        rom_base);
 
     *phys_load_base = load_base;
     *virt_load_base = *virt_base - *phys_base + (uint64_t)load_base;

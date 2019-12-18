@@ -36,6 +36,9 @@
 
 #include "hw/arm/exynos4210.h"
 
+static uint64_t g_tz_pc;
+static uint64_t g_tz_bootargs;
+
 #define RAMLIMIT_GB 255
 #define RAMLIMIT_BYTES (RAMLIMIT_GB * 1024ULL * 1024 * 1024)
 
@@ -222,7 +225,8 @@ static void n66_bootargs_setup(MachineState *machine)
 
 static void n66_load_images(MachineState *machine, AddressSpace *sas,
                             AddressSpace *nsas, uint64_t ram_size,
-                            uint64_t *tz_pc, uint64_t *tz_bootargs)
+                            uint64_t *tz_pc, uint64_t *tz_bootargs,
+                            hwaddr *kalloc_paddr, hwaddr kalloc_size)
 {
     N66MachineState *nms = N66_MACHINE(machine);
     uint64_t k_pc;
@@ -264,6 +268,9 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
                    &virt_next_page, &k_virt_base, &k_phys_base,
                    &k_virt_load_base, &k_phys_load_base);
 
+    g_virt_base = k_virt_load_base;
+    g_phys_base = k_phys_load_base;
+
     ramdisk_phys_addr = phys_next_page;
     ramdisk_virt_addr_end = virt_next_page;
     macho_load_raw_file(nms->ramdisk_filename, nsas,
@@ -283,7 +290,7 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
                          k_virt_load_base, //virt_base
                          k_phys_load_base, //phys base
                          phys_next_page, dtb_virt_addr, dtb_size,
-                         nms->kern_args);
+                         nms->kern_args, kalloc_size, kalloc_paddr);
 
     arm_load_macho(nms->secmon_filename, sas, (char *)"trustzone.n66", 0,
                    true, tz_pc, &tz_phys_next_page, &tz_virt_next_page,
@@ -298,9 +305,6 @@ static void n66_load_images(MachineState *machine, AddressSpace *sas,
                              nms->memmap[N66_SECURE_MEM].base, phys_next_page,
                              k_pc, nms->memmap[N66_MEM].base);
 }
-
-static uint64_t g_tz_pc;
-static uint64_t g_tz_bootargs;
 
 static void n66_cpu_reset(void *opaque)
 {
@@ -335,8 +339,11 @@ static void n66_machine_init(MachineState *machine)
     n66_memory_setup(machine, &sysmem, &secure_sysmem);
 
     n66_cpu_setup(machine, sysmem, secure_sysmem, &cpu, &sas, &nsas);
+    nms->ktpp.as = nsas;
+
     cpudev = DEVICE(cpu);
     cs = CPU(cpu);
+    nms->ktpp.cs = cs;
 
     n66_add_cpregs(cpu, nms);
 
@@ -349,9 +356,21 @@ static void n66_machine_init(MachineState *machine)
     n66_bootargs_setup(machine);
 
     n66_load_images(machine, sas, nsas, machine->ram_size, &tz_pc,
-                    &tz_bootargs);
+                    &tz_bootargs, &nms->ktpp.kalloc_paddr,
+                    KERNEL_STAIC_ALLOC_SIZE);
     g_tz_pc = tz_pc;
     g_tz_bootargs = tz_bootargs;
+
+    //fprintf(stderr,
+    //        "n66_machine_init: free_kernel_data: %016llX\n",
+    //        ptov_static(nms->free_kernel_data));
+
+    nms->ptr_ntf.pa = vtop_static(KERNEL_TASK_PTR_16B92);
+    nms->ptr_ntf.as = nsas;
+    nms->ptr_ntf.val = 0;
+    nms->ptr_ntf.cb = setup_fake_task_port;
+    nms->ptr_ntf.cb_opaque = (void *)&nms->ktpp;
+    xnu_dev_ptr_ntf_create(sysmem, &nms->ptr_ntf, "kernel_task_dev");
 
     qemu_register_reset(n66_cpu_reset, ARM_CPU(cs));
 }
