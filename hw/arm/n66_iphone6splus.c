@@ -35,6 +35,7 @@
 #include "hw/arm/n66_iphone6splus.h"
 
 #include "hw/arm/exynos4210.h"
+#include "hw/arm/tcp-tunnel.h"
 
 static uint64_t g_tz_pc;
 static uint64_t g_tz_bootargs;
@@ -69,10 +70,10 @@ static void n66_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
     /*fprintf(stderr, "n66_cpreg_write_" #name "() value: %llx\n", value); */\
 }
 
-#define N66_CPREG_DEF(p_name, p_op0, p_op1, p_crn, p_crm, p_op2, ar) \
+#define N66_CPREG_DEF(p_name, p_op0, p_op1, p_crn, p_crm, p_op2, p_access) \
     { .cp = CP_REG_ARM64_SYSREG_CP, \
       .name = #p_name, .opc0 = p_op0, .crn = p_crn, .crm = p_crm, \
-      .opc1 = p_op1, .opc2 = p_op2, .access = ar, .type = ARM_CP_IO, \
+      .opc1 = p_op1, .opc2 = p_op2, .access = p_access, .type = ARM_CP_IO, \
       .state = ARM_CP_STATE_AA64, .readfn = n66_cpreg_read_##p_name, \
       .writefn = n66_cpreg_write_##p_name }
 
@@ -109,7 +110,70 @@ N66_CPREG_FUNCS(PMC1)
 N66_CPREG_FUNCS(PMCR1)
 N66_CPREG_FUNCS(PMSR)
 
+static uint64_t n66_cpreg_read_REG_QEMU_SEND(CPUARMState *env,
+                                      const ARMCPRegInfo *ri)
+{
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    pthread_mutex_lock(&qemu_send_mutex);
+    uint64_t res = nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND);;
+    pthread_mutex_unlock(&qemu_send_mutex);
+    return res;
+}
+
+static void n66_cpreg_write_REG_QEMU_SEND(CPUARMState *env, const ARMCPRegInfo *ri,
+                                   uint64_t value)
+{
+    uint64_t guest_addr = value;
+    uint16_t size = (value & (0xfffULL << 48)) >> 48;
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    CPUState *cpu = qemu_get_cpu(0);
+
+    if (value & (1ULL << 63)) {
+        guest_addr |= (0xffffULL << 48);
+    } else {
+        guest_addr &= ~(0xffffULL << 48);
+    }
+
+    pthread_mutex_lock(&qemu_send_mutex);
+    cpu_memory_rw_debug(cpu, guest_addr, qemu_send_buf, size, 0);
+    nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND) = size;
+    pthread_mutex_unlock(&qemu_send_mutex);
+}
+
+static uint64_t n66_cpreg_read_REG_QEMU_RECV(CPUARMState *env,
+                                      const ARMCPRegInfo *ri)
+{
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    pthread_mutex_lock(&qemu_recv_mutex);
+    uint64_t res = nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV);
+    pthread_mutex_unlock(&qemu_recv_mutex);
+    return res;
+}
+
+static void n66_cpreg_write_REG_QEMU_RECV(CPUARMState *env, const ARMCPRegInfo *ri,
+                                   uint64_t value)
+{
+    uint64_t guest_addr = value;
+    uint16_t size = (value & (0xfffULL << 48)) >> 48;
+    N66MachineState *nms = (N66MachineState *)ri->opaque;
+    CPUState *cpu = qemu_get_cpu(0);
+
+    if (value & (1ULL << 63)) {
+        guest_addr |= (0xffffULL << 48);
+    } else {
+        guest_addr &= ~(0xffffULL << 48);
+    }
+
+    pthread_mutex_lock(&qemu_recv_mutex);
+    if (nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV)) {
+        cpu_memory_rw_debug(cpu, guest_addr, qemu_recv_buf, size, 1);
+        nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV) = 0;
+    }
+    pthread_mutex_unlock(&qemu_recv_mutex);
+}
+
 static const ARMCPRegInfo n66_cp_reginfo[] = {
+    // Apple-specific registers
     N66_CPREG_DEF(ARM64_REG_USR_NTF, 3, 3, 15, 14, 0, PL0_RW),
     N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
     N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
@@ -122,6 +186,24 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
     N66_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
     N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
     N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
+
+    // Aleph-specific registers for communicating with QEMU
+
+    // REG_QEMU_SEND:
+    // |        63          59         48 47                                0|
+    // |-----------------|-|-------------|-----------------------------------|
+    // | kernel:1/user:0 |/| buffer size | lower bits of the buffer location |
+    // |-----------------|-|-------------|-----------------------------------|
+    //
+    N66_CPREG_DEF(REG_QEMU_SEND, 3, 3, 15, 15, 0, PL0_RW),
+    
+    // REG_QEMU_RECV:
+    // |        63          59         48 47                                0|
+    // |-----------------|-|-------------|-----------------------------------|
+    // | kernel:1/user:0 |/| buffer size | lower bits of the buffer location |
+    // |-----------------|-|-------------|-----------------------------------|
+    //
+    N66_CPREG_DEF(REG_QEMU_RECV, 3, 3, 15, 15, 1, PL0_RW),
     REGINFO_SENTINEL,
 };
 
@@ -139,7 +221,48 @@ static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
     nms->N66_CPREG_VAR_NAME(PMCR1) = 0;
     nms->N66_CPREG_VAR_NAME(PMSR) = 0;
 
+    // The following are accessed without the mutex here, since the function
+    // should be called before the tunneling thread is created
+    nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND) = 0;
+    nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV) = 0;
+    
     define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
+}
+
+static void n66_tunnel_init(const N66MachineState *nms)
+{
+    pthread_t tunnel_thread;
+    struct sockaddr_in serv_addr;
+    int tunnel_server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    thread_arg_t *thread_arg = NULL;
+
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_len = sizeof(serv_addr);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(nms->tunnel_port);
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(tunnel_server_socket, (struct sockaddr*) &serv_addr, sizeof(serv_addr))) {
+        fprintf(stderr, "Coulnd't bind a socket for tunnel connections!\n");
+        return;
+    }
+
+    if (listen(tunnel_server_socket, 10)) {
+        fprintf(stderr, "Couldn't start listening for tunnel connections!\n");
+        return;
+    }
+
+    thread_arg = malloc(sizeof(*thread_arg));
+
+    if (!thread_arg) {
+        fprintf(stderr, "Couldn't allocate a bit of memory for thread_arg!\n");
+        return;
+    }
+
+    thread_arg->nms = (void*) nms;
+    thread_arg->socket = tunnel_server_socket;
+
+    pthread_create(&tunnel_thread, NULL, tunnel_accept_connection, thread_arg);
 }
 
 static void n66_create_s3c_uart(const N66MachineState *nms,
@@ -371,6 +494,7 @@ static void n66_machine_init(MachineState *machine)
     nms->ptr_ntf.cb = setup_fake_task_port;
     nms->ptr_ntf.cb_opaque = (void *)&nms->ktpp;
     xnu_dev_ptr_ntf_create(sysmem, &nms->ptr_ntf, "kernel_task_dev");
+    n66_tunnel_init(nms);
 
     qemu_register_reset(n66_cpu_reset, ARM_CPU(cs));
 }
@@ -459,6 +583,21 @@ static char *n66_get_kern_args(Object *obj, Error **errp)
     return g_strdup(nms->kern_args);
 }
 
+static void n66_set_tunnel_port(Object *obj, const char *value,
+                                     Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    nms->tunnel_port = atoi(value);
+}
+
+static char *n66_get_tunnel_port(Object *obj, Error **errp)
+{
+    char buf[128];
+    N66MachineState *nms = N66_MACHINE(obj);
+    snprintf(buf, 128, "%d", nms->tunnel_port);
+    return g_strdup(buf);
+}
+
 static void n66_instance_init(Object *obj)
 {
     object_property_add_str(obj, "ramdisk-filename", n66_get_ramdisk_filename,
@@ -495,6 +634,12 @@ static void n66_instance_init(Object *obj)
                             n66_set_kern_args, NULL);
     object_property_set_description(obj, "kern-cmd-args",
                                     "Set the XNU kernel cmd args",
+                                    NULL);
+
+    object_property_add_str(obj, "tunnel-port", n66_get_tunnel_port,
+                            n66_set_tunnel_port, NULL);
+    object_property_set_description(obj, "tunnel-port",
+                                    "Set the port for the tunnel connection",
                                     NULL);
 }
 
