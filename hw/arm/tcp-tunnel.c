@@ -24,85 +24,145 @@
 
 #include "hw/arm/tcp-tunnel.h"
 
-pthread_mutex_t qemu_send_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t qemu_recv_mutex = PTHREAD_MUTEX_INITIALIZER;
-uint8_t qemu_send_buf[4096];
-uint8_t qemu_recv_buf[4096];
+static pthread_mutex_t tunnel_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static void *guest_send_recv(void *arg)
+static struct {
+    int socket;
+    int closed;
+} connections[] = { {
+    .socket = 0,
+    .closed = 1,
+} };
+
+uint64_t tcp_tunnel_ready_to_send(CPUARMState *env, const ARMCPRegInfo *ri)
 {
-    N66MachineState *nms = N66_MACHINE(((thread_arg_t*)arg)->nms);
-    int sock = ((thread_arg_t*)arg)->socket;
-    free(arg);
+    // Return value: 0 when ready to send, non-zero otherwises
+    uint64_t res;
 
-    uint8_t tmp[4096];
-    time_t start;
-    int len = 0;
-    bool keep_going = true;
-    struct timeval timeout = { .tv_usec = 10 }; // TODO: define!
+    pthread_mutex_lock(&tunnel_mutex);
+    res = (connections[0].socket && !connections[0].closed);
+    pthread_mutex_unlock(&tunnel_mutex);
 
-    if (setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
-    {
-        perror("setsockopt failed");
-        keep_going = false;
+    return res;
+}
+
+void tcp_tunnel_send(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    uint64_t guest_addr = value;
+    tcp_tunnel_buffer_t buf;
+    uint16_t size = (value & (0xfffULL << 48)) >> 48;
+    CPUState *cpu = qemu_get_cpu(0);
+
+    if (value & (1ULL << 63)) {
+        guest_addr |= (0xffffULL << 48);
+    } else {
+        guest_addr &= ~(0xffffULL << 48);
     }
 
-    while (keep_going) {
-        // Receive...
-        if ((len = recv(sock, tmp, sizeof(tmp), 0)) > 0) {
-            start = time(NULL);
-            while (len && ((time(NULL) - start) < QEMU_RECV_TIMEOUT)) {
-                // we attempt to write the date to the guest; if the guest
-                // hasn't yet read the previous data, we wait for
-                // QEMU_RECV_TIMEOUT seconds, and then drop it
-                pthread_mutex_lock(&qemu_recv_mutex);
-                if (!nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV)) {
-                    nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV) = len;
-                    memcpy(qemu_recv_buf, tmp, len);
-                    len = 0;
-                }
-                pthread_mutex_unlock(&qemu_recv_mutex);
-                usleep(10); // TODO: define!
-            }
-        } else if (!len || (errno != EAGAIN)) {
-            keep_going = false;
-        }
+    // Read the request
+    cpu_memory_rw_debug(cpu, guest_addr, (uint8_t*) &buf, size, 0);
 
-        // Send...
-        pthread_mutex_lock(&qemu_send_mutex);
-        len = nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND);
-        nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND) = 0;
-        if (len){
-            if (send(sock, qemu_send_buf, len, 0) < 0) {
-                // connection closed or another error
-                keep_going = false;
-            }
+    // TODO: handle socket errors
+    pthread_mutex_lock(&tunnel_mutex);
+    if (connections[0].socket && !connections[0].closed) {
+        if ((buf.header.len = send(connections[0].socket, buf.data, buf.header.len, 0)) < 0) {
+            buf.header.err = errno;
+            connections[0].closed = 1;
+        } else {
+            buf.header.err = 0;
         }
-        pthread_mutex_unlock(&qemu_send_mutex);
+    } else {
+        buf.header.len = -1;
+        buf.header.err = ECONNRESET;
+    }
+    pthread_mutex_unlock(&tunnel_mutex);
+
+    // Write back the status
+    cpu_memory_rw_debug(cpu, guest_addr, (uint8_t*) &buf.header, sizeof(buf.header), 1);
+}
+
+uint64_t tcp_tunnel_ready_to_recv(CPUARMState *env, const ARMCPRegInfo *ri)
+{
+    uint64_t res;
+
+    pthread_mutex_lock(&tunnel_mutex);
+    res = (connections[0].socket && !connections[0].closed);
+    pthread_mutex_unlock(&tunnel_mutex);
+
+    return res;
+}
+
+void tcp_tunnel_recv(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    uint64_t guest_addr = value;
+    uint16_t size = (value & (0xfffULL << 48)) >> 48;
+    tcp_tunnel_buffer_t buf;
+    CPUState *cpu = qemu_get_cpu(0);
+
+    if (value & (1ULL << 63)) {
+        guest_addr |= (0xffffULL << 48);
+    } else {
+        guest_addr &= ~(0xffffULL << 48);
     }
 
-    close(sock);
+    // TODO: handle socket errors
+    pthread_mutex_lock(&tunnel_mutex);
+    if (connections[0].socket && !connections[0].closed) {
+        buf.header.len = recv(connections[0].socket, buf.data, sizeof(buf.data), 0);
+        buf.header.err = 0;
 
-    return NULL;
+        if (0 == buf.header.len) {
+            buf.header.err = ECONNRESET;
+        } else if (buf.header.len < 0) {
+            buf.header.err = errno;
+        }
+
+        if (buf.header.err && (buf.header.err != EAGAIN)) {
+            connections[0].closed = 1;
+        }
+    } else {
+        buf.header.len = -1;
+        buf.header.err = ECONNRESET;
+    }
+
+    pthread_mutex_unlock(&tunnel_mutex);
+
+    cpu_memory_rw_debug(cpu, guest_addr, (uint8_t*) &buf, size, 1);
 }
 
 void *tunnel_accept_connection(void *arg)
 {
-    int tunnel_server_socket = ((thread_arg_t*)arg)->socket;
-    void *nms = ((thread_arg_t*)arg)->nms;
-    free(arg);
+    int keep_going = 1;
+    int tunnel_server_socket = *(int*)arg;
 
-    pthread_t pt_guest_send_recv;
-    thread_arg_t *thread_arg;
-
-    while (1) {
+    while (keep_going) {
         // TODO: support more concurrent connections, and design an exit strategy
-        thread_arg = malloc(sizeof(*thread_arg));
-        thread_arg->nms = nms;
-        thread_arg->socket = accept(tunnel_server_socket, NULL, NULL);
+        int tmp_socket = accept(tunnel_server_socket, NULL, NULL);
 
-        pthread_create(&pt_guest_send_recv, NULL, guest_send_recv, thread_arg);
-        pthread_join(pt_guest_send_recv, NULL);
+        struct timeval timeout = { .tv_usec = 10 }; // TODO: define!
+
+        if (setsockopt(tmp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                       sizeof(timeout)) < 0) {
+            perror("setsockopt failed");
+            keep_going = false;
+        }
+
+        pthread_mutex_lock(&tunnel_mutex);
+        connections[0].socket = tmp_socket;
+        connections[0].closed = 0;
+        pthread_mutex_unlock(&tunnel_mutex);
+
+        for (;;) {
+            pthread_mutex_lock(&tunnel_mutex);
+            if (connections[0].closed) {
+                pthread_mutex_unlock(&tunnel_mutex);
+                break;
+            }
+            pthread_mutex_unlock(&tunnel_mutex);
+            sleep(1); // TODO: define!
+        }
+
+        close(tmp_socket);
     }
 
     return NULL;

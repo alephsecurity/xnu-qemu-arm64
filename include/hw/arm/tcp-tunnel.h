@@ -37,17 +37,26 @@
 
 #include "hw/arm/n66_iphone6splus.h"
 
-#define QEMU_RECV_TIMEOUT (10)
+#define TCP_RECV_TIMEOUT (10)
+#define TCP_TUNNEL_BUFFER_SIZE (0xfff)
 
-typedef struct {
-    N66MachineState *nms;
-    int socket;
-} thread_arg_t;
+typedef struct __attribute__((packed)) {
+    ssize_t len;
+    ssize_t err;
+} tcp_tunnel_header_t;
 
-extern pthread_mutex_t qemu_send_mutex;
-extern pthread_mutex_t qemu_recv_mutex;
-extern uint8_t qemu_send_buf[4096];
-extern uint8_t qemu_recv_buf[4096];
+typedef struct __attribute__((packed)) {
+    tcp_tunnel_header_t header;
+    uint8_t data[TCP_TUNNEL_BUFFER_SIZE - sizeof(tcp_tunnel_header_t)];
+} tcp_tunnel_buffer_t;
+
+static_assert (sizeof(tcp_tunnel_buffer_t) == TCP_TUNNEL_BUFFER_SIZE, "Wrong size!");
+
+uint64_t tcp_tunnel_ready_to_send(CPUARMState *env, const ARMCPRegInfo *ri);
+void tcp_tunnel_send(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
+
+uint64_t tcp_tunnel_ready_to_recv(CPUARMState *env, const ARMCPRegInfo *ri);
+void tcp_tunnel_recv(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
 
 void *tunnel_accept_connection(void *arg);
 
