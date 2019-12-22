@@ -1,4 +1,4 @@
-obj-y += xnu_fake_task_port.o xnu_mem.o xnu_remap_dev.o xnu_ptr_ntf.o xnu.o boot.o virt.o sysbus-fdt.o n66_iphone6splus.o tcp-tunnel.o
+obj-y += xnu_fake_task_port.o xnu_mem.o xnu_remap_dev.o xnu_ptr_ntf.o xnu.o boot.o virt.o sysbus-fdt.o n66_iphone6splus.o guest-services.o guest-socket.o
 obj-$(CONFIG_ACPI) += virt-acpi-build.o
 obj-$(CONFIG_DIGIC) += digic_boards.o
 obj-$(CONFIG_EXYNOS4) += exynos4_boards.o

@@ -22,8 +22,8 @@
  * THE SOFTWARE.
  */
 
-#ifndef HW_ARM_TCP_TUNNEL_H
-#define HW_ARM_TCP_TUNNEL_H
+#ifndef HW_ARM_GUEST_SERVICES_GENERAL_H
+#define HW_ARM_GUEST_SERVICES_GENERAL_H
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -36,28 +36,40 @@
 #include "hw/platform-bus.h"
 
 #include "hw/arm/n66_iphone6splus.h"
+#include "hw/arm/guest-services/socket.h"
 
-#define TCP_RECV_TIMEOUT (10)
-#define TCP_TUNNEL_BUFFER_SIZE (0xfff)
+typedef enum {
+    // Socket API
+    QC_SOCKET = 0x100,
+    QC_ACCEPT,
+    QC_BIND,
+    QC_CONNECT,
+    QC_LISTEN,
+    QC_RECV,
+    QC_SEND,
+    QC_CLOSE
+} qemu_call_number_t;
 
 typedef struct __attribute__((packed)) {
-    ssize_t len;
-    ssize_t err;
-} tcp_tunnel_header_t;
+    // Request
+    qemu_call_number_t call_number;
+    union {
+        qc_socket_args_t socket;
+        qc_accept_args_t accept;
+        qc_bind_args_t bind;
+        qc_connect_args_t connect;
+        qc_listen_args_t listen;
+        qc_recv_args_t recv;
+        qc_send_args_t send;
+        qc_close_args_t close;
+    } args;
 
-typedef struct __attribute__((packed)) {
-    tcp_tunnel_header_t header;
-    uint8_t data[TCP_TUNNEL_BUFFER_SIZE - sizeof(tcp_tunnel_header_t)];
-} tcp_tunnel_buffer_t;
+    // Response
+    int64_t retval;
+    int64_t error;
+} qemu_call_t;
 
-static_assert (sizeof(tcp_tunnel_buffer_t) == TCP_TUNNEL_BUFFER_SIZE, "Wrong size!");
+uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri);
+void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
 
-uint64_t tcp_tunnel_ready_to_send(CPUARMState *env, const ARMCPRegInfo *ri);
-void tcp_tunnel_send(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
-
-uint64_t tcp_tunnel_ready_to_recv(CPUARMState *env, const ARMCPRegInfo *ri);
-void tcp_tunnel_recv(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
-
-void *tunnel_accept_connection(void *arg);
-
-#endif // HW_ARM_TCP_TUNNEL_H
+#endif // HW_ARM_GUEST_SERVICES_GENERAL_H

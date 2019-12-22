@@ -22,45 +22,82 @@
  * THE SOFTWARE.
  */
 
-#include "hw/arm/tcp-tunnel.h"
+#include "hw/arm/guest-services/general.h"
 
-static pthread_mutex_t tunnel_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static struct {
-    int socket;
-    int closed;
-} connections[] = { {
-    .socket = 0,
-    .closed = 1,
-} };
-
-uint64_t tcp_tunnel_ready_to_send(CPUARMState *env, const ARMCPRegInfo *ri)
+uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)
 {
-    // Return value: 0 when ready to send, non-zero otherwises
-    uint64_t res;
-
-    pthread_mutex_lock(&tunnel_mutex);
-    res = (connections[0].socket && !connections[0].closed);
-    pthread_mutex_unlock(&tunnel_mutex);
-
-    return res;
+    // NOT USED FOR NOW
+    return 0;
 }
 
-void tcp_tunnel_send(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
+{
+    CPUState *cpu = qemu_get_cpu(0);
+    qemu_call_t qc_call;
+
+    // Read the request
+    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qc_call, sizeof(qc_call), 0);
+
+    switch (qc_call.call_number) {
+        case QC_SOCKET:
+            qc_call.retval = qc_socket(cpu, qc_call.args.socket.domain,
+                                       qc_call.args.socket.type,
+                                       qc_call.args.socket.protocol);
+            break;
+        case QC_ACCEPT:
+            qc_call.retval = qc_accept(cpu, qc_call.args.accept.socket,
+                                       qc_call.args.accept.addr,
+                                       qc_call.args.accept.addrlen);
+            break;
+        case QC_BIND:
+            qc_call.retval = qc_bind(cpu, qc_call.args.bind.socket,
+                                     qc_call.args.bind.addr,
+                                     qc_call.args.bind.addrlen);
+            break;
+        case QC_CONNECT:
+            qc_call.retval = qc_connect(cpu, qc_call.args.connect.socket,
+                                        qc_call.args.connect.addr,
+                                        qc_call.args.connect.addrlen);
+            break;
+        case QC_LISTEN:
+            qc_call.retval = qc_listen(cpu, qc_call.args.listen.socket,
+                                       qc_call.args.listen.backlog);
+            break;
+        case QC_RECV:
+            qc_call.retval = qc_recv(cpu, qc_call.args.recv.socket,
+                                     qc_call.args.recv.buffer,
+                                     qc_call.args.recv.length,
+                                     qc_call.args.recv.flags);
+            break;
+        case QC_SEND:
+            qc_call.retval = qc_send(cpu, qc_call.args.send.socket,
+                                     qc_call.args.send.buffer,
+                                     qc_call.args.send.length,
+                                     qc_call.args.send.flags);
+            break;
+        case QC_CLOSE:
+            qc_call.retval = qc_close(cpu, qc_call.args.close.socket);
+            break;
+        default:
+            // TODO: handle unknown call numbers
+            break;
+    }
+
+    qc_call.error = qemu_socket_errno;
+
+    // Write the response
+    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qc_call, sizeof(qc_call), 1);
+}
+
+/*
+void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     uint64_t guest_addr = value;
     tcp_tunnel_buffer_t buf;
-    uint16_t size = (value & (0xfffULL << 48)) >> 48;
     CPUState *cpu = qemu_get_cpu(0);
 
-    if (value & (1ULL << 63)) {
-        guest_addr |= (0xffffULL << 48);
-    } else {
-        guest_addr &= ~(0xffffULL << 48);
-    }
-
     // Read the request
-    cpu_memory_rw_debug(cpu, guest_addr, (uint8_t*) &buf, size, 0);
+    cpu_memory_rw_debug(cpu, value, (uint8_t*) &buf, size, 0);
 
     // TODO: handle socket errors
     pthread_mutex_lock(&tunnel_mutex);
@@ -167,3 +204,4 @@ void *tunnel_accept_connection(void *arg)
 
     return NULL;
 }
+*/

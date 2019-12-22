@@ -35,7 +35,7 @@
 #include "hw/arm/n66_iphone6splus.h"
 
 #include "hw/arm/exynos4210.h"
-#include "hw/arm/tcp-tunnel.h"
+#include "hw/arm/guest-services/general.h"
 
 static uint64_t g_tz_pc;
 static uint64_t g_tz_bootargs;
@@ -127,29 +127,13 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
 
     // Aleph-specific registers for communicating with QEMU
 
-    // REG_QEMU_SEND:
-    // |        63          59         48 47                                0|
-    // |-----------------|-|-------------|-----------------------------------|
-    // | kernel:1/user:0 |/| buffer size | lower bits of the buffer location |
-    // |-----------------|-|-------------|-----------------------------------|
-    //
-    { .cp = CP_REG_ARM64_SYSREG_CP, .name = "REG_QEMU_SEND",
+    // REG_QEMU_CALL:
+    { .cp = CP_REG_ARM64_SYSREG_CP, .name = "REG_QEMU_CALL",
       .opc0 = 3, .opc1 = 3, .crn = 15, .crm = 15, .opc2 = 0,
       .access = PL0_RW, .type = ARM_CP_IO, .state = ARM_CP_STATE_AA64,
-      .readfn = tcp_tunnel_ready_to_send,
-      .writefn = tcp_tunnel_send },
-    
-    // REG_QEMU_RECV:
-    // |        63          59         48 47                                0|
-    // |-----------------|-|-------------|-----------------------------------|
-    // | kernel:1/user:0 |/| buffer size | lower bits of the buffer location |
-    // |-----------------|-|-------------|-----------------------------------|
-    //
-    { .cp = CP_REG_ARM64_SYSREG_CP, .name = "REG_QEMU_RECV",
-      .opc0 = 3, .opc1 = 3, .crn = 15, .crm = 15, .opc2 = 1,
-      .access = PL0_RW, .type = ARM_CP_IO, .state = ARM_CP_STATE_AA64,
-      .readfn = tcp_tunnel_ready_to_recv,
-      .writefn = tcp_tunnel_recv },
+      .readfn = qemu_call_status,
+      .writefn = qemu_call },
+
     REGINFO_SENTINEL,
 };
 
@@ -173,33 +157,6 @@ static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
     // nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV) = 0;
     
     define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
-}
-
-static void n66_tunnel_init(const N66MachineState *nms)
-{
-    pthread_t tunnel_thread;
-    struct sockaddr_in serv_addr;
-    static int tunnel_server_socket;
-    
-    tunnel_server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_len = sizeof(serv_addr);
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(nms->tunnel_port);
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(tunnel_server_socket, (struct sockaddr*) &serv_addr, sizeof(serv_addr))) {
-        fprintf(stderr, "Coulnd't bind a socket for tunnel connections!\n");
-        return;
-    }
-
-    if (listen(tunnel_server_socket, 10)) {
-        fprintf(stderr, "Couldn't start listening for tunnel connections!\n");
-        return;
-    }
-
-    pthread_create(&tunnel_thread, NULL, tunnel_accept_connection, &tunnel_server_socket);
 }
 
 static void n66_create_s3c_uart(const N66MachineState *nms,
@@ -431,7 +388,6 @@ static void n66_machine_init(MachineState *machine)
     nms->ptr_ntf.cb = setup_fake_task_port;
     nms->ptr_ntf.cb_opaque = (void *)&nms->ktpp;
     xnu_dev_ptr_ntf_create(sysmem, &nms->ptr_ntf, "kernel_task_dev");
-    n66_tunnel_init(nms);
 
     qemu_register_reset(n66_cpu_reset, ARM_CPU(cs));
 }
