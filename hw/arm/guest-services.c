@@ -44,60 +44,60 @@ uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)
 void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     CPUState *cpu = qemu_get_cpu(0);
-    qemu_call_t qc_call;
+    qemu_call_t qcall;
 
     // Read the request
-    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qc_call, sizeof(qc_call), 0);
+    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 0);
 
-    switch (qc_call.call_number) {
+    switch (qcall.call_number) {
         case QC_SOCKET:
-            qc_call.retval = qc_socket(cpu, qc_call.args.socket.domain,
-                                       qc_call.args.socket.type,
-                                       qc_call.args.socket.protocol);
+            qcall.retval = qc_socket(cpu, qcall.args.socket.domain,
+                                     qcall.args.socket.type,
+                                     qcall.args.socket.protocol);
             break;
         case QC_ACCEPT:
-            qc_call.retval = qc_accept(cpu, qc_call.args.accept.socket,
-                                       qc_call.args.accept.addr,
-                                       qc_call.args.accept.addrlen);
+            qcall.retval = qc_accept(cpu, qcall.args.accept.socket,
+                                     qcall.args.accept.addr,
+                                     qcall.args.accept.addrlen);
             break;
         case QC_BIND:
-            qc_call.retval = qc_bind(cpu, qc_call.args.bind.socket,
-                                     qc_call.args.bind.addr,
-                                     qc_call.args.bind.addrlen);
+            qcall.retval = qc_bind(cpu, qcall.args.bind.socket,
+                                   qcall.args.bind.addr,
+                                   qcall.args.bind.addrlen);
             break;
         case QC_CONNECT:
-            qc_call.retval = qc_connect(cpu, qc_call.args.connect.socket,
-                                        qc_call.args.connect.addr,
-                                        qc_call.args.connect.addrlen);
+            qcall.retval = qc_connect(cpu, qcall.args.connect.socket,
+                                      qcall.args.connect.addr,
+                                      qcall.args.connect.addrlen);
             break;
         case QC_LISTEN:
-            qc_call.retval = qc_listen(cpu, qc_call.args.listen.socket,
-                                       qc_call.args.listen.backlog);
+            qcall.retval = qc_listen(cpu, qcall.args.listen.socket,
+                                     qcall.args.listen.backlog);
             break;
         case QC_RECV:
-            qc_call.retval = qc_recv(cpu, qc_call.args.recv.socket,
-                                     qc_call.args.recv.buffer,
-                                     qc_call.args.recv.length,
-                                     qc_call.args.recv.flags);
+            qcall.retval = qc_recv(cpu, qcall.args.recv.socket,
+                                   qcall.args.recv.buffer,
+                                   qcall.args.recv.length,
+                                   qcall.args.recv.flags);
             break;
         case QC_SEND:
-            qc_call.retval = qc_send(cpu, qc_call.args.send.socket,
-                                     qc_call.args.send.buffer,
-                                     qc_call.args.send.length,
-                                     qc_call.args.send.flags);
+            qcall.retval = qc_send(cpu, qcall.args.send.socket,
+                                   qcall.args.send.buffer,
+                                   qcall.args.send.length,
+                                   qcall.args.send.flags);
             break;
         case QC_CLOSE:
-            qc_call.retval = qc_close(cpu, qc_call.args.close.socket);
+            qcall.retval = qc_close(cpu, qcall.args.close.socket);
             break;
         default:
             // TODO: handle unknown call numbers
             break;
     }
 
-    qc_call.error = qemu_socket_errno;
+    qcall.socket_error = qemu_socket_errno;
 
     // Write the response
-    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qc_call, sizeof(qc_call), 1);
+    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 1);
 }
 
 /*
