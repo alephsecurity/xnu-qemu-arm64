@@ -55,10 +55,18 @@ typedef struct __attribute__((packed)) {
 
     // Response
     int64_t retval;
-    int64_t error;
+    union {
+        int64_t error;
+        int32_t socket_error;
+    };
 } qemu_call_t;
 
+#ifndef OUT_OF_TREE_BUILD
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri);
 void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
+#else
+uint64_t qemu_call_status(qemu_call_t *qcall);
+void qemu_call(qemu_call_t *qcall);
+#endif
 
 #endif // HW_ARM_GUEST_SERVICES_GENERAL_H
