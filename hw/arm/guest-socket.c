@@ -39,6 +39,7 @@
 
 
 #define MAX_SOCKET_COUNT (256)
+#define SOCKET_TIMEOUT_USECS (10)
 
 static int32_t sockets[MAX_SOCKET_COUNT] = { [0 ... MAX_SOCKET_COUNT-1] = -1 };
 
@@ -58,6 +59,22 @@ static int32_t find_free_socket() {
     return -1;
 }
 
+static int32_t set_socket_non_blocking(int32_t index) {
+    int flags;
+    
+    if ((flags = fcntl(sockets[index], F_GETFL)) < 0) {
+        perror("Couldn't get the socket flags for non-blocking config");
+        return -1;
+    }
+
+    if (fcntl(sockets[index], F_SETFL, flags | O_NONBLOCK) < 0) {
+        perror("Couldn't set the socket flags for non-blocking config");
+        return -1;
+    }
+
+    return index;
+}
+
 int32_t qc_socket(CPUState *cpu, int32_t domain, int32_t type,
                   int32_t protocol)
 {
@@ -66,7 +83,16 @@ int32_t qc_socket(CPUState *cpu, int32_t domain, int32_t type,
     if (retval < 0) {
         qemu_socket_errno = ENOTSOCK;
     } else if ((sockets[retval] = socket(domain, type, protocol)) < 0) {
+        retval = -1;
         qemu_socket_errno = errno;
+    } else {
+        if ((retval = set_socket_non_blocking(retval)) < 0) {
+            // TODO: This might be incorrect, as error codes from `fnctl` don't
+            //       necessarily match those of `accept`!
+            qemu_socket_errno = errno;
+            close(sockets[retval]);
+            sockets[retval] = -1;
+        }
     }
 
     return retval;
@@ -88,12 +114,20 @@ int32_t qc_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     } else if ((sockets[retval] = accept(sockets[sckt],
                                          (struct sockaddr *) &addr,
                                          &addrlen)) < 0) {
+        retval = -1;
         qemu_socket_errno = errno;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                            sizeof(addr), 1);
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addrlen, (uint8_t*) &addrlen,
-                            sizeof(addrlen), 1);
+        if ((retval = set_socket_non_blocking(retval)) < 0) {
+            // TODO: This might be incorrect, as error codes from `fnctl` don't
+            //       necessarily match those of `accept`!
+            qemu_socket_errno = errno;
+            sockets[retval] = -1;
+        } else {
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                                sizeof(addr), 1);
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addrlen,
+                                (uint8_t*) &addrlen, sizeof(addrlen), 1);
+        }
     }
 
     return retval;
@@ -108,12 +142,19 @@ int32_t qc_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
 
     int retval = 0;
 
-    if ((retval = bind(sockets[sckt], (struct sockaddr *) &addr,
-                       addrlen)) < 0) {
-        qemu_socket_errno = errno;
+    if (addrlen > sizeof(addr)) {
+        qemu_socket_errno = ENOMEM;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                            sizeof(addr), 1);
+                            sizeof(addr), 0);
+
+        if ((retval = bind(sockets[sckt], (struct sockaddr *) &addr,
+                           addrlen)) < 0) {
+            qemu_socket_errno = errno;
+        } else {
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                                sizeof(addr), 1);
+        }
     }
 
     return retval;
