@@ -150,11 +150,6 @@ static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
     nms->N66_CPREG_VAR_NAME(PMC1) = 0;
     nms->N66_CPREG_VAR_NAME(PMCR1) = 0;
     nms->N66_CPREG_VAR_NAME(PMSR) = 0;
-
-    // The following are accessed without the mutex here, since the function
-    // should be called before the tunneling thread is created
-    // nms->N66_CPREG_VAR_NAME(REG_QEMU_SEND) = 0;
-    // nms->N66_CPREG_VAR_NAME(REG_QEMU_RECV) = 0;
     
     define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
 }
