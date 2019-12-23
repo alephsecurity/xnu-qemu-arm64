@@ -22,6 +22,17 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "hw/arm/arm.h"
+#include "exec/address-spaces.h"
+#include "hw/misc/unimp.h"
+#include "sysemu/sysemu.h"
+#include "qemu/error-report.h"
+#include "hw/platform-bus.h"
+
+#include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/general.h"
 
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)

@@ -25,17 +25,6 @@
 #ifndef HW_ARM_GUEST_SERVICES_GENERAL_H
 #define HW_ARM_GUEST_SERVICES_GENERAL_H
 
-#include "qemu/osdep.h"
-#include "qapi/error.h"
-#include "qemu-common.h"
-#include "hw/arm/arm.h"
-#include "exec/address-spaces.h"
-#include "hw/misc/unimp.h"
-#include "sysemu/sysemu.h"
-#include "qemu/error-report.h"
-#include "hw/platform-bus.h"
-
-#include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/socket.h"
 
 typedef enum {
