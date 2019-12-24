@@ -59,13 +59,12 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
         case QC_FCNTL:
             switch (qcall.args.fcntl.cmd) {
                 case F_GETFL:
-                    qcall.retval = qc_handle_fcntl(cpu, qcall.args.fcntl.fd,
-                                                   qcall.args.fcntl.cmd);
+                    qcall.retval = qc_handle_fcntl_getfl(
+                        cpu, qcall.args.fcntl.fd);
                     break;
                 case F_SETFL:
-                    qcall.retval = qc_handle_fcntl(cpu, qcall.args.fcntl.fd,
-                                                   qcall.args.fcntl.cmd,
-                                                   qcall.args.fcntl.flags);
+                    qcall.retval = qc_handle_fcntl_setfl(
+                        cpu, qcall.args.fcntl.fd, qcall.args.fcntl.flags);
                     break;
                 default:
                     qemu_errno = EINVAL;

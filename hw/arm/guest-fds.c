@@ -45,17 +45,26 @@ int32_t qc_handle_close(CPUState *cpu, int32_t fd)
     return retval;
 }
 
-int32_t qc_handle_fcntl(CPUState *cpu, int32_t fd, int32_t cmd, ...)
+int32_t qc_handle_fcntl_getfl(CPUState *cpu, int32_t fd)
 {
-    va_list args;
-
     VERIFY_FD(fd);
 
     int retval = -1;
 
-    va_start(args, cmd);
+    if ((retval = fcntl(fds[fd], F_GETFL)) < 0) {
+        qemu_errno = errno;
+    }
 
-    if ((retval = fcntl(fds[fd], cmd, args)) < 0) {
+    return retval;
+}
+
+int32_t qc_handle_fcntl_setfl(CPUState *cpu, int32_t fd, int32_t flags)
+{
+    VERIFY_FD(fd);
+
+    int retval = -1;
+
+    if ((retval = fcntl(fds[fd], F_SETFL, flags)) < 0) {
         qemu_errno = errno;
     }
 
