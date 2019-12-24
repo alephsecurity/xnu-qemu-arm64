@@ -97,14 +97,14 @@ int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *buffer,
                        size_t length, int32_t flags);
 int32_t qc_handle_close(CPUState *cpu, int32_t sckt);
 #else
-int32_t qc_socket(int32_t domain, int32_t type, int32_t protocol);
-int32_t qc_accept(int32_t sckt, struct sockaddr *addr, socklen_t *addrlen);
-int32_t qc_bind(int32_t sckt, struct sockaddr *addr, socklen_t addrlen);
-int32_t qc_connect(int32_t sckt, struct sockaddr *addr, socklen_t addrlen);
-int32_t qc_listen(int32_t sckt, int32_t backlog);
-int32_t qc_recv(int32_t sckt, void *buffer, size_t length, int32_t flags);
-int32_t qc_send(int32_t sckt, void *buffer, size_t length, int32_t flags);
-int32_t qc_close(int32_t sckt);
+int qc_socket(int domain, int type, int protocol);
+int qc_accept(int sckt, struct sockaddr *addr, socklen_t *addrlen);
+int qc_bind(int sckt, const struct sockaddr *addr, socklen_t addrlen);
+int qc_connect(int sckt, const struct sockaddr *addr, socklen_t addrlen);
+int qc_listen(int sckt, int backlog);
+ssize_t qc_recv(int sckt, void *buffer, size_t length, int flags);
+ssize_t qc_send(int sckt, const void *buffer, size_t length, int flags);
+int qc_close(int sckt);
 #endif
 
 extern int32_t qemu_socket_errno;
