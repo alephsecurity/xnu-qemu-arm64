@@ -27,11 +27,9 @@
 
 #ifndef OUT_OF_TREE_BUILD
 #include "qemu/osdep.h"
-#define CPU_PARAM CPUState *cpu,
 #else
 #include "sys/types.h"
 #include "sys/socket.h"
-#define CPU_PARAM
 #endif
 
 #define MAX_BUF_SIZE (4096)
@@ -83,20 +81,31 @@ typedef struct __attribute__((packed)) {
     int32_t socket;
 } qc_close_args_t;
 
-int32_t qc_socket(CPU_PARAM int32_t domain, int32_t type,
-                  int32_t protocol);
-int32_t qc_accept(CPU_PARAM int32_t sckt, struct sockaddr *addr,
-                  socklen_t *addrlen);
-int32_t qc_bind(CPU_PARAM int32_t sckt, struct sockaddr *addr,
-                socklen_t addrlen);
-int32_t qc_connect(CPU_PARAM int32_t sckt, struct sockaddr *addr,
-                   socklen_t addrlen);
-int32_t qc_listen(CPU_PARAM int32_t sckt, int32_t backlog);
-int32_t qc_recv(CPU_PARAM int32_t sckt, void *buffer, size_t length,
-                int32_t flags);
-int32_t qc_send(CPU_PARAM int32_t sckt, void *buffer, size_t length,
-                int32_t flags);
-int32_t qc_close(CPU_PARAM int32_t sckt);
+#ifndef OUT_OF_TREE_BUILD
+int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
+                         int32_t protocol);
+int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
+                         socklen_t *addrlen);
+int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
+                       socklen_t addrlen);
+int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
+                          socklen_t addrlen);
+int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog);
+int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *buffer,
+                       size_t length, int32_t flags);
+int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *buffer,
+                       size_t length, int32_t flags);
+int32_t qc_handle_close(CPUState *cpu, int32_t sckt);
+#else
+int32_t qc_socket(int32_t domain, int32_t type, int32_t protocol);
+int32_t qc_accept(int32_t sckt, struct sockaddr *addr, socklen_t *addrlen);
+int32_t qc_bind(int32_t sckt, struct sockaddr *addr, socklen_t addrlen);
+int32_t qc_connect(int32_t sckt, struct sockaddr *addr, socklen_t addrlen);
+int32_t qc_listen(int32_t sckt, int32_t backlog);
+int32_t qc_recv(int32_t sckt, void *buffer, size_t length, int32_t flags);
+int32_t qc_send(int32_t sckt, void *buffer, size_t length, int32_t flags);
+int32_t qc_close(int32_t sckt);
+#endif
 
 extern int32_t qemu_socket_errno;
 

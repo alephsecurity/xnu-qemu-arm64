@@ -75,8 +75,8 @@ static int32_t set_socket_non_blocking(int32_t index) {
     return index;
 }
 
-int32_t qc_socket(CPUState *cpu, int32_t domain, int32_t type,
-                  int32_t protocol)
+int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
+                         int32_t protocol)
 {
     int retval = find_free_socket();
 
@@ -98,8 +98,8 @@ int32_t qc_socket(CPUState *cpu, int32_t domain, int32_t type,
     return retval;
 }
 
-int32_t qc_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                  socklen_t *g_addrlen)
+int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
+                         socklen_t *g_addrlen)
 {
     struct sockaddr_in addr;
     socklen_t addrlen;
@@ -133,8 +133,8 @@ int32_t qc_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     return retval;
 }
 
-int32_t qc_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                socklen_t addrlen)
+int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
+                       socklen_t addrlen)
 {
     struct sockaddr_in addr;
 
@@ -160,8 +160,8 @@ int32_t qc_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     return retval;
 }
 
-int32_t qc_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                   socklen_t addrlen)
+int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
+                          socklen_t addrlen)
 {
     struct sockaddr_in addr;
 
@@ -180,7 +180,7 @@ int32_t qc_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     return retval;
 }
 
-int32_t qc_listen(CPUState *cpu, int32_t sckt, int32_t backlog)
+int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog)
 {
     VERIFY_SOCKET(sckt);
 
@@ -193,8 +193,8 @@ int32_t qc_listen(CPUState *cpu, int32_t sckt, int32_t backlog)
     return retval;
 }
 
-int32_t qc_recv(CPUState *cpu, int32_t sckt, void *g_buffer, size_t length,
-                int32_t flags)
+int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *g_buffer,
+                       size_t length, int32_t flags)
 {
     VERIFY_SOCKET(sckt);
     uint8_t buffer[MAX_BUF_SIZE];
@@ -213,8 +213,8 @@ int32_t qc_recv(CPUState *cpu, int32_t sckt, void *g_buffer, size_t length,
     return retval;
 }
 
-int32_t qc_send(CPUState *cpu, int32_t sckt, void *g_buffer, size_t length,
-                int32_t flags)
+int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *g_buffer,
+                       size_t length, int32_t flags)
 {
     VERIFY_SOCKET(sckt);
     uint8_t buffer[MAX_BUF_SIZE];
@@ -234,7 +234,7 @@ int32_t qc_send(CPUState *cpu, int32_t sckt, void *g_buffer, size_t length,
     return retval;
 }
 
-int32_t qc_close(CPUState *cpu, int32_t sckt)
+int32_t qc_handle_close(CPUState *cpu, int32_t sckt)
 {
     VERIFY_SOCKET(sckt);
 

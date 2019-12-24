@@ -51,43 +51,43 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 
     switch (qcall.call_number) {
         case QC_SOCKET:
-            qcall.retval = qc_socket(cpu, qcall.args.socket.domain,
-                                     qcall.args.socket.type,
-                                     qcall.args.socket.protocol);
+            qcall.retval = qc_handle_socket(cpu, qcall.args.socket.domain,
+                                            qcall.args.socket.type,
+                                            qcall.args.socket.protocol);
             break;
         case QC_ACCEPT:
-            qcall.retval = qc_accept(cpu, qcall.args.accept.socket,
-                                     qcall.args.accept.addr,
-                                     qcall.args.accept.addrlen);
+            qcall.retval = qc_handle_accept(cpu, qcall.args.accept.socket,
+                                            qcall.args.accept.addr,
+                                            qcall.args.accept.addrlen);
             break;
         case QC_BIND:
-            qcall.retval = qc_bind(cpu, qcall.args.bind.socket,
-                                   qcall.args.bind.addr,
-                                   qcall.args.bind.addrlen);
+            qcall.retval = qc_handle_bind(cpu, qcall.args.bind.socket,
+                                          qcall.args.bind.addr,
+                                          qcall.args.bind.addrlen);
             break;
         case QC_CONNECT:
-            qcall.retval = qc_connect(cpu, qcall.args.connect.socket,
-                                      qcall.args.connect.addr,
-                                      qcall.args.connect.addrlen);
+            qcall.retval = qc_handle_connect(cpu, qcall.args.connect.socket,
+                                             qcall.args.connect.addr,
+                                             qcall.args.connect.addrlen);
             break;
         case QC_LISTEN:
-            qcall.retval = qc_listen(cpu, qcall.args.listen.socket,
-                                     qcall.args.listen.backlog);
+            qcall.retval = qc_handle_listen(cpu, qcall.args.listen.socket,
+                                            qcall.args.listen.backlog);
             break;
         case QC_RECV:
-            qcall.retval = qc_recv(cpu, qcall.args.recv.socket,
-                                   qcall.args.recv.buffer,
-                                   qcall.args.recv.length,
-                                   qcall.args.recv.flags);
+            qcall.retval = qc_handle_recv(cpu, qcall.args.recv.socket,
+                                          qcall.args.recv.buffer,
+                                          qcall.args.recv.length,
+                                          qcall.args.recv.flags);
             break;
         case QC_SEND:
-            qcall.retval = qc_send(cpu, qcall.args.send.socket,
-                                   qcall.args.send.buffer,
-                                   qcall.args.send.length,
-                                   qcall.args.send.flags);
+            qcall.retval = qc_handle_send(cpu, qcall.args.send.socket,
+                                          qcall.args.send.buffer,
+                                          qcall.args.send.length,
+                                          qcall.args.send.flags);
             break;
         case QC_CLOSE:
-            qcall.retval = qc_close(cpu, qcall.args.close.socket);
+            qcall.retval = qc_handle_close(cpu, qcall.args.close.socket);
             break;
         default:
             // TODO: handle unknown call numbers
