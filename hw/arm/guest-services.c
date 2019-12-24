@@ -52,6 +52,28 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
     cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 0);
 
     switch (qcall.call_number) {
+        // File Descriptors
+        case QC_CLOSE:
+            qcall.retval = qc_handle_close(cpu, qcall.args.close.fd);
+            break;
+        case QC_FCNTL:
+            switch (qcall.args.fcntl.cmd) {
+                case F_GETFL:
+                    qcall.retval = qc_handle_fcntl(cpu, qcall.args.fcntl.fd,
+                                                   qcall.args.fcntl.cmd);
+                    break;
+                case F_SETFL:
+                    qcall.retval = qc_handle_fcntl(cpu, qcall.args.fcntl.fd,
+                                                   qcall.args.fcntl.cmd,
+                                                   qcall.args.fcntl.flags);
+                    break;
+                default:
+                    qemu_errno = EINVAL;
+                    qcall.retval = -1;
+            }
+            break;
+
+        // Socket API
         case QC_SOCKET:
             qcall.retval = qc_handle_socket(cpu, qcall.args.socket.domain,
                                             qcall.args.socket.type,
@@ -87,9 +109,6 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
                                           qcall.args.send.buffer,
                                           qcall.args.send.length,
                                           qcall.args.send.flags);
-            break;
-        case QC_CLOSE:
-            qcall.retval = qc_handle_close(cpu, qcall.args.close.fd);
             break;
         default:
             // TODO: handle unknown call numbers

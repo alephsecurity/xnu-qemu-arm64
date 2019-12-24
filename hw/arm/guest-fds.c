@@ -22,6 +22,8 @@
  * THE SOFTWARE.
  */
 
+#include <stdarg.h>
+
 #include "hw/arm/guest-services/fds.h"
 #include "cpu.h"
 
@@ -40,5 +42,22 @@ int32_t qc_handle_close(CPUState *cpu, int32_t fd)
         fds[fd] = -1;
     }
 
-    return 0;
+    return retval;
+}
+
+int32_t qc_handle_fcntl(CPUState *cpu, int32_t fd, int32_t cmd, ...)
+{
+    va_list args;
+
+    VERIFY_FD(fd);
+
+    int retval = -1;
+
+    va_start(args, cmd);
+
+    if ((retval = fcntl(fds[fd], cmd, args)) < 0) {
+        qemu_errno = errno;
+    }
+
+    return retval;
 }

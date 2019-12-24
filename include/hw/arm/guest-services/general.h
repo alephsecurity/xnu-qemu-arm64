@@ -51,6 +51,7 @@ typedef struct __attribute__((packed)) {
     union {
         // File Descriptors API
         qc_close_args_t close;
+        qc_fcntl_args_t fcntl;
         // Socket API
         qc_socket_args_t socket;
         qc_accept_args_t accept;
