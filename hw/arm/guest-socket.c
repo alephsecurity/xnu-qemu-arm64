@@ -150,12 +150,19 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
 
     int retval = 0;
 
+    if (addrlen > sizeof(addr)) {
+        qemu_errno = ENOMEM;
+    } else {
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                            sizeof(addr), 0);
+
     if ((retval = connect(fds[sckt], (struct sockaddr *) &addr,
                           addrlen)) < 0) {
         qemu_errno = errno;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                             sizeof(addr), 1);
+    }
     }
 
     return retval;
