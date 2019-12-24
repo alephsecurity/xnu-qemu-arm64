@@ -32,6 +32,8 @@
 #include "sys/socket.h"
 #endif
 
+extern int32_t qemu_errno;
+
 #define MAX_BUF_SIZE (4096)
 
 typedef struct __attribute__((packed)) {
@@ -77,10 +79,6 @@ typedef struct __attribute__((packed)) {
     int flags;
 } qc_send_args_t;
 
-typedef struct __attribute__((packed)) {
-    int32_t socket;
-} qc_close_args_t;
-
 #ifndef OUT_OF_TREE_BUILD
 int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
                          int32_t protocol);
@@ -95,7 +93,6 @@ int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *buffer,
                        size_t length, int32_t flags);
 int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *buffer,
                        size_t length, int32_t flags);
-int32_t qc_handle_close(CPUState *cpu, int32_t sckt);
 #else
 int qc_socket(int domain, int type, int protocol);
 int qc_accept(int sckt, struct sockaddr *addr, socklen_t *addrlen);
@@ -104,9 +101,6 @@ int qc_connect(int sckt, const struct sockaddr *addr, socklen_t addrlen);
 int qc_listen(int sckt, int backlog);
 ssize_t qc_recv(int sckt, void *buffer, size_t length, int flags);
 ssize_t qc_send(int sckt, const void *buffer, size_t length, int flags);
-int qc_close(int sckt);
 #endif
-
-extern int32_t qemu_socket_errno;
 
 #endif // HW_ARM_GUEST_SERVICES_SOCKET_H

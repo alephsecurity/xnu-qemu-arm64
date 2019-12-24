@@ -22,56 +22,32 @@
  * THE SOFTWARE.
  */
 
-#ifndef HW_ARM_GUEST_SERVICES_GENERAL_H
-#define HW_ARM_GUEST_SERVICES_GENERAL_H
-
-#include "hw/arm/guest-services/socket.h"
-#include "hw/arm/guest-services/fds.h"
-
-extern int32_t qemu_errno;
-
-typedef enum {
-    // File Descriptors API
-    QC_CLOSE = 0x100,
-    QC_FCNTL,
-
-    // Socket API
-    QC_SOCKET = 0x110,
-    QC_ACCEPT,
-    QC_BIND,
-    QC_CONNECT,
-    QC_LISTEN,
-    QC_RECV,
-    QC_SEND,
-} qemu_call_number_t;
-
-typedef struct __attribute__((packed)) {
-    // Request
-    qemu_call_number_t call_number;
-    union {
-        // File Descriptors API
-        qc_close_args_t close;
-        // Socket API
-        qc_socket_args_t socket;
-        qc_accept_args_t accept;
-        qc_bind_args_t bind;
-        qc_connect_args_t connect;
-        qc_listen_args_t listen;
-        qc_recv_args_t recv;
-        qc_send_args_t send;
-    } args;
-
-    // Response
-    int64_t retval;
-    int64_t error;
-} qemu_call_t;
+#ifndef HW_ARM_GUEST_SERVICES_FDS_H
+#define HW_ARM_GUEST_SERVICES_FDS_H
 
 #ifndef OUT_OF_TREE_BUILD
-uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri);
-void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
+#include "qemu/osdep.h"
 #else
-uint64_t qemu_call_status(qemu_call_t *qcall);
-void qemu_call(qemu_call_t *qcall);
+#include "sys/types.h"
+#include "sys/socket.h"
 #endif
 
-#endif // HW_ARM_GUEST_SERVICES_GENERAL_H
+#define MAX_FD_COUNT (256)
+
+extern int32_t qemu_errno;
+extern int32_t fds[MAX_FD_COUNT];
+
+#define VERIFY_FD(s) \
+    if ((s < 0) || (s >= MAX_FD_COUNT) || (-1 == fds[s])) return -1;
+
+typedef struct __attribute__((packed)) {
+    int32_t fd;
+} qc_close_args_t;
+
+#ifndef OUT_OF_TREE_BUILD
+int32_t qc_handle_close(CPUState *cpu, int32_t fd);
+#else
+int qc_close(int fd);
+#endif
+
+#endif // HW_ARM_GUEST_SERVICES_FDS_H

@@ -35,6 +35,8 @@
 #include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/general.h"
 
+int32_t qemu_errno = 0;
+
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)
 {
     // NOT USED FOR NOW
@@ -87,14 +89,14 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
                                           qcall.args.send.flags);
             break;
         case QC_CLOSE:
-            qcall.retval = qc_handle_close(cpu, qcall.args.close.socket);
+            qcall.retval = qc_handle_close(cpu, qcall.args.close.fd);
             break;
         default:
             // TODO: handle unknown call numbers
             break;
     }
 
-    qcall.socket_error = qemu_socket_errno;
+    qcall.error = qemu_errno;
 
     // Write the response
     cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 1);
