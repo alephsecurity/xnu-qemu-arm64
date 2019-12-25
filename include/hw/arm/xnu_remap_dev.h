@@ -38,4 +38,3 @@ void xnu_dev_remap_create(MemoryRegion *sysmem, RemapDev *remap,
                           const char *name);
 
 #endif
-

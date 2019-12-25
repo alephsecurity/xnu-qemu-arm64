@@ -64,41 +64,25 @@ void setup_fake_task_port(void *opaque, hwaddr global_kernel_ptr)
     hwaddr special_port_4_vaddr = KERNEL_REALHOST_SPECIAL_16B92 + \
                                   (4 * sizeof(hwaddr));
 
-    //fprintf(stderr, "kernel_task_ptr_cb: starting\n");
-    //fprintf(stderr,
-    //        "n66_machine_init: kalloc_paddr: %016llX\n",
-    //        ptov_static(ktpp->kalloc_paddr));
     if (done) {
-        //fprintf(stderr, "kernel_task_ptr_cb: already done\n");
         return;
     }
 
     if ((0 == global_kernel_ptr) ||
         (0 == (0xffffffff00000000 & global_kernel_ptr)) ||
         (0 == (0x00000000ffffffff & global_kernel_ptr))) {
-        //fprintf(stderr, "kernel_task_ptr_cb: kernel global still uninited\n");
         return;
     }
-
-    //fprintf(stderr, "kernel_task_ptr_cb: kernl global vaddr: %016llX\n",
-    //        global_kernel_ptr);
-    //fprintf(stderr, "kernel_task_ptr_cb: kernl global paddr: %016llX\n",
-    //        vtop_mmu(global_kernel_ptr, ktpp->cs));
 
     address_space_rw(ktpp->as, vtop_mmu(global_kernel_ptr, ktpp->cs) + \
                      KERNEL_PORT_OFFSET_16B92,
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&task_port_ptr,
                      sizeof(hwaddr), 0);
 
-    //fprintf(stderr, "kernel_task_ptr_cb: kernel port: %016llX\n",
-    //        task_port_ptr);
-
     if (0 == task_port_ptr) {
-        //fprintf(stderr, "kernel_task_ptr_cb: kernel port still 0\n");
         return;
     }
 
-    //fprintf(stderr, "kernel_task_ptr_cb: kernel port is now available\n");
     done = true;
     sysmem = get_system_memory();
 

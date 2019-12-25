@@ -58,22 +58,12 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
             }
         }
         if (!dt_node) {
-            fprintf(stderr, "Can't write device tree node for ramdisk!\n");
             abort();
         }
         strncpy(dt_node->name, "RAMDisk", xnu_kPropNameLength);
         value_ptr = (uint64_t *)&dt_node->value;
         value_ptr[0] = ramdisk_addr;
         value_ptr[1] = ramdisk_size;
-
-        //fprintf(stderr, "RAMDisk dtb propery:\n");
-        //unsigned char *temp = (unsigned char *)dt_node;
-        //for (int i = 0; i < 8; i++) {
-        //    for (int j = 0; j < 8; j++) {
-        //        fprintf(stderr, "%02X ", temp[(i * 8) + j]);
-        //    }
-        //    fprintf(stderr, "\n");
-        //}
 
         dt_node = NULL;
         for (size_t i = 0; i < *file_size; i++) {
@@ -84,7 +74,6 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
             }
         }
         if (!dt_node) {
-            fprintf(stderr, "Can't write device tree node for trustcache!\n");
             abort();
         }
         strncpy(dt_node->name, "TrustCache", xnu_kPropNameLength);
@@ -92,16 +81,6 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
         value_ptr[0] = tc_addr;
         value_ptr[1] = tc_size;
 
-        //fprintf(stderr, "TrustCache dtb propery:\n");
-        //unsigned char *temp = (unsigned char *)dt_node;
-        //for (int i = 0; i < 8; i++) {
-        //    for (int j = 0; j < 8; j++) {
-        //        fprintf(stderr, "%02X ", temp[(i * 8) + j]);
-        //    }
-        //    fprintf(stderr, "\n");
-        //}
-        //fprintf(stderr, "TrustCache addr: %llx size: %lld\n",
-        //        tc_addr, tc_size);
 
         rom_add_blob_fixed_as(name, file_data, *file_size, load_base, as);
 
@@ -111,8 +90,6 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
             *virt_base_next += (*next_page_addr - load_base);
         }
     } else {
-        fprintf(stderr, "load file failed?!\n");
-        fprintf(stderr, "filename: %s\n", filename);
         abort();
     }
 }
@@ -128,17 +105,10 @@ void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
             *next_page_addr = (load_base + *file_size + 0xffffull) & ~0xffffull;
         }
         g_free(file_data);
-        //fprintf(stderr, "macho_load_raw_file() filename: %s\n", filename);
-        //fprintf(stderr, "macho_load_raw_file() load_base: %llx\n", load_base);
-        //fprintf(stderr, "macho_load_raw_file() file_size: %lx\n", *file_size);
         if (NULL != virt_base_next) {
-            //fprintf(stderr, "macho_load_raw_file() *virt_base_next: %llx\n",
-            //        *virt_base_next);
             *virt_base_next += (*next_page_addr - load_base);
         }
     } else {
-        fprintf(stderr, "load file failed?!\n");
-        fprintf(stderr, "filename: %s\n", filename);
         abort();
     }
 }
@@ -160,25 +130,6 @@ void macho_tz_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
 
     boot_args.kernPhysSlide = 0;
     boot_args.kernVirtSlide = 0;
-
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.version: %llx\n",
-    //        boot_args.version);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.virtBase: %llx\n",
-    //        boot_args.virtBase);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.physBase: %llx\n",
-    //        boot_args.physBase);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.memSize: %llx\n",
-    //        boot_args.memSize);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.kernArgs: %llx\n",
-    //        boot_args.kernArgs);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.kernEntry: %llx\n",
-    //        boot_args.kernEntry);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.kernPhysBase: %llx\n",
-    //        boot_args.kernPhysBase);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.kernPhysSlide: %llx\n",
-    //        boot_args.kernPhysSlide);
-    //fprintf(stderr, "macho_tz_setup_bootargs() boot_args.kernVirtSlide: %llx\n",
-    //        boot_args.kernVirtSlide);
 
     rom_add_blob_fixed_as(name, &boot_args, sizeof(boot_args),
                           bootargs_addr, as);
@@ -210,27 +161,6 @@ void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
         strlcpy(boot_args.CommandLine, kern_args,
                 sizeof(boot_args.CommandLine));
     }
-
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.Revision: %d\n",
-    //        boot_args.Revision);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.Version: %d\n",
-    //        boot_args.Version);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.virtBase: %llx\n",
-    //        boot_args.virtBase);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.physBase: %llx\n",
-    //        boot_args.physBase);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.memSize: %llx\n",
-    //        boot_args.memSize);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.topOfKernelData: %llx\n",
-    //        boot_args.topOfKernelData);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.deviceTreeP: %llx\n",
-    //        boot_args.deviceTreeP);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.deviceTreeLength: %x\n",
-    //        boot_args.deviceTreeLength);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.memSizeActual: %llx\n",
-    //        boot_args.memSizeActual);
-    //fprintf(stderr, "macho_setup_bootargs() boot_args.CommandLine: %s\n",
-    //        boot_args.CommandLine);
 
     rom_add_blob_fixed_as(name, &boot_args, sizeof(boot_args),
                           bootargs_addr, as);
@@ -276,7 +206,6 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
     gsize len;
     uint8_t* rom_buf = NULL;
 
-    //fprintf(stderr, "arm_load_macho() filename -> %s\n", filename);
     if (!g_file_get_contents(filename, (char **)&data, &len, NULL)) {
         abort();
     }
@@ -298,15 +227,11 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
 
     uint64_t rom_buf_size = high_addr_temp - low_addr_temp;
     rom_buf = g_malloc0(rom_buf_size);
-    //fprintf(stderr, "arm_load_macho() ncmds: %d\n", mh->ncmds);
     for (unsigned int index = 0; index < mh->ncmds; index++) {
         switch (cmd->cmd) {
             case LC_SEGMENT_64: {
                 struct segment_command_64 *segCmd =
                                             (struct segment_command_64 *)cmd;
-                //fprintf(stderr, "arm_load_macho() vmaddr: %llx\n", segCmd->vmaddr);
-                //fprintf(stderr, "arm_load_macho() segsize: %llx\n", segCmd->filesize);
-                //fprintf(stderr, "arm_load_macho() fileoff: %llx\n", segCmd->fileoff);
                 //even if not lowest addr use as base if file offset is 0
                 if (0 == segCmd->fileoff) {
                     *virt_base = segCmd->vmaddr;
@@ -328,24 +253,12 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
     }
     hwaddr rom_base = VAtoPA(low_addr_temp);
     rom_add_blob_fixed_as(name, rom_buf, rom_buf_size, rom_base, as);
-    //fprintf(stderr, "arm_load_macho() rom_base: %llx\n",
-    //        rom_base);
 
     *phys_load_base = load_base;
     *virt_load_base = *virt_base - *phys_base + (uint64_t)load_base;
     *virt_next_page = (high_addr_temp + 0xffffull) & ~0xffffull;
     *phys_next_page = VAtoPA(*virt_next_page);
 
-    //fprintf(stderr, "arm_load_macho() *virt_load_base: %llx\n",
-    //        *virt_load_base);
-    //fprintf(stderr, "arm_load_macho() *phys_load_base: %llx\n",
-    //        *phys_load_base);
-    //fprintf(stderr, "arm_load_macho() *virt_base: %llx\n", *virt_base);
-    //fprintf(stderr, "arm_load_macho() *phys_base: %llx\n", *phys_base);
-    //fprintf(stderr, "arm_load_macho() low_addr_temp: %llx\n", low_addr_temp);
-    //fprintf(stderr, "arm_load_macho() high_addr_temp: %llx\n", high_addr_temp);
-    //fprintf(stderr, "arm_load_macho() *pc: %llx\n", *pc);
-    //fprintf(stderr, "arm_load_macho() *rom_buf: %llx\n", *(uint64_t*)rom_buf);
 
     if (data) {
         g_free(data);

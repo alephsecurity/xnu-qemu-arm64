@@ -46,9 +46,6 @@ static uint64_t xnu_dev_remap_read(void *opaque, hwaddr addr, unsigned size)
 
     address_space_rw(as, remap->orig_pa + offset,
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&ret, size, 0);
-
-    //fprintf(stderr, "xnu_dev_remap_read: %016llX size: %016llX ret: %016llX\n",
-    //        addr, (uint64_t)size, ret);
     return ret;
 }
 
@@ -67,10 +64,6 @@ static void xnu_dev_remap_write(void *opaque, hwaddr addr,
 
     address_space_rw(as, remap->orig_pa + offset,
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&val, size, 1);
-
-    //fprintf(stderr,
-    //        "xnu_dev_remap_write: %016llX val: %016llX size: %016llX\n",
-    //        addr, val, (uint64_t)size);
 }
 
 const MemoryRegionOps xnu_dev_remap_ops = {
@@ -86,7 +79,4 @@ void xnu_dev_remap_create(MemoryRegion *sysmem, RemapDev *remap,
     memory_region_init_io(iomem, NULL, &xnu_dev_remap_ops, remap,
                           name, remap->size);
     memory_region_add_subregion(sysmem, remap->pa, iomem);
-    //fprintf(stderr,
-    //        "xnu_dev_remap_create: orig_pa: %016llX pa: %016llX name: %s\n",
-    //        remap->orig_pa, remap->pa, name);
 }

@@ -41,10 +41,6 @@ static uint64_t xnu_dev_ptr_ntf_read(void *opaque, hwaddr addr, unsigned size)
 
     memcpy((void *)&ret, (void *)((uint8_t *)&ptr_ntf->val + addr), size);
 
-    //fprintf(stderr,
-    //        "xnu_dev_ptr_ntf_read: addr: %016llX size: %016llX ret: %016llX\n",
-    //        addr, (uint64_t)size, ret);
-
     ptr_ntf->cb(ptr_ntf->cb_opaque, ptr_ntf->val);
 
     return ret;
@@ -60,13 +56,6 @@ static void xnu_dev_ptr_ntf_write(void *opaque, hwaddr addr,
     }
 
     memcpy((void *)((uint8_t *)&ptr_ntf->val + addr), (void *)&val, size);
-
-    //fprintf(stderr,
-    //        "xnu_dev_ptr_ntf_write: %016llX val: %016llX size: %016llX\n",
-    //        addr, val, (uint64_t)size);
-    //fprintf(stderr,
-    //        "xnu_dev_ptr_ntf_write: ptr_ntf->val: %016llX\n",
-    //        ptr_ntf->val);
 
     ptr_ntf->cb(ptr_ntf->cb_opaque, ptr_ntf->val);
 }
@@ -86,8 +75,5 @@ void xnu_dev_ptr_ntf_create(MemoryRegion *sysmem, PtrNtfDev *ptr_ntf,
     memory_region_init_io(iomem, NULL, &xnu_dev_ptr_ntf_ops, ptr_ntf,
                           name, sizeof(hwaddr));
     memory_region_add_subregion(sysmem, ptr_ntf->pa, iomem);
-    //fprintf(stderr,
-    //        "xnu_dev_ptr_ntf_create: pa: %016llX val: %016llX name: %s\n",
-    //        ptr_ntf->pa, ptr_ntf->val, name);
 }
 

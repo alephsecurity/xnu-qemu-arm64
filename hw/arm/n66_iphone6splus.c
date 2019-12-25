@@ -58,8 +58,6 @@ static uint64_t n66_cpreg_read_##name(CPUARMState *env, \
                                       const ARMCPRegInfo *ri) \
 { \
     N66MachineState *nms = (N66MachineState *)ri->opaque; \
-    /*fprintf(stderr, "n66_cpreg_read_" #name "() value: %llx\n", \
-            nms->N66_CPREG_VAR_NAME(name));*/ \
     return nms->N66_CPREG_VAR_NAME(name); \
 } \
 static void n66_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
@@ -67,7 +65,6 @@ static void n66_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
 { \
     N66MachineState *nms = (N66MachineState *)ri->opaque; \
     nms->N66_CPREG_VAR_NAME(name) = value; \
-    /*fprintf(stderr, "n66_cpreg_write_" #name "() value: %llx\n", value); */\
 }
 
 #define N66_CPREG_DEF(p_name, p_op0, p_op1, p_crn, p_crm, p_op2, p_access) \
@@ -82,8 +79,6 @@ static uint64_t n66_cpreg_read_ARM64_REG_USR_NTF(CPUARMState *env,
 {
     //TODO: could be useful for notifications from userland to qemu
     N66MachineState *nms = (N66MachineState *)ri->opaque;
-    //fprintf(stderr, "n66_cpreg_read_ARM64_REG_USR_NTF() value: %llx\n",
-    //        nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF));
 
     return nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF);
 }
@@ -94,8 +89,6 @@ static void n66_cpreg_write_ARM64_REG_USR_NTF(CPUARMState *env,
     //TODO: could be useful for notifications from userland to qemu
     N66MachineState *nms = (N66MachineState *)ri->opaque;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = value;
-    //fprintf(stderr,
-    //        "n66_cpreg_write_ARM64_REG_USR_NTF() value: %llx\n", value);
 }
 
 N66_CPREG_FUNCS(ARM64_REG_HID11)
@@ -326,8 +319,6 @@ static void n66_cpu_reset(void *opaque)
 
     cpu_reset(cs);
 
-    //fprintf(stderr, "g_tz_bootargs: %016llX g_tz_pc: %016llX\n", g_tz_bootargs,
-    //        g_tz_pc);
     env->xregs[0] = g_tz_bootargs;
     env->pc = g_tz_pc;
 }
@@ -372,10 +363,6 @@ static void n66_machine_init(MachineState *machine)
                     KERNEL_STAIC_ALLOC_SIZE);
     g_tz_pc = tz_pc;
     g_tz_bootargs = tz_bootargs;
-
-    //fprintf(stderr,
-    //        "n66_machine_init: free_kernel_data: %016llX\n",
-    //        ptov_static(nms->free_kernel_data));
 
     nms->ptr_ntf.pa = vtop_static(KERNEL_TASK_PTR_16B92);
     nms->ptr_ntf.as = nsas;

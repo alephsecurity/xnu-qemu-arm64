@@ -39,9 +39,6 @@ hwaddr vtop_static(hwaddr va)
     if ((0 == g_virt_base) || (0 == g_phys_base)) {
         abort();
     }
-    //fprintf(stderr,
-    //        "vtop_static: va: %016llX g_virt_base: %016llX g_phys_base: %016llX\n",
-    //        va, g_virt_base, g_phys_base);
     return va - g_virt_base + g_phys_base;
 }
 
@@ -50,9 +47,6 @@ hwaddr ptov_static(hwaddr pa)
     if ((0 == g_virt_base) || (0 == g_phys_base)) {
         abort();
     }
-    //fprintf(stderr,
-    //        "ptov_static: pa: %016llX g_virt_base: %016llX g_phys_base: %016llX\n",
-    //        pa, g_virt_base, g_phys_base);
     return pa - g_phys_base + g_virt_base;
 }
 
