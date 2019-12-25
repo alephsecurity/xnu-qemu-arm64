@@ -42,6 +42,10 @@ static uint64_t xnu_dev_remap_read(void *opaque, hwaddr addr, unsigned size)
         abort();
     }
 
+    if (size > sizeof(ret)) {
+        abort();
+    }
+
     offset = addr;
 
     address_space_rw(as, remap->orig_pa + offset,
