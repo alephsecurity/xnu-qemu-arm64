@@ -44,22 +44,18 @@
 #define N66_CPREG_VAR_NAME(name) cpreg_##name
 #define N66_CPREG_VAR_DEF(name) uint64_t N66_CPREG_VAR_NAME(name)
 
-typedef struct MemMapEntry {
-    hwaddr base;
-    hwaddr size;
-} MemMapEntry;
-
 typedef struct {
     MachineClass parent;
 } N66MachineClass;
 
 typedef struct {
     MachineState parent;
+    hwaddr extra_data_pa;
+    hwaddr kbootargs_pa;
+    hwaddr kpc_pa;
     KernelTaskPortParams ktpp;
     PtrNtfDev ptr_ntf;
     struct arm_boot_info bootinfo;
-    const MemMapEntry *memmap;
-    const int *irqmap;
     char ramdisk_filename[1024];
     char kernel_filename[1024];
     char secmon_filename[1024];
@@ -67,6 +63,9 @@ typedef struct {
     char tc_filename[1024];
     char kern_args[1024];
     uint16_t tunnel_port;
+    FileMmioDev raw_kernel_file_dev;
+    FileMmioDev ramdisk_file_dev;
+    FileMmioDev tc_file_dev;
     N66_CPREG_VAR_DEF(ARM64_REG_USR_NTF);
     N66_CPREG_VAR_DEF(ARM64_REG_HID11);
     N66_CPREG_VAR_DEF(ARM64_REG_HID3);
@@ -80,12 +79,5 @@ typedef struct {
     N66_CPREG_VAR_DEF(PMCR1);
     N66_CPREG_VAR_DEF(PMSR);
 } N66MachineState;
-
-enum {
-    N66_BTLDR_MEM,
-    N66_SECURE_MEM,
-    N66_MEM,
-    N66_S3C_UART,
-};
 
 #endif

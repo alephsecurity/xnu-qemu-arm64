@@ -38,19 +38,20 @@ struct xnu_DeviceTreeNodeProperty {
     char value[];
 };
 
-void macho_load_dtb(char *filename, AddressSpace *as, char *name,
-                    hwaddr load_base, uint64_t *next_page_addr,
-                    unsigned long *file_size, uint64_t *virt_base_next,
-                    uint64_t ramdisk_addr, uint64_t ramdisk_size,
-                    uint64_t tc_addr, uint64_t tc_size)
+void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
+                    const char *name, hwaddr dtb_pa, unsigned long *size,
+                    hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
+                    hwaddr tc_size)
 {
     struct xnu_DeviceTreeNodeProperty *dt_node = NULL;
     uint8_t *file_data = NULL;
     uint64_t *value_ptr;
 
-    if (g_file_get_contents(filename, (char **)&file_data, file_size, NULL)) {
+    if (g_file_get_contents(filename, (char **)&file_data, size, NULL)) {
 
-        for (size_t i = 0; i < *file_size; i++) {
+        //serach for the "MemoryMapReserved-0" DT node which represents the
+        //the memory area we will later use for the root mount ramdisk.
+        for (size_t i = 0; i < *size; i++) {
             if (strncmp((const char *)file_data + i, "MemoryMapReserved-0",
                         xnu_kPropNameLength) == 0) {
                 dt_node = (struct xnu_DeviceTreeNodeProperty *)(file_data + i);
@@ -65,8 +66,10 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
         value_ptr[0] = ramdisk_addr;
         value_ptr[1] = ramdisk_size;
 
+        //serach for the "MemoryMapReserved-1" DT node which represents the
+        //the memory area we will later use for static trust cache.
         dt_node = NULL;
-        for (size_t i = 0; i < *file_size; i++) {
+        for (size_t i = 0; i < *size; i++) {
             if (strncmp((const char *)file_data + i, "MemoryMapReserved-1",
                         xnu_kPropNameLength) == 0) {
                 dt_node = (struct xnu_DeviceTreeNodeProperty *)(file_data + i);
@@ -81,44 +84,39 @@ void macho_load_dtb(char *filename, AddressSpace *as, char *name,
         value_ptr[0] = tc_addr;
         value_ptr[1] = tc_size;
 
-
-        rom_add_blob_fixed_as(name, file_data, *file_size, load_base, as);
-
-        *next_page_addr = (load_base + *file_size + 0xffffull) & ~0xffffull;
-        g_free(file_data);
-        if (NULL != virt_base_next) {
-            *virt_base_next += (*next_page_addr - load_base);
+        if (mem) {
+            allocate_ram(mem, filename, dtb_pa, align_64k_high(*size));
         }
+        rom_add_blob_fixed_as(name, file_data, *size, dtb_pa, as);
+        g_free(file_data);
     } else {
         abort();
     }
 }
 
-void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
-                         hwaddr load_base, uint64_t *next_page_addr,
-                         unsigned long *file_size, uint64_t *virt_base_next)
+void macho_load_raw_file(char *filename, AddressSpace *as, MemoryRegion *mem,
+                         const char *name, hwaddr file_pa, unsigned long *size)
 {
     uint8_t* file_data = NULL;
-    if (g_file_get_contents(filename, (char **)&file_data, file_size, NULL)) {
-        rom_add_blob_fixed_as(name, file_data, *file_size, load_base, as);
-        if (NULL != next_page_addr) {
-            *next_page_addr = (load_base + *file_size + 0xffffull) & ~0xffffull;
+    if (g_file_get_contents(filename, (char **)&file_data, size, NULL)) {
+        if (mem) {
+            allocate_ram(mem, filename, file_pa, align_64k_high(*size));
         }
+        rom_add_blob_fixed_as(name, file_data, *size, file_pa, as);
         g_free(file_data);
-        if (NULL != virt_base_next) {
-            *virt_base_next += (*next_page_addr - load_base);
-        }
     } else {
         abort();
     }
 }
 
-void macho_tz_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
-                             uint64_t bootargs_addr, uint64_t virt_base,
-                             uint64_t phys_base, uint64_t kern_args,
-                             uint64_t kern_entry, uint64_t kern_phys_base)
+void macho_tz_setup_bootargs(const char *name, AddressSpace *as,
+                             MemoryRegion *mem, hwaddr bootargs_addr,
+                             hwaddr virt_base, hwaddr phys_base,
+                             hwaddr mem_size, hwaddr kern_args,
+                             hwaddr kern_entry, hwaddr kern_phys_base)
 {
     struct xnu_arm64_monitor_boot_args boot_args;
+    hwaddr size = align_64k_high(sizeof(boot_args));
     memset(&boot_args, 0, sizeof(boot_args));
     boot_args.version = xnu_arm64_kBootArgsVersion2;
     boot_args.virtBase = virt_base;
@@ -131,39 +129,42 @@ void macho_tz_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
     boot_args.kernPhysSlide = 0;
     boot_args.kernVirtSlide = 0;
 
-    rom_add_blob_fixed_as(name, &boot_args, sizeof(boot_args),
-                          bootargs_addr, as);
+    if (mem) {
+        allocate_ram(mem, name, bootargs_addr, align_64k_high(size));
+    }
+    rom_add_blob_fixed_as(name, &boot_args, sizeof(boot_args), bootargs_addr,
+                          as);
 }
 
-void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
-                          uint64_t bootargs_addr, uint64_t virt_base,
-                          uint64_t phys_base, uint64_t top_of_kernel_data,
-                          uint64_t dtb_address, unsigned long dtb_size,
-                          char *kern_args, hwaddr kalloc_size,
-                          hwaddr *kalloc_paddr)
+void macho_setup_bootargs(const char *name, AddressSpace *as,
+                          MemoryRegion *mem, hwaddr bootargs_pa,
+                          hwaddr virt_base, hwaddr phys_base, hwaddr mem_size,
+                          hwaddr top_of_kernel_data_pa, hwaddr dtb_va,
+                          hwaddr dtb_size, char *kern_args)
 {
     struct xnu_arm64_boot_args boot_args;
+    hwaddr size = align_64k_high(sizeof(boot_args));
     memset(&boot_args, 0, sizeof(boot_args));
     boot_args.Revision = xnu_arm64_kBootArgsRevision2;
     boot_args.Version = xnu_arm64_kBootArgsVersion2;
     boot_args.virtBase = virt_base;
     boot_args.physBase = phys_base;
     boot_args.memSize = mem_size;
-    // top of kernel data (kernel, dtb, any ramdisk, any TC) +
-    // boot args size + kernel task remap + fake task port +  padding to 16k
-    *kalloc_paddr = top_of_kernel_data + sizeof(boot_args);
-    boot_args.topOfKernelData = (*kalloc_paddr + kalloc_size +
-                                 0xffffull) & ~0xffffull;
-    boot_args.deviceTreeP = dtb_address;
+
+    boot_args.topOfKernelData = top_of_kernel_data_pa;
+    boot_args.deviceTreeP = dtb_va;
     boot_args.deviceTreeLength = dtb_size;
-    boot_args.memSizeActual = mem_size;
+    boot_args.memSizeActual = 0;
     if (kern_args) {
         strlcpy(boot_args.CommandLine, kern_args,
                 sizeof(boot_args.CommandLine));
     }
 
+    if (mem) {
+        allocate_ram(mem, name, bootargs_pa, align_64k_high(size));
+    }
     rom_add_blob_fixed_as(name, &boot_args, sizeof(boot_args),
-                          bootargs_addr, as);
+                          bootargs_pa, as);
 }
 
 static void macho_highest_lowest(struct mach_header_64* mh, uint64_t *lowaddr,
@@ -194,13 +195,52 @@ static void macho_highest_lowest(struct mach_header_64* mh, uint64_t *lowaddr,
     *highaddr = high_addr_temp;
 }
 
-#define VAtoPA(addr) (((addr) & 0x3fffffff) + load_base)
+static void macho_file_highest_lowest(const char *filename, hwaddr *lowest,
+                                      hwaddr *highest)
+{
+    gsize len;
+    uint8_t *data = NULL;
+    if (!g_file_get_contents(filename, (char **)&data, &len, NULL)) {
+        abort();
+    }
+    struct mach_header_64* mh = (struct mach_header_64*)data;
+    macho_highest_lowest(mh, lowest, highest);
+    g_free(data);
+}
 
-void arm_load_macho(char *filename, AddressSpace *as, char *name,
-                    hwaddr load_base, bool image_addr, uint64_t *pc,
-                    uint64_t *phys_next_page, uint64_t *virt_next_page,
-                    uint64_t *virt_base, uint64_t *phys_base,
-                    uint64_t *virt_load_base, uint64_t *phys_load_base)
+void macho_file_highest_lowest_base(const char *filename, hwaddr phys_base,
+                                    hwaddr *virt_base, hwaddr *lowest,
+                                    hwaddr *highest)
+{
+    uint8_t high_Low_dif_bit_index;
+    uint8_t phys_base_non_zero_bit_index;
+    hwaddr bit_mask_for_index;
+
+    macho_file_highest_lowest(filename, lowest, highest);
+    high_Low_dif_bit_index =
+        get_highest_different_bit_index(align_64k_high(*highest),
+                                        align_64k_low(*lowest));
+    if (phys_base) {
+        phys_base_non_zero_bit_index =
+            get_lowest_non_zero_bit_index(phys_base);
+
+        //make sure we have enough zero bits to have all the diffrent kernel
+        //image addresses have the same non static bits in physical and in
+        //virtual memory.
+        if (high_Low_dif_bit_index > phys_base_non_zero_bit_index) {
+            abort();
+        }
+        bit_mask_for_index =
+            get_low_bits_mask_for_bit_index(phys_base_non_zero_bit_index);
+
+        *virt_base = align_64k_low(*lowest) & (~bit_mask_for_index);
+    }
+
+}
+
+void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
+                    const char *name, hwaddr phys_base, hwaddr virt_base,
+                    hwaddr low_virt_addr, hwaddr high_virt_addr, hwaddr *pc)
 {
     uint8_t *data = NULL;
     gsize len;
@@ -212,32 +252,15 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
     struct mach_header_64* mh = (struct mach_header_64*)data;
     struct load_command* cmd = (struct load_command*)(data +
                                                 sizeof(struct mach_header_64));
-    // through all the segments once to find highest and lowest addresses
-    uint64_t low_addr_temp;
-    uint64_t high_addr_temp;
-    macho_highest_lowest(mh, &low_addr_temp, &high_addr_temp);
 
-    *virt_base = low_addr_temp;
-    *phys_base = VAtoPA(*virt_base);
-
-    //get the base from the macho image
-    if (image_addr) {
-        load_base = low_addr_temp;
-    }
-
-    uint64_t rom_buf_size = high_addr_temp - low_addr_temp;
+    uint64_t rom_buf_size = align_64k_high(high_virt_addr) - low_virt_addr;
     rom_buf = g_malloc0(rom_buf_size);
     for (unsigned int index = 0; index < mh->ncmds; index++) {
         switch (cmd->cmd) {
             case LC_SEGMENT_64: {
                 struct segment_command_64 *segCmd =
                                             (struct segment_command_64 *)cmd;
-                //even if not lowest addr use as base if file offset is 0
-                if (0 == segCmd->fileoff) {
-                    *virt_base = segCmd->vmaddr;
-                    *phys_base = VAtoPA(*virt_base);
-                }
-                memcpy(rom_buf + (segCmd->vmaddr - low_addr_temp),
+                memcpy(rom_buf + (segCmd->vmaddr - low_virt_addr),
                        data + segCmd->fileoff, segCmd->filesize);
                 break;
             }
@@ -245,20 +268,17 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
                 // grab just the entry point PC
                 uint64_t* ptrPc = (uint64_t*)((char*)cmd + 0x110);
                 // 0x110 for arm64 only.
-                *pc = VAtoPA(*ptrPc);
+                *pc = vtop_bases(*ptrPc, phys_base, virt_base);
                 break;
             }
         }
         cmd = (struct load_command*)((char*)cmd + cmd->cmdsize);
     }
-    hwaddr rom_base = VAtoPA(low_addr_temp);
-    rom_add_blob_fixed_as(name, rom_buf, rom_buf_size, rom_base, as);
-
-    *phys_load_base = load_base;
-    *virt_load_base = *virt_base - *phys_base + (uint64_t)load_base;
-    *virt_next_page = (high_addr_temp + 0xffffull) & ~0xffffull;
-    *phys_next_page = VAtoPA(*virt_next_page);
-
+    hwaddr low_phys_addr = vtop_bases(low_virt_addr, phys_base, virt_base);
+    if (mem) {
+        allocate_ram(mem, name, low_phys_addr, rom_buf_size);
+    }
+    rom_add_blob_fixed_as(name, rom_buf, rom_buf_size, low_phys_addr, as);
 
     if (data) {
         g_free(data);
@@ -267,5 +287,3 @@ void arm_load_macho(char *filename, AddressSpace *as, char *name,
         g_free(rom_buf);
     }
 }
-
-#undef VAtoPA

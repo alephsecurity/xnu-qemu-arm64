@@ -30,6 +30,7 @@
 #include "hw/arm/xnu_remap_dev.h"
 #include "hw/arm/xnu_mem.h"
 #include "hw/arm/xnu_fake_task_port.h"
+#include "hw/arm/xnu_file_mmio_dev.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
@@ -38,6 +39,8 @@
 
 #define LC_SEGMENT_64   0x19
 #define LC_UNIXTHREAD   0x5
+
+#define KERNEL_STAIC_ALLOC_SIZE (KERNEL_TASK_ALLOC_SIZE + FAKE_PORT_ALLOC_SIZE)
 
 struct segment_command_64
 {
@@ -107,32 +110,32 @@ struct xnu_arm64_boot_args {
     uint64_t                    memSizeActual;                              /* Actual size of memory */
 };
 
-void macho_tz_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
-                             uint64_t bootargs_addr, uint64_t virt_base,
-                             uint64_t phys_base, uint64_t kern_args,
-                             uint64_t kern_entry, uint64_t kern_phys_base);
+void macho_file_highest_lowest_base(const char *filename, hwaddr phys_base,
+                                    hwaddr *virt_base, hwaddr *lowest,
+                                    hwaddr *highest);
 
-void macho_setup_bootargs(char *name, uint64_t mem_size, AddressSpace *as,
-                          uint64_t bootargs_addr, uint64_t virt_base,
-                          uint64_t phys_base, uint64_t top_of_kernel_data,
-                          uint64_t dtb_address, unsigned long dtb_size,
-                          char *kern_args, hwaddr kalloc_size,
-                          hwaddr *kalloc_paddr);
+void macho_tz_setup_bootargs(const char *name, AddressSpace *as,
+                             MemoryRegion *mem, hwaddr bootargs_addr,
+                             hwaddr virt_base, hwaddr phys_base,
+                             hwaddr mem_size, hwaddr kern_args,
+                             hwaddr kern_entry, hwaddr kern_phys_base);
 
-void arm_load_macho(char *filename, AddressSpace *as, char *name,
-                    hwaddr load_base, bool image_addr, uint64_t *pc,
-                    uint64_t *phys_next_page, uint64_t *virt_next_page,
-                    uint64_t *virt_base, uint64_t *phys_base,
-                    uint64_t *virt_load_base, uint64_t *phys_load_base);
+void macho_setup_bootargs(const char *name, AddressSpace *as,
+                          MemoryRegion *mem, hwaddr bootargs_pa,
+                          hwaddr virt_base, hwaddr phys_base, hwaddr mem_size,
+                          hwaddr top_of_kernel_data_pa, hwaddr dtb_va,
+                          hwaddr dtb_size, char *kern_args);
 
-void macho_load_raw_file(char *filename, AddressSpace *as, char *name,
-                         hwaddr load_base, uint64_t *next_page_addr,
-                         unsigned long *file_size, uint64_t *virt_base_next);
+void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
+                    const char *name, hwaddr phys_base, hwaddr virt_base,
+                    hwaddr low_virt_addr, hwaddr high_virt_addr, hwaddr *pc);
 
-void macho_load_dtb(char *filename, AddressSpace *as, char *name,
-                    hwaddr load_base, uint64_t *next_page_addr,
-                    unsigned long *file_size, uint64_t *virt_base_next,
-                    uint64_t ramdisk_addr, uint64_t ramdisk_size,
-                    uint64_t tc_addr, uint64_t tc_size);
+void macho_load_raw_file(char *filename, AddressSpace *as, MemoryRegion *mem,
+                         const char *name, hwaddr file_pa,
+                         unsigned long *size);
 
+void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
+                    const char *name, hwaddr dtb_pa, unsigned long *size,
+                    hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
+                    hwaddr tc_size);
 #endif
