@@ -215,3 +215,4 @@ trace-ust-all.c
 .vscode/*
 *.swp
 roms/vgabios/config.mak
+*.orig
