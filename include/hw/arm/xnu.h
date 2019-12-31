@@ -31,6 +31,7 @@
 #include "hw/arm/xnu_mem.h"
 #include "hw/arm/xnu_fake_task_port.h"
 #include "hw/arm/xnu_file_mmio_dev.h"
+#include "hw/arm/xnu_dtb.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
@@ -131,11 +132,10 @@ void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
                     hwaddr low_virt_addr, hwaddr high_virt_addr, hwaddr *pc);
 
 void macho_load_raw_file(char *filename, AddressSpace *as, MemoryRegion *mem,
-                         const char *name, hwaddr file_pa,
-                         unsigned long *size);
+                         const char *name, hwaddr file_pa, uint64_t *size);
 
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
-                    const char *name, hwaddr dtb_pa, unsigned long *size,
+                    const char *name, hwaddr dtb_pa, uint64_t *size,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
                     hwaddr tc_size);
 #endif

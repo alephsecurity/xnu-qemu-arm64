@@ -207,7 +207,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr kernel_high;
     hwaddr virt_base;
     hwaddr dtb_va;
-    unsigned long dtb_size;
+    uint64_t dtb_size;
     hwaddr kbootargs_pa;
     hwaddr top_of_kernel_data_pa;
     hwaddr mem_size;
