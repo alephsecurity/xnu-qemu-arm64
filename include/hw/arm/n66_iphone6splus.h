@@ -53,6 +53,7 @@ typedef struct {
     hwaddr extra_data_pa;
     hwaddr kbootargs_pa;
     hwaddr kpc_pa;
+    hwaddr uart_mmio_pa;
     KernelTaskPortParams ktpp;
     PtrNtfDev ptr_ntf;
     struct arm_boot_info bootinfo;

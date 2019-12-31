@@ -137,5 +137,5 @@ void macho_load_raw_file(char *filename, AddressSpace *as, MemoryRegion *mem,
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
-                    hwaddr tc_size);
+                    hwaddr tc_size, hwaddr *uart_mmio_pa);
 #endif

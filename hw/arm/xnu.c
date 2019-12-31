@@ -127,7 +127,7 @@ static void macho_dtb_node_process(DTBNode *node)
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
-                    hwaddr tc_size)
+                    hwaddr tc_size, hwaddr *uart_mmio_pa)
 {
     uint8_t *file_data = NULL;
     unsigned long fsize;
@@ -135,9 +135,38 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
     if (g_file_get_contents(filename, (char **)&file_data, &fsize, NULL)) {
         DTBNode *root = load_dtb(file_data);
 
+        //first fetch the uart mmio address
+        DTBNode *child = get_dtb_child_node_by_name(root, "arm-io");
+        if (NULL == child) {
+            abort();
+        }
+        DTBProp *prop = get_dtb_prop(child, "ranges");
+        if (NULL == prop) {
+            abort();
+        }
+        hwaddr *ranges = (hwaddr *)prop->value;
+        hwaddr soc_base_pa = ranges[1];
+        child = get_dtb_child_node_by_name(child, "uart0");
+        if (NULL == child) {
+            abort();
+        }
+        //make sure this node has the boot-console prop
+        prop = get_dtb_prop(child, "boot-console");
+        if (NULL == prop) {
+            abort();
+        }
+        prop = get_dtb_prop(child, "reg");
+        if (NULL == prop) {
+            abort();
+        }
+        hwaddr *uart_offset = (hwaddr *)prop->value;
+        if (NULL != uart_mmio_pa) {
+            *uart_mmio_pa = soc_base_pa + uart_offset[0];
+        }
+
         //remove this prop as it is responsible for the waited for event
         //in PE that never happens
-        DTBProp *prop = get_dtb_prop(root, "secure-root-prefix");
+        prop = get_dtb_prop(root, "secure-root-prefix");
         if (NULL == prop) {
             abort();
         }
@@ -145,7 +174,7 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
 
         //need to set the cpu freqs instead of iboot
         uint64_t freq = 24000000;
-        DTBNode *child = get_dtb_child_node_by_name(root, "cpus");
+        child = get_dtb_child_node_by_name(root, "cpus");
         if (NULL == child) {
             abort();
         }

@@ -44,9 +44,6 @@ static uint64_t g_tz_bootargs;
 #define N66_PHYS_BASE (0x40000000)
 #define STATIC_TRUST_CACHE_OFFSET (0x400000)
 
-//TODO: get this from device tree or force it on device tree?
-#define N66_S3C_UART_BASE (0x20a0c0000)
-
 #define N66_CPREG_FUNCS(name) \
 static uint64_t n66_cpreg_read_##name(CPUARMState *env, \
                                       const ARMCPRegInfo *ri) \
@@ -146,7 +143,7 @@ static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
     qemu_irq irq;
     DeviceState *d;
     SysBusDevice *s;
-    hwaddr base = N66_S3C_UART_BASE;
+    hwaddr base = nms->uart_mmio_pa;
 
     //hack for now. create a device that is not used just to have a dummy
     //unused interrupt
@@ -269,7 +266,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     macho_load_dtb(nms->dtb_filename, nsas, sysmem, "dtb.n66", phys_ptr,
                    &dtb_size, nms->ramdisk_file_dev.pa,
                    nms->ramdisk_file_dev.size, nms->tc_file_dev.pa,
-                   nms->tc_file_dev.size);
+                   nms->tc_file_dev.size, &nms->uart_mmio_pa);
     dtb_va = ptov_static(phys_ptr);
     phys_ptr += align_64k_high(dtb_size);
     used_ram_for_blobs += align_64k_high(dtb_size);
