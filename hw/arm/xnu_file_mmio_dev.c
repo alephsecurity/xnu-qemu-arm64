@@ -35,7 +35,6 @@ static uint64_t xnu_file_mmio_dev_read(void *opaque,
                                        hwaddr addr, unsigned size)
 {
     FileMmioDev *file_dev = opaque;
-    hwaddr offset = 0;
     uint64_t ret = 0;
 
     if (addr + size > file_dev->size) {
@@ -45,8 +44,6 @@ static uint64_t xnu_file_mmio_dev_read(void *opaque,
     if (size > sizeof(ret)) {
         abort();
     }
-
-    offset = addr;
 
     if (addr != lseek(file_dev->fd, addr, SEEK_SET)) {
         abort();
@@ -63,13 +60,10 @@ static void xnu_file_mmio_dev_write(void *opaque, hwaddr addr,
                                     uint64_t val, unsigned size)
 {
     FileMmioDev *file_dev = opaque;
-    hwaddr offset = 0;
 
     if (addr + size > file_dev->size) {
         abort();
     }
-
-    offset = addr;
 
     if (addr != lseek(file_dev->fd, addr, SEEK_SET)) {
         abort();
