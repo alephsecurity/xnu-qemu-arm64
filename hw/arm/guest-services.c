@@ -35,7 +35,7 @@
 #include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/general.h"
 
-int32_t qemu_errno = 0;
+int32_t guest_svcs_errno = 0;
 
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)
 {
@@ -67,7 +67,7 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
                         cpu, qcall.args.fcntl.fd, qcall.args.fcntl.flags);
                     break;
                 default:
-                    qemu_errno = EINVAL;
+                    guest_svcs_errno = EINVAL;
                     qcall.retval = -1;
             }
             break;
@@ -114,7 +114,7 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
             break;
     }
 
-    qcall.error = qemu_errno;
+    qcall.error = guest_svcs_errno;
 
     // Write the response
     cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 1);

@@ -28,7 +28,7 @@
 #include "hw/arm/guest-services/socket.h"
 #include "hw/arm/guest-services/fds.h"
 
-extern int32_t qemu_errno;
+extern int32_t guest_svcs_errno;
 
 typedef enum {
     // File Descriptors API

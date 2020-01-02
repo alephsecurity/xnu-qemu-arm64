@@ -36,7 +36,7 @@ static int32_t find_free_socket() {
         }
     }
 
-    qemu_errno = ENOMEM;
+    guest_svcs_errno = ENOMEM;
     return -1;
 }
 
@@ -46,10 +46,10 @@ int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
     int retval = find_free_socket();
 
     if (retval < 0) {
-        qemu_errno = ENOTSOCK;
+        guest_svcs_errno = ENOTSOCK;
     } else if ((guest_svcs_fds[retval] = socket(domain, type, protocol)) < 0) {
         retval = -1;
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     }
 
     return retval;
@@ -67,12 +67,12 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
 
     // TODO: timeout
     if (retval < 0) {
-        qemu_errno = ENOTSOCK;
+        guest_svcs_errno = ENOTSOCK;
     } else if ((guest_svcs_fds[retval] = accept(guest_svcs_fds[sckt],
                                          (struct sockaddr *) &addr,
                                          &addrlen)) < 0) {
         retval = -1;
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                             sizeof(addr), 1);
@@ -93,14 +93,14 @@ int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     int retval = 0;
 
     if (addrlen > sizeof(addr)) {
-        qemu_errno = ENOMEM;
+        guest_svcs_errno = ENOMEM;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                             sizeof(addr), 0);
 
         if ((retval = bind(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                            addrlen)) < 0) {
-            qemu_errno = errno;
+            guest_svcs_errno = errno;
         } else {
             cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                                 sizeof(addr), 1);
@@ -120,14 +120,14 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     int retval = 0;
 
     if (addrlen > sizeof(addr)) {
-        qemu_errno = ENOMEM;
+        guest_svcs_errno = ENOMEM;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                             sizeof(addr), 0);
 
         if ((retval = connect(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                             addrlen)) < 0) {
-            qemu_errno = errno;
+            guest_svcs_errno = errno;
         } else {
             cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                                 sizeof(addr), 1);
@@ -144,7 +144,7 @@ int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog)
     int retval = 0;
 
     if ((retval = listen(guest_svcs_fds[sckt], backlog)) < 0) {
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     }
 
     return retval;
@@ -160,9 +160,9 @@ int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *g_buffer,
 
     // TODO: timeout
     if (length > MAX_BUF_SIZE) {
-        qemu_errno = ENOMEM;
+        guest_svcs_errno = ENOMEM;
     } else if ((retval = recv(guest_svcs_fds[sckt], buffer, length, flags)) <= 0) {
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_buffer, buffer, retval, 1);
     }
@@ -179,12 +179,12 @@ int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *g_buffer,
     int retval = -1;
 
     if (length > MAX_BUF_SIZE) {
-        qemu_errno = ENOMEM;
+        guest_svcs_errno = ENOMEM;
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_buffer, buffer, length, 0);
 
         if ((retval = send(guest_svcs_fds[sckt], buffer, length, flags)) < 0) {
-            qemu_errno = errno;
+            guest_svcs_errno = errno;
         }
     }
 

@@ -36,7 +36,7 @@ int32_t qc_handle_close(CPUState *cpu, int32_t fd)
     int retval = -1;
 
     if ((retval = close(guest_svcs_fds[fd])) < 0) {
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     } else {
         // TODO: should this be in the "else" clause, or performed regardless?
         guest_svcs_fds[fd] = -1;
@@ -52,7 +52,7 @@ int32_t qc_handle_fcntl_getfl(CPUState *cpu, int32_t fd)
     int retval = -1;
 
     if ((retval = fcntl(guest_svcs_fds[fd], F_GETFL)) < 0) {
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     }
 
     return retval;
@@ -65,7 +65,7 @@ int32_t qc_handle_fcntl_setfl(CPUState *cpu, int32_t fd, int32_t flags)
     int retval = -1;
 
     if ((retval = fcntl(guest_svcs_fds[fd], F_SETFL, flags)) < 0) {
-        qemu_errno = errno;
+        guest_svcs_errno = errno;
     }
 
     return retval;

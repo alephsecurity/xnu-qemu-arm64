@@ -32,7 +32,7 @@
 #include "sys/socket.h"
 #endif
 
-extern int32_t qemu_errno;
+extern int32_t guest_svcs_errno;
 
 #define MAX_BUF_SIZE (4096)
 

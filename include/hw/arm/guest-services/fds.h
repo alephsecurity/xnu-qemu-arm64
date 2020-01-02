@@ -34,7 +34,7 @@
 
 #define MAX_FD_COUNT (256)
 
-extern int32_t qemu_errno;
+extern int32_t guest_svcs_errno;
 extern int32_t guest_svcs_fds[MAX_FD_COUNT];
 
 #define VERIFY_FD(s) \
