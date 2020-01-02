@@ -35,10 +35,10 @@
 #define MAX_FD_COUNT (256)
 
 extern int32_t qemu_errno;
-extern int32_t fds[MAX_FD_COUNT];
+extern int32_t guest_svcs_fds[MAX_FD_COUNT];
 
 #define VERIFY_FD(s) \
-    if ((s < 0) || (s >= MAX_FD_COUNT) || (-1 == fds[s])) return -1;
+    if ((s < 0) || (s >= MAX_FD_COUNT) || (-1 == guest_svcs_fds[s])) return -1;
 
 typedef struct __attribute__((packed)) {
     int32_t fd;

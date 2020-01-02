@@ -27,7 +27,7 @@
 #include "hw/arm/guest-services/fds.h"
 #include "cpu.h"
 
-int32_t fds[MAX_FD_COUNT] = { [0 ... MAX_FD_COUNT-1] = -1 };
+int32_t guest_svcs_fds[MAX_FD_COUNT] = { [0 ... MAX_FD_COUNT-1] = -1 };
 
 int32_t qc_handle_close(CPUState *cpu, int32_t fd)
 {
@@ -35,11 +35,11 @@ int32_t qc_handle_close(CPUState *cpu, int32_t fd)
 
     int retval = -1;
 
-    if ((retval = close(fds[fd])) < 0) {
+    if ((retval = close(guest_svcs_fds[fd])) < 0) {
         qemu_errno = errno;
     } else {
         // TODO: should this be in the "else" clause, or performed regardless?
-        fds[fd] = -1;
+        guest_svcs_fds[fd] = -1;
     }
 
     return retval;
@@ -51,7 +51,7 @@ int32_t qc_handle_fcntl_getfl(CPUState *cpu, int32_t fd)
 
     int retval = -1;
 
-    if ((retval = fcntl(fds[fd], F_GETFL)) < 0) {
+    if ((retval = fcntl(guest_svcs_fds[fd], F_GETFL)) < 0) {
         qemu_errno = errno;
     }
 
@@ -64,7 +64,7 @@ int32_t qc_handle_fcntl_setfl(CPUState *cpu, int32_t fd, int32_t flags)
 
     int retval = -1;
 
-    if ((retval = fcntl(fds[fd], F_SETFL, flags)) < 0) {
+    if ((retval = fcntl(guest_svcs_fds[fd], F_SETFL, flags)) < 0) {
         qemu_errno = errno;
     }
 
