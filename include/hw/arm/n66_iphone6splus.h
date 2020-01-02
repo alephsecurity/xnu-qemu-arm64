@@ -86,7 +86,6 @@ enum {
     N66_SECURE_MEM,
     N66_MEM,
     N66_S3C_UART,
-    N66_GPU,
 };
 
 #endif

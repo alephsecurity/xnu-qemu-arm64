@@ -46,8 +46,7 @@ static uint64_t g_tz_bootargs;
 static const MemMapEntry n66memmap[] = {
     [N66_SECURE_MEM] =  { 0x4100000000, 0x100000 },
     [N66_MEM] =         { 0x40000000  , RAMLIMIT_BYTES },
-    [N66_S3C_UART] =    { 0x20a0c0000 , 0x00004000 },
-    [N66_GPU] =         { 0x20b000000 , 0x00004000 },
+    [N66_S3C_UART] =    { 0x20a0c0000  , 0x00004000 },
 };
 
 static const int n66irqmap[] = {
@@ -171,24 +170,6 @@ static void n66_create_s3c_uart(const N66MachineState *nms,
     //pass a dummy irq as we don't need nor want interrupts for this UART
     DeviceState *dev = exynos4210_uart_create(base, 256, 0, chr, irq);
     if (!dev) {
-        abort();
-    }
-}
-
-static void n66_create_gpu(const N66MachineState *nms)
-{
-    qemu_irq irq;
-    DeviceState *d;
-    SysBusDevice *s;
-    hwaddr base = nms->memmap[N66_GPU].base;
-
-    //hack for now. create a device that is not used just to have a dummy
-    //unused interrupt
-    d = qdev_create(NULL, TYPE_PLATFORM_BUS_DEVICE);
-    s = SYS_BUS_DEVICE(d);
-    sysbus_init_irq(s, &irq);
-    //pass a dummy irq as we don't need nor want interrupts for this UART
-    if (!sysbus_create_simple("exynos4210.fimd", base, irq)) {
         abort();
     }
 }
@@ -379,8 +360,6 @@ static void n66_machine_init(MachineState *machine)
     n66_add_cpregs(cpu, nms);
 
     n66_create_s3c_uart(nms, N66_S3C_UART, serial_hd(0));
-
-    n66_create_gpu(nms);
 
     //wire timer to FIQ as expected by Apple's SoCs
     qdev_connect_gpio_out(cpudev, GTIMER_PHYS,
