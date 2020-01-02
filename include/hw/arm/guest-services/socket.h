@@ -52,13 +52,7 @@ typedef struct __attribute__((packed)) {
     int32_t socket;
     struct sockaddr *addr;
     socklen_t addrlen;
-} qc_bind_args_t;
-
-typedef struct __attribute__((packed)) {
-    int32_t socket;
-    struct sockaddr *addr;
-    socklen_t addrlen;
-} qc_connect_args_t;
+} qc_bind_args_t, qc_connect_args_t;
 
 typedef struct __attribute__((packed)) {
     int32_t socket;
@@ -70,14 +64,7 @@ typedef struct __attribute__((packed)) {
     void *buffer;
     size_t length;
     int flags;
-} qc_recv_args_t;
-
-typedef struct __attribute__((packed)) {
-    int32_t socket;
-    void *buffer;
-    size_t length;
-    int flags;
-} qc_send_args_t;
+} qc_recv_args_t, qc_send_args_t;
 
 #ifndef OUT_OF_TREE_BUILD
 int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
