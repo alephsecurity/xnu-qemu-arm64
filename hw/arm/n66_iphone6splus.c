@@ -37,12 +37,14 @@
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/guest-services/general.h"
 
-static uint64_t g_tz_pc;
-static uint64_t g_tz_bootargs;
-
 #define N66_SECURE_RAM_SIZE (0x100000)
 #define N66_PHYS_BASE (0x40000000)
-#define STATIC_TRUST_CACHE_OFFSET (0x400000)
+#define STATIC_TRUST_CACHE_OFFSET (0x2000000)
+
+//compiled nop instruction: mov x0, x0
+#define NOP_INST (0xaa0003e0)
+
+#define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 
 #define N66_CPREG_FUNCS(name) \
 static uint64_t n66_cpreg_read_##name(CPUARMState *env, \
@@ -103,8 +105,12 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
     REGINFO_SENTINEL,
 };
 
-static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
+static uint32_t g_nop_inst = NOP_INST;
+
+static void n66_add_cpregs(N66MachineState *nms)
 {
+    ARMCPU *cpu = nms->cpu;
+
     nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID11) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID3) = 0;
@@ -136,45 +142,6 @@ static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
     if (!dev) {
         abort();
     }
-}
-
-//setup the secure world trust zone memory
-static void n66_s_memory_setup(MachineState *machine,
-                               MemoryRegion *secure_sysmem,
-                                AddressSpace *sas)
-{
-    hwaddr tz_low;
-    hwaddr tz_high;
-    hwaddr start_of_tz_mem;
-    hwaddr tz_bootargs_addr;
-
-    hwaddr tz_phys_pc;
-
-    N66MachineState *nms = N66_MACHINE(machine);
-
-    macho_file_highest_lowest_base(nms->secmon_filename, 0, 0, &tz_low,
-                                   &tz_high);
-
-    //now account for the secure monitor image
-    start_of_tz_mem = align_64k_low(tz_low);
-
-    allocate_ram(secure_sysmem, "secure_ram.n66", start_of_tz_mem,
-                 N66_SECURE_RAM_SIZE);
-
-    arm_load_macho(nms->secmon_filename, sas, NULL, "trustzone.n66",
-                    start_of_tz_mem, start_of_tz_mem, tz_low,
-                    tz_high, &tz_phys_pc);
-
-    //now account for secure monitor boot args
-    tz_bootargs_addr = align_64k_high(tz_high);
-    macho_tz_setup_bootargs("tz_bootargs.n66", sas, NULL,
-                            tz_bootargs_addr, start_of_tz_mem, start_of_tz_mem,
-                            N66_SECURE_RAM_SIZE, nms->kbootargs_pa,
-                            nms->kpc_pa, N66_PHYS_BASE);
-
-    g_tz_pc = tz_phys_pc;
-    g_tz_bootargs = tz_bootargs_addr;
-
 }
 
 static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
@@ -213,13 +180,6 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     g_phys_base = N66_PHYS_BASE;
     phys_ptr = N66_PHYS_BASE;
 
-    //first account for the raw kernel file copy
-    nms->raw_kernel_file_dev.pa = phys_ptr;
-    xnu_file_mmio_dev_create(sysmem, &nms->raw_kernel_file_dev,
-                             "raw_kernel_file_mmio_dev", nms->kernel_filename);
-
-    phys_ptr += align_64k_high(nms->raw_kernel_file_dev.size);
-
     //now account for the static trust cache
     phys_ptr += align_64k_high(STATIC_TRUST_CACHE_OFFSET);
     nms->tc_file_dev.pa = phys_ptr;
@@ -232,6 +192,12 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
                     kernel_high, &phys_pc);
     nms->kpc_pa = phys_pc;
     used_ram_for_blobs += (align_64k_high(kernel_high) - kernel_low);
+
+    //patch the smc instruction to nop since we no longer use a secure
+    //monitor because we disabled KPP this way
+    address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
 
     phys_ptr = align_64k_high(vtop_static(kernel_high));
 
@@ -276,7 +242,6 @@ static void n66_memory_setup(MachineState *machine,
                              AddressSpace *sas)
 {
     n66_ns_memory_setup(machine, sysmem, nsas);
-    n66_s_memory_setup(machine, secure_sysmem, sas);
 }
 
 static void n66_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
@@ -288,26 +253,21 @@ static void n66_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
     CPUState *cs = CPU(*cpu);
 
     *sysmem = get_system_memory();
-    *secure_sysmem = g_new(MemoryRegion, 1);
-    memory_region_init(*secure_sysmem, OBJECT(machine), "secure-memory",
-                       UINT64_MAX);
-    memory_region_add_subregion_overlap(*secure_sysmem, 0, *sysmem, -1);
 
     object_property_set_link(cpuobj, OBJECT(*sysmem), "memory",
                              &error_abort);
 
-    object_property_set_link(cpuobj, OBJECT(*secure_sysmem),
-                             "secure-memory", &error_abort);
-
-    //set secure monitor to true
-    object_property_set_bool(cpuobj, true, "has_el3", NULL);
+    //set secure monitor to false
+    object_property_set_bool(cpuobj, false, "has_el3", NULL);
 
     object_property_set_bool(cpuobj, false, "has_el2", NULL);
 
     object_property_set_bool(cpuobj, true, "realized", &error_fatal);
 
-    *sas = cpu_get_address_space(cs, ARMASIdx_S);
     *nsas = cpu_get_address_space(cs, ARMASIdx_NS);
+
+    //disable exceptions on FP operations
+    xnu_cpacr_intercept_write_const_val(*cpu, 0x300000);
 
     object_unref(cpuobj);
     //currently support only a single CPU and thus
@@ -322,14 +282,15 @@ static void n66_bootargs_setup(MachineState *machine)
 
 static void n66_cpu_reset(void *opaque)
 {
-    ARMCPU *cpu = opaque;
+    N66MachineState *nms = N66_MACHINE((MachineState *)opaque);
+    ARMCPU *cpu = nms->cpu;
     CPUState *cs = CPU(cpu);
     CPUARMState *env = &cpu->env;
 
     cpu_reset(cs);
 
-    env->xregs[0] = g_tz_bootargs;
-    env->pc = g_tz_pc;
+    env->xregs[0] = nms->kbootargs_pa;
+    env->pc = nms->kpc_pa;
 }
 
 static void n66_machine_init(MachineState *machine)
@@ -345,6 +306,8 @@ static void n66_machine_init(MachineState *machine)
 
     n66_cpu_setup(machine, &sysmem, &secure_sysmem, &cpu, &sas, &nsas);
 
+    nms->cpu = cpu;
+
     n66_memory_setup(machine, sysmem, secure_sysmem, nsas, sas);
 
     nms->ktpp.as = nsas;
@@ -353,7 +316,7 @@ static void n66_machine_init(MachineState *machine)
     cs = CPU(cpu);
     nms->ktpp.cs = cs;
 
-    n66_add_cpregs(cpu, nms);
+    n66_add_cpregs(nms);
 
     n66_create_s3c_uart(nms, serial_hd(0));
 
@@ -370,7 +333,7 @@ static void n66_machine_init(MachineState *machine)
     nms->ptr_ntf.cb_opaque = (void *)&nms->ktpp;
     xnu_dev_ptr_ntf_create(sysmem, &nms->ptr_ntf, "kernel_task_dev");
 
-    qemu_register_reset(n66_cpu_reset, ARM_CPU(cs));
+    qemu_register_reset(n66_cpu_reset, nms);
 }
 
 static void n66_set_ramdisk_filename(Object *obj, const char *value,
@@ -399,20 +362,6 @@ static char *n66_get_kernel_filename(Object *obj, Error **errp)
 {
     N66MachineState *nms = N66_MACHINE(obj);
     return g_strdup(nms->kernel_filename);
-}
-
-static void n66_set_secmon_filename(Object *obj, const char *value,
-                                     Error **errp)
-{
-    N66MachineState *nms = N66_MACHINE(obj);
-
-    strlcpy(nms->secmon_filename, value, sizeof(nms->secmon_filename));
-}
-
-static char *n66_get_secmon_filename(Object *obj, Error **errp)
-{
-    N66MachineState *nms = N66_MACHINE(obj);
-    return g_strdup(nms->secmon_filename);
 }
 
 static void n66_set_dtb_filename(Object *obj, const char *value,
@@ -484,12 +433,6 @@ static void n66_instance_init(Object *obj)
                             n66_set_kernel_filename, NULL);
     object_property_set_description(obj, "kernel-filename",
                                     "Set the kernel filename to be loaded",
-                                    NULL);
-
-    object_property_add_str(obj, "secmon-filename", n66_get_secmon_filename,
-                            n66_set_secmon_filename, NULL);
-    object_property_set_description(obj, "secmon-filename",
-                                    "Set the trustzone filename to be loaded",
                                     NULL);
 
     object_property_add_str(obj, "dtb-filename", n66_get_dtb_filename,

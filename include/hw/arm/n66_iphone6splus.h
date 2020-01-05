@@ -51,9 +51,10 @@ typedef struct {
 typedef struct {
     MachineState parent;
     hwaddr extra_data_pa;
-    hwaddr kbootargs_pa;
     hwaddr kpc_pa;
+    hwaddr kbootargs_pa;
     hwaddr uart_mmio_pa;
+    ARMCPU *cpu;
     KernelTaskPortParams ktpp;
     PtrNtfDev ptr_ntf;
     struct arm_boot_info bootinfo;

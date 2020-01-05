@@ -32,6 +32,7 @@
 #include "hw/arm/xnu_fake_task_port.h"
 #include "hw/arm/xnu_file_mmio_dev.h"
 #include "hw/arm/xnu_dtb.h"
+#include "hw/arm/xnu_cpacr.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
