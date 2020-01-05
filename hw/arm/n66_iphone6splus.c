@@ -65,23 +65,6 @@ static void n66_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
       .state = ARM_CP_STATE_AA64, .readfn = n66_cpreg_read_##p_name, \
       .writefn = n66_cpreg_write_##p_name }
 
-static uint64_t n66_cpreg_read_ARM64_REG_USR_NTF(CPUARMState *env,
-                                      const ARMCPRegInfo *ri)
-{
-    //TODO: could be useful for notifications from userland to qemu
-    N66MachineState *nms = (N66MachineState *)ri->opaque;
-
-    return nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF);
-}
-static void n66_cpreg_write_ARM64_REG_USR_NTF(CPUARMState *env,
-                                              const ARMCPRegInfo *ri,
-                                              uint64_t value)
-{
-    //TODO: could be useful for notifications from userland to qemu
-    N66MachineState *nms = (N66MachineState *)ri->opaque;
-    nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = value;
-}
-
 N66_CPREG_FUNCS(ARM64_REG_HID11)
 N66_CPREG_FUNCS(ARM64_REG_HID3)
 N66_CPREG_FUNCS(ARM64_REG_HID5)
@@ -96,7 +79,6 @@ N66_CPREG_FUNCS(PMSR)
 
 static const ARMCPRegInfo n66_cp_reginfo[] = {
     // Apple-specific registers
-    N66_CPREG_DEF(ARM64_REG_USR_NTF, 3, 3, 15, 14, 0, PL0_RW),
     N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
     N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
     N66_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0, PL1_RW),
@@ -134,7 +116,6 @@ static void n66_add_cpregs(ARMCPU *cpu, N66MachineState *nms)
     nms->N66_CPREG_VAR_NAME(PMC1) = 0;
     nms->N66_CPREG_VAR_NAME(PMCR1) = 0;
     nms->N66_CPREG_VAR_NAME(PMSR) = 0;
-    
     define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
 }
 
@@ -211,9 +192,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr remaining_mem_size;
     hwaddr allocated_ram_pa;
     hwaddr phys_ptr;
-
     hwaddr phys_pc;
-
     N66MachineState *nms = N66_MACHINE(machine);
 
     //setup the memory layout:
