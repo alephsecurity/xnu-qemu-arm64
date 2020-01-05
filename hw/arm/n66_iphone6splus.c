@@ -172,7 +172,6 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     //After that we have the kernel boot args
     //After that we have the rest of the RAM
 
-
     macho_file_highest_lowest_base(nms->kernel_filename, N66_PHYS_BASE,
                                    &virt_base, &kernel_low, &kernel_high);
 
