@@ -45,7 +45,7 @@ static void allocate_and_copy(MemoryRegion *mem, AddressSpace *as,
     if (mem) {
         allocate_ram(mem, name, pa, align_64k_high(size));
     }
-    rom_add_blob_fixed_as(name, buf, size, pa, as);
+    address_space_rw(as, pa, MEMTXATTRS_UNSPECIFIED, (uint8_t *)buf, size, 1);
 }
 
 static void *srawmemchr(void *str, int chr)
