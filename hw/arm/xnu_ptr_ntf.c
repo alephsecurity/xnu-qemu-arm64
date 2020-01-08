@@ -76,4 +76,3 @@ void xnu_dev_ptr_ntf_create(MemoryRegion *sysmem, PtrNtfDev *ptr_ntf,
                           name, sizeof(hwaddr));
     memory_region_add_subregion(sysmem, ptr_ntf->pa, iomem);
 }
-
