@@ -111,7 +111,6 @@ static void n66_add_cpregs(N66MachineState *nms)
 {
     ARMCPU *cpu = nms->cpu;
 
-    nms->N66_CPREG_VAR_NAME(ARM64_REG_USR_NTF) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID11) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID3) = 0;
     nms->N66_CPREG_VAR_NAME(ARM64_REG_HID5) = 0;

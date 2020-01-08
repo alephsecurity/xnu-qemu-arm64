@@ -68,7 +68,6 @@ typedef struct {
     FileMmioDev raw_kernel_file_dev;
     FileMmioDev ramdisk_file_dev;
     FileMmioDev tc_file_dev;
-    N66_CPREG_VAR_DEF(ARM64_REG_USR_NTF);
     N66_CPREG_VAR_DEF(ARM64_REG_HID11);
     N66_CPREG_VAR_DEF(ARM64_REG_HID3);
     N66_CPREG_VAR_DEF(ARM64_REG_HID5);
