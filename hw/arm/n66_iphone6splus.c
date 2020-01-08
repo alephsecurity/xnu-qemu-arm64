@@ -236,15 +236,14 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
 static void n66_memory_setup(MachineState *machine,
                              MemoryRegion *sysmem,
                              MemoryRegion *secure_sysmem,
-                             AddressSpace *nsas,
-                             AddressSpace *sas)
+                             AddressSpace *nsas)
 {
     n66_ns_memory_setup(machine, sysmem, nsas);
 }
 
 static void n66_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
                           MemoryRegion **secure_sysmem, ARMCPU **cpu,
-                          AddressSpace **sas, AddressSpace **nsas)
+                          AddressSpace **nsas)
 {
     Object *cpuobj = object_new(machine->cpu_type);
     *cpu = ARM_CPU(cpuobj);
@@ -296,17 +295,16 @@ static void n66_machine_init(MachineState *machine)
     N66MachineState *nms = N66_MACHINE(machine);
     MemoryRegion *sysmem;
     MemoryRegion *secure_sysmem;
-    AddressSpace *sas;
     AddressSpace *nsas;
     ARMCPU *cpu;
     CPUState *cs;
     DeviceState *cpudev;
 
-    n66_cpu_setup(machine, &sysmem, &secure_sysmem, &cpu, &sas, &nsas);
+    n66_cpu_setup(machine, &sysmem, &secure_sysmem, &cpu, &nsas);
 
     nms->cpu = cpu;
 
-    n66_memory_setup(machine, sysmem, secure_sysmem, nsas, sas);
+    n66_memory_setup(machine, sysmem, secure_sysmem, nsas);
 
     nms->ktpp.as = nsas;
 
