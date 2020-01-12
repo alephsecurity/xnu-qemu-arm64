@@ -44,8 +44,6 @@
 #define LC_SEGMENT_64   0x19
 #define LC_UNIXTHREAD   0x5
 
-#define KERNEL_STAIC_ALLOC_SIZE (KERNEL_TASK_ALLOC_SIZE + FAKE_PORT_ALLOC_SIZE)
-
 struct segment_command_64
 {
     uint32_t cmd;

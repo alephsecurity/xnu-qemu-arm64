@@ -63,6 +63,7 @@ typedef struct {
     char secmon_filename[1024];
     char dtb_filename[1024];
     char tc_filename[1024];
+    char driver_filename[1024];
     char kern_args[1024];
     uint16_t tunnel_port;
     FileMmioDev raw_kernel_file_dev;
@@ -80,5 +81,11 @@ typedef struct {
     N66_CPREG_VAR_DEF(PMCR1);
     N66_CPREG_VAR_DEF(PMSR);
 } N66MachineState;
+
+typedef struct {
+    uint8_t fake_port[FAKE_PORT_ALLOC_SIZE];
+    uint8_t kernel_task[KERNEL_TASK_ALLOC_SIZE];
+    uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
+} __attribute__((packed)) AllocatedData;
 
 #endif

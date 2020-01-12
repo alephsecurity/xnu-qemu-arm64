@@ -58,9 +58,9 @@ void setup_fake_task_port(void *opaque, hwaddr global_kernel_ptr)
     MemoryRegion *sysmem = NULL;
     KernelTaskPortParams *ktpp = (KernelTaskPortParams *)opaque;
     hwaddr task_port_ptr = 0;
-    hwaddr fake_port_paddr = ktpp->kalloc_paddr;
+    hwaddr fake_port_paddr = ktpp->fake_port_pa;
     hwaddr fake_port_vaddr = ptov_static(fake_port_paddr);
-    hwaddr remap_task_paddr = fake_port_paddr + FAKE_PORT_ALLOC_SIZE;
+    hwaddr remap_task_paddr = ktpp->remap_kernel_task_pa;
     hwaddr special_port_4_vaddr = KERNEL_REALHOST_SPECIAL_16B92 + \
                                   (4 * sizeof(hwaddr));
 
@@ -81,6 +81,15 @@ void setup_fake_task_port(void *opaque, hwaddr global_kernel_ptr)
 
     if (0 == task_port_ptr) {
         return;
+    }
+
+    if (0 != ktpp->hook.va) {
+        //install the hook here because we need the MMU to be already
+        //configured and all the memory mapped before installing the hook
+        xnu_hook_tr_copy_install(ktpp->hook.va, ktpp->hook.pa,
+                                 ktpp->hook.buf_va, ktpp->hook.buf_pa,
+                                 ktpp->hook.code, ktpp->hook.code_size,
+                                 ktpp->hook.buf_size, ktpp->hook.scratch_reg);
     }
 
     done = true;

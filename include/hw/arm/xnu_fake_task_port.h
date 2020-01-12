@@ -47,10 +47,23 @@
 #define FAKE_PORT_ALLOC_SIZE (0x2000)
 
 typedef struct {
+    hwaddr va;
+    hwaddr pa;
+    hwaddr buf_va;
+    hwaddr buf_pa;
+    uint64_t buf_size;
+    uint8_t *code;
+    uint64_t code_size;
+    uint8_t scratch_reg;
+} KernelTrHookParams;
+
+typedef struct {
     CPUState *cs;
     AddressSpace *as;
-    hwaddr kalloc_paddr;
+    hwaddr fake_port_pa;
+    hwaddr remap_kernel_task_pa;
     RemapDev remap;
+    KernelTrHookParams hook;
 } KernelTaskPortParams;
 
 void setup_fake_task_port(void *opaque, hwaddr global_kernel_ptr);

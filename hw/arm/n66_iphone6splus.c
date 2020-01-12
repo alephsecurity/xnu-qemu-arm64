@@ -46,6 +46,14 @@
 
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 
+//hook the kernel to execute our "driver" code in this function
+//after things are already running in the kernel but the root mount is not
+//yet mounted.
+//we hook 8 bytes (2 instructions) after the beginning of the function
+//so that x28 is already saved in the stack and we can use it as a scratch
+//reg
+#define IOFINDBSDROOT_8_VADDR_16B92 (0xfffffff00759a748)
+
 #define N66_CPREG_FUNCS(name) \
 static uint64_t n66_cpreg_read_##name(CPUARMState *env, \
                                       const ARMCPRegInfo *ri) \
@@ -221,7 +229,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     phys_ptr += align_64k_high(sizeof(struct xnu_arm64_boot_args));
     nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
-    phys_ptr += align_64k_high(KERNEL_STAIC_ALLOC_SIZE);
+    phys_ptr += align_64k_high(sizeof(AllocatedData));
     top_of_kernel_data_pa = phys_ptr;
     remaining_mem_size = machine->ram_size - used_ram_for_blobs;
     mem_size = allocated_ram_pa - N66_PHYS_BASE + remaining_mem_size;
@@ -311,6 +319,30 @@ static void n66_machine_init(MachineState *machine)
     cpudev = DEVICE(cpu);
     cs = CPU(cpu);
     nms->ktpp.cs = cs;
+    AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
+    nms->ktpp.fake_port_pa = (hwaddr)&allocated_data->fake_port[0];
+    nms->ktpp.remap_kernel_task_pa = (hwaddr)&allocated_data->kernel_task[0];
+
+    if (0 != nms->driver_filename[0]) {
+        xnu_hook_tr_setup(nsas, cpu);
+        uint8_t *code = NULL;
+        unsigned long size;
+        if (!g_file_get_contents(nms->driver_filename, (char **)&code,
+                                 &size, NULL)) {
+            abort();
+        }
+        nms->ktpp.hook.va = IOFINDBSDROOT_8_VADDR_16B92;
+        nms->ktpp.hook.pa = vtop_static(IOFINDBSDROOT_8_VADDR_16B92);
+        nms->ktpp.hook.buf_va =
+                        ptov_static((hwaddr)&allocated_data->hook_code[0]);
+        nms->ktpp.hook.buf_pa = (hwaddr)&allocated_data->hook_code[0];
+        nms->ktpp.hook.buf_size = HOOK_CODE_ALLOC_SIZE;
+        nms->ktpp.hook.code = (uint8_t *)code;
+        nms->ktpp.hook.code_size = size;
+        //we hook the function after x28 is already saved on the stack so
+        //we can use it as a scratch reg
+        nms->ktpp.hook.scratch_reg = 28;
+    }
 
     n66_add_cpregs(nms);
 
@@ -416,6 +448,20 @@ static char *n66_get_tunnel_port(Object *obj, Error **errp)
     return g_strdup(buf);
 }
 
+static void n66_set_driver_filename(Object *obj, const char *value,
+                                    Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+
+    g_strlcpy(nms->driver_filename, value, sizeof(nms->driver_filename));
+}
+
+static char *n66_get_driver_filename(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    return g_strdup(nms->driver_filename);
+}
+
 static void n66_instance_init(Object *obj)
 {
     object_property_add_str(obj, "ramdisk-filename", n66_get_ramdisk_filename,
@@ -452,6 +498,12 @@ static void n66_instance_init(Object *obj)
                             n66_set_tunnel_port, NULL);
     object_property_set_description(obj, "tunnel-port",
                                     "Set the port for the tunnel connection",
+                                    NULL);
+
+    object_property_add_str(obj, "driver-filename", n66_get_driver_filename,
+                            n66_set_driver_filename, NULL);
+    object_property_set_description(obj, "driver-filename",
+                                    "Set the driver filename to be loaded",
                                     NULL);
 }
 
