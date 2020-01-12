@@ -336,7 +336,7 @@ static void n66_set_ramdisk_filename(Object *obj, const char *value,
 {
     N66MachineState *nms = N66_MACHINE(obj);
 
-    strlcpy(nms->ramdisk_filename, value, sizeof(nms->ramdisk_filename));
+    g_strlcpy(nms->ramdisk_filename, value, sizeof(nms->ramdisk_filename));
 }
 
 static char *n66_get_ramdisk_filename(Object *obj, Error **errp)
@@ -350,7 +350,7 @@ static void n66_set_kernel_filename(Object *obj, const char *value,
 {
     N66MachineState *nms = N66_MACHINE(obj);
 
-    strlcpy(nms->kernel_filename, value, sizeof(nms->kernel_filename));
+    g_strlcpy(nms->kernel_filename, value, sizeof(nms->kernel_filename));
 }
 
 static char *n66_get_kernel_filename(Object *obj, Error **errp)
@@ -364,7 +364,7 @@ static void n66_set_dtb_filename(Object *obj, const char *value,
 {
     N66MachineState *nms = N66_MACHINE(obj);
 
-    strlcpy(nms->dtb_filename, value, sizeof(nms->dtb_filename));
+    g_strlcpy(nms->dtb_filename, value, sizeof(nms->dtb_filename));
 }
 
 static char *n66_get_dtb_filename(Object *obj, Error **errp)
@@ -378,7 +378,7 @@ static void n66_set_tc_filename(Object *obj, const char *value,
 {
     N66MachineState *nms = N66_MACHINE(obj);
 
-    strlcpy(nms->tc_filename, value, sizeof(nms->tc_filename));
+    g_strlcpy(nms->tc_filename, value, sizeof(nms->tc_filename));
 }
 
 static char *n66_get_tc_filename(Object *obj, Error **errp)
@@ -392,7 +392,7 @@ static void n66_set_kern_args(Object *obj, const char *value,
 {
     N66MachineState *nms = N66_MACHINE(obj);
 
-    strlcpy(nms->kern_args, value, sizeof(nms->kern_args));
+    g_strlcpy(nms->kern_args, value, sizeof(nms->kern_args));
 }
 
 static char *n66_get_kern_args(Object *obj, Error **errp)

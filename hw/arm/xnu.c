@@ -304,8 +304,8 @@ void macho_setup_bootargs(const char *name, AddressSpace *as,
     boot_args.deviceTreeLength = dtb_size;
     boot_args.memSizeActual = 0;
     if (kern_args) {
-        strlcpy(boot_args.CommandLine, kern_args,
-                sizeof(boot_args.CommandLine));
+        g_strlcpy(boot_args.CommandLine, kern_args,
+                  sizeof(boot_args.CommandLine));
     }
 
     allocate_and_copy(mem, as, name, bootargs_pa, sizeof(boot_args),
