@@ -33,6 +33,8 @@
 #include "hw/arm/xnu_file_mmio_dev.h"
 #include "hw/arm/xnu_dtb.h"
 #include "hw/arm/xnu_cpacr.h"
+#include "hw/arm/xnu_pagetable.h"
+#include "hw/arm/xnu_trampoline_hook.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
