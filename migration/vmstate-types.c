@@ -11,8 +11,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "exec/cpu-common.h"
 #include "qemu-file.h"
 #include "migration.h"
 #include "migration/vmstate.h"
@@ -22,15 +20,16 @@
 
 /* bool */
 
-static int get_bool(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_bool(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field)
 {
     bool *v = pv;
     *v = qemu_get_byte(f);
     return 0;
 }
 
-static int put_bool(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                    QJSON *vmdesc)
+static int put_bool(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field, QJSON *vmdesc)
 {
     bool *v = pv;
     qemu_put_byte(f, *v);
@@ -45,15 +44,16 @@ const VMStateInfo vmstate_info_bool = {
 
 /* 8 bit int */
 
-static int get_int8(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_int8(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field)
 {
     int8_t *v = pv;
     qemu_get_s8s(f, v);
     return 0;
 }
 
-static int put_int8(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                     QJSON *vmdesc)
+static int put_int8(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field, QJSON *vmdesc)
 {
     int8_t *v = pv;
     qemu_put_s8s(f, v);
@@ -68,15 +68,16 @@ const VMStateInfo vmstate_info_int8 = {
 
 /* 16 bit int */
 
-static int get_int16(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_int16(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field)
 {
     int16_t *v = pv;
     qemu_get_sbe16s(f, v);
     return 0;
 }
 
-static int put_int16(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                     QJSON *vmdesc)
+static int put_int16(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field, QJSON *vmdesc)
 {
     int16_t *v = pv;
     qemu_put_sbe16s(f, v);
@@ -91,15 +92,16 @@ const VMStateInfo vmstate_info_int16 = {
 
 /* 32 bit int */
 
-static int get_int32(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_int32(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field)
 {
     int32_t *v = pv;
     qemu_get_sbe32s(f, v);
     return 0;
 }
 
-static int put_int32(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                     QJSON *vmdesc)
+static int put_int32(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field, QJSON *vmdesc)
 {
     int32_t *v = pv;
     qemu_put_sbe32s(f, v);
@@ -116,7 +118,7 @@ const VMStateInfo vmstate_info_int32 = {
    in the field */
 
 static int get_int32_equal(QEMUFile *f, void *pv, size_t size,
-                           VMStateField *field)
+                           const VMStateField *field)
 {
     int32_t *v = pv;
     int32_t v2;
@@ -142,7 +144,8 @@ const VMStateInfo vmstate_info_int32_equal = {
  * and less than or equal to the one in the field.
  */
 
-static int get_int32_le(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_int32_le(QEMUFile *f, void *pv, size_t size,
+                        const VMStateField *field)
 {
     int32_t *cur = pv;
     int32_t loaded;
@@ -166,15 +169,16 @@ const VMStateInfo vmstate_info_int32_le = {
 
 /* 64 bit int */
 
-static int get_int64(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_int64(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field)
 {
     int64_t *v = pv;
     qemu_get_sbe64s(f, v);
     return 0;
 }
 
-static int put_int64(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_int64(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field, QJSON *vmdesc)
 {
     int64_t *v = pv;
     qemu_put_sbe64s(f, v);
@@ -189,15 +193,16 @@ const VMStateInfo vmstate_info_int64 = {
 
 /* 8 bit unsigned int */
 
-static int get_uint8(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_uint8(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field)
 {
     uint8_t *v = pv;
     qemu_get_8s(f, v);
     return 0;
 }
 
-static int put_uint8(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                     QJSON *vmdesc)
+static int put_uint8(QEMUFile *f, void *pv, size_t size,
+                     const VMStateField *field, QJSON *vmdesc)
 {
     uint8_t *v = pv;
     qemu_put_8s(f, v);
@@ -212,15 +217,16 @@ const VMStateInfo vmstate_info_uint8 = {
 
 /* 16 bit unsigned int */
 
-static int get_uint16(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_uint16(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field)
 {
     uint16_t *v = pv;
     qemu_get_be16s(f, v);
     return 0;
 }
 
-static int put_uint16(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_uint16(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field, QJSON *vmdesc)
 {
     uint16_t *v = pv;
     qemu_put_be16s(f, v);
@@ -235,15 +241,16 @@ const VMStateInfo vmstate_info_uint16 = {
 
 /* 32 bit unsigned int */
 
-static int get_uint32(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_uint32(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field)
 {
     uint32_t *v = pv;
     qemu_get_be32s(f, v);
     return 0;
 }
 
-static int put_uint32(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_uint32(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field, QJSON *vmdesc)
 {
     uint32_t *v = pv;
     qemu_put_be32s(f, v);
@@ -260,7 +267,7 @@ const VMStateInfo vmstate_info_uint32 = {
    in the field */
 
 static int get_uint32_equal(QEMUFile *f, void *pv, size_t size,
-                            VMStateField *field)
+                            const VMStateField *field)
 {
     uint32_t *v = pv;
     uint32_t v2;
@@ -284,15 +291,16 @@ const VMStateInfo vmstate_info_uint32_equal = {
 
 /* 64 bit unsigned int */
 
-static int get_uint64(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_uint64(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field)
 {
     uint64_t *v = pv;
     qemu_get_be64s(f, v);
     return 0;
 }
 
-static int put_uint64(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_uint64(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field, QJSON *vmdesc)
 {
     uint64_t *v = pv;
     qemu_put_be64s(f, v);
@@ -305,7 +313,8 @@ const VMStateInfo vmstate_info_uint64 = {
     .put  = put_uint64,
 };
 
-static int get_nullptr(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_nullptr(QEMUFile *f, void *pv, size_t size,
+                       const VMStateField *field)
 
 {
     if (qemu_get_byte(f) == VMS_NULLPTR_MARKER) {
@@ -316,7 +325,7 @@ static int get_nullptr(QEMUFile *f, void *pv, size_t size, VMStateField *field)
 }
 
 static int put_nullptr(QEMUFile *f, void *pv, size_t size,
-                        VMStateField *field, QJSON *vmdesc)
+                        const VMStateField *field, QJSON *vmdesc)
 
 {
     if (pv == NULL) {
@@ -337,7 +346,7 @@ const VMStateInfo vmstate_info_nullptr = {
    in the field */
 
 static int get_uint64_equal(QEMUFile *f, void *pv, size_t size,
-                            VMStateField *field)
+                            const VMStateField *field)
 {
     uint64_t *v = pv;
     uint64_t v2;
@@ -363,7 +372,7 @@ const VMStateInfo vmstate_info_uint64_equal = {
    in the field */
 
 static int get_uint8_equal(QEMUFile *f, void *pv, size_t size,
-                           VMStateField *field)
+                           const VMStateField *field)
 {
     uint8_t *v = pv;
     uint8_t v2;
@@ -389,7 +398,7 @@ const VMStateInfo vmstate_info_uint8_equal = {
    in the field */
 
 static int get_uint16_equal(QEMUFile *f, void *pv, size_t size,
-                            VMStateField *field)
+                            const VMStateField *field)
 {
     uint16_t *v = pv;
     uint16_t v2;
@@ -414,7 +423,7 @@ const VMStateInfo vmstate_info_uint16_equal = {
 /* floating point */
 
 static int get_float64(QEMUFile *f, void *pv, size_t size,
-                       VMStateField *field)
+                       const VMStateField *field)
 {
     float64 *v = pv;
 
@@ -422,8 +431,8 @@ static int get_float64(QEMUFile *f, void *pv, size_t size,
     return 0;
 }
 
-static int put_float64(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                       QJSON *vmdesc)
+static int put_float64(QEMUFile *f, void *pv, size_t size,
+                       const VMStateField *field, QJSON *vmdesc)
 {
     uint64_t *v = pv;
 
@@ -440,7 +449,7 @@ const VMStateInfo vmstate_info_float64 = {
 /* CPU_DoubleU type */
 
 static int get_cpudouble(QEMUFile *f, void *pv, size_t size,
-                         VMStateField *field)
+                         const VMStateField *field)
 {
     CPU_DoubleU *v = pv;
     qemu_get_be32s(f, &v->l.upper);
@@ -449,7 +458,7 @@ static int get_cpudouble(QEMUFile *f, void *pv, size_t size,
 }
 
 static int put_cpudouble(QEMUFile *f, void *pv, size_t size,
-                         VMStateField *field, QJSON *vmdesc)
+                         const VMStateField *field, QJSON *vmdesc)
 {
     CPU_DoubleU *v = pv;
     qemu_put_be32s(f, &v->l.upper);
@@ -466,15 +475,15 @@ const VMStateInfo vmstate_info_cpudouble = {
 /* uint8_t buffers */
 
 static int get_buffer(QEMUFile *f, void *pv, size_t size,
-                      VMStateField *field)
+                      const VMStateField *field)
 {
     uint8_t *v = pv;
     qemu_get_buffer(f, v, size);
     return 0;
 }
 
-static int put_buffer(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_buffer(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field, QJSON *vmdesc)
 {
     uint8_t *v = pv;
     qemu_put_buffer(f, v, size);
@@ -491,7 +500,7 @@ const VMStateInfo vmstate_info_buffer = {
    not useful anymore */
 
 static int get_unused_buffer(QEMUFile *f, void *pv, size_t size,
-                             VMStateField *field)
+                             const VMStateField *field)
 {
     uint8_t buf[1024];
     int block_len;
@@ -505,7 +514,7 @@ static int get_unused_buffer(QEMUFile *f, void *pv, size_t size,
 }
 
 static int put_unused_buffer(QEMUFile *f, void *pv, size_t size,
-                             VMStateField *field, QJSON *vmdesc)
+                             const VMStateField *field, QJSON *vmdesc)
 {
     static const uint8_t buf[1024];
     int block_len;
@@ -531,7 +540,8 @@ const VMStateInfo vmstate_info_unused_buffer = {
  * in fields that don't really exist in the parent but need to be in the
  * stream.
  */
-static int get_tmp(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_tmp(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field)
 {
     int ret;
     const VMStateDescription *vmsd = field->vmsd;
@@ -545,8 +555,8 @@ static int get_tmp(QEMUFile *f, void *pv, size_t size, VMStateField *field)
     return ret;
 }
 
-static int put_tmp(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                    QJSON *vmdesc)
+static int put_tmp(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field, QJSON *vmdesc)
 {
     const VMStateDescription *vmsd = field->vmsd;
     void *tmp = g_malloc(size);
@@ -573,7 +583,8 @@ const VMStateInfo vmstate_info_tmp = {
  */
 /* This is the number of 64 bit words sent over the wire */
 #define BITS_TO_U64S(nr) DIV_ROUND_UP(nr, 64)
-static int get_bitmap(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_bitmap(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field)
 {
     unsigned long *bmp = pv;
     int i, idx = 0;
@@ -587,8 +598,8 @@ static int get_bitmap(QEMUFile *f, void *pv, size_t size, VMStateField *field)
     return 0;
 }
 
-static int put_bitmap(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                      QJSON *vmdesc)
+static int put_bitmap(QEMUFile *f, void *pv, size_t size,
+                      const VMStateField *field, QJSON *vmdesc)
 {
     unsigned long *bmp = pv;
     int i, idx = 0;
@@ -613,7 +624,7 @@ const VMStateInfo vmstate_info_bitmap = {
  * meta data about the QTAILQ is encoded in a VMStateField structure
  */
 static int get_qtailq(QEMUFile *f, void *pv, size_t unused_size,
-                      VMStateField *field)
+                      const VMStateField *field)
 {
     int ret = 0;
     const VMStateDescription *vmsd = field->vmsd;
@@ -652,7 +663,7 @@ static int get_qtailq(QEMUFile *f, void *pv, size_t unused_size,
 
 /* put for QTAILQ */
 static int put_qtailq(QEMUFile *f, void *pv, size_t unused_size,
-                      VMStateField *field, QJSON *vmdesc)
+                      const VMStateField *field, QJSON *vmdesc)
 {
     const VMStateDescription *vmsd = field->vmsd;
     /* offset of the QTAILQ entry in a QTAILQ element*/
@@ -679,4 +690,156 @@ const VMStateInfo vmstate_info_qtailq = {
     .name = "qtailq",
     .get  = get_qtailq,
     .put  = put_qtailq,
+};
+
+struct put_gtree_data {
+    QEMUFile *f;
+    const VMStateDescription *key_vmsd;
+    const VMStateDescription *val_vmsd;
+    QJSON *vmdesc;
+    int ret;
+};
+
+static gboolean put_gtree_elem(gpointer key, gpointer value, gpointer data)
+{
+    struct put_gtree_data *capsule = (struct put_gtree_data *)data;
+    QEMUFile *f = capsule->f;
+    int ret;
+
+    qemu_put_byte(f, true);
+
+    /* put the key */
+    if (!capsule->key_vmsd) {
+        qemu_put_be64(f, (uint64_t)(uintptr_t)(key)); /* direct key */
+    } else {
+        ret = vmstate_save_state(f, capsule->key_vmsd, key, capsule->vmdesc);
+        if (ret) {
+            capsule->ret = ret;
+            return true;
+        }
+    }
+
+    /* put the data */
+    ret = vmstate_save_state(f, capsule->val_vmsd, value, capsule->vmdesc);
+    if (ret) {
+        capsule->ret = ret;
+        return true;
+    }
+    return false;
+}
+
+static int put_gtree(QEMUFile *f, void *pv, size_t unused_size,
+                     const VMStateField *field, QJSON *vmdesc)
+{
+    bool direct_key = (!field->start);
+    const VMStateDescription *key_vmsd = direct_key ? NULL : &field->vmsd[1];
+    const VMStateDescription *val_vmsd = &field->vmsd[0];
+    const char *key_vmsd_name = direct_key ? "direct" : key_vmsd->name;
+    struct put_gtree_data capsule = {
+        .f = f,
+        .key_vmsd = key_vmsd,
+        .val_vmsd = val_vmsd,
+        .vmdesc = vmdesc,
+        .ret = 0};
+    GTree **pval = pv;
+    GTree *tree = *pval;
+    uint32_t nnodes = g_tree_nnodes(tree);
+    int ret;
+
+    trace_put_gtree(field->name, key_vmsd_name, val_vmsd->name, nnodes);
+    qemu_put_be32(f, nnodes);
+    g_tree_foreach(tree, put_gtree_elem, (gpointer)&capsule);
+    qemu_put_byte(f, false);
+    ret = capsule.ret;
+    if (ret) {
+        error_report("%s : failed to save gtree (%d)", field->name, ret);
+    }
+    trace_put_gtree_end(field->name, key_vmsd_name, val_vmsd->name, ret);
+    return ret;
+}
+
+static int get_gtree(QEMUFile *f, void *pv, size_t unused_size,
+                     const VMStateField *field)
+{
+    bool direct_key = (!field->start);
+    const VMStateDescription *key_vmsd = direct_key ? NULL : &field->vmsd[1];
+    const VMStateDescription *val_vmsd = &field->vmsd[0];
+    const char *key_vmsd_name = direct_key ? "direct" : key_vmsd->name;
+    int version_id = field->version_id;
+    size_t key_size = field->start;
+    size_t val_size = field->size;
+    int nnodes, count = 0;
+    GTree **pval = pv;
+    GTree *tree = *pval;
+    void *key, *val;
+    int ret = 0;
+
+    /* in case of direct key, the key vmsd can be {}, ie. check fields */
+    if (!direct_key && version_id > key_vmsd->version_id) {
+        error_report("%s %s",  key_vmsd->name, "too new");
+        return -EINVAL;
+    }
+    if (!direct_key && version_id < key_vmsd->minimum_version_id) {
+        error_report("%s %s",  key_vmsd->name, "too old");
+        return -EINVAL;
+    }
+    if (version_id > val_vmsd->version_id) {
+        error_report("%s %s",  val_vmsd->name, "too new");
+        return -EINVAL;
+    }
+    if (version_id < val_vmsd->minimum_version_id) {
+        error_report("%s %s",  val_vmsd->name, "too old");
+        return -EINVAL;
+    }
+
+    nnodes = qemu_get_be32(f);
+    trace_get_gtree(field->name, key_vmsd_name, val_vmsd->name, nnodes);
+
+    while (qemu_get_byte(f)) {
+        if ((++count) > nnodes) {
+            ret = -EINVAL;
+            break;
+        }
+        if (direct_key) {
+            key = (void *)(uintptr_t)qemu_get_be64(f);
+        } else {
+            key = g_malloc0(key_size);
+            ret = vmstate_load_state(f, key_vmsd, key, version_id);
+            if (ret) {
+                error_report("%s : failed to load %s (%d)",
+                             field->name, key_vmsd->name, ret);
+                goto key_error;
+            }
+        }
+        val = g_malloc0(val_size);
+        ret = vmstate_load_state(f, val_vmsd, val, version_id);
+        if (ret) {
+            error_report("%s : failed to load %s (%d)",
+                         field->name, val_vmsd->name, ret);
+            goto val_error;
+        }
+        g_tree_insert(tree, key, val);
+    }
+    if (count != nnodes) {
+        error_report("%s inconsistent stream when loading the gtree",
+                     field->name);
+        return -EINVAL;
+    }
+    trace_get_gtree_end(field->name, key_vmsd_name, val_vmsd->name, ret);
+    return ret;
+val_error:
+    g_free(val);
+key_error:
+    if (!direct_key) {
+        g_free(key);
+    }
+    trace_get_gtree_end(field->name, key_vmsd_name, val_vmsd->name, ret);
+    return ret;
+}
+
+
+const VMStateInfo vmstate_info_gtree = {
+    .name = "gtree",
+    .get  = get_gtree,
+    .put  = put_gtree,
 };

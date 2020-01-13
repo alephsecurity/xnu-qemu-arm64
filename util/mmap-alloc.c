@@ -10,6 +10,13 @@
  * later.  See the COPYING file in the top-level directory.
  */
 
+#ifdef CONFIG_LINUX
+#include <linux/mman.h>
+#else  /* !CONFIG_LINUX */
+#define MAP_SYNC              0x0
+#define MAP_SHARED_VALIDATE   0x0
+#endif /* CONFIG_LINUX */
+
 #include "qemu/osdep.h"
 #include "qemu/mmap-alloc.h"
 #include "qemu/host-utils.h"
@@ -41,7 +48,7 @@ size_t qemu_fd_getpagesize(int fd)
 #endif
 #endif
 
-    return getpagesize();
+    return qemu_real_host_page_size;
 }
 
 size_t qemu_mempath_getpagesize(const char *mem_path)
@@ -72,16 +79,30 @@ size_t qemu_mempath_getpagesize(const char *mem_path)
 #endif
 #endif
 
-    return getpagesize();
+    return qemu_real_host_page_size;
 }
 
-void *qemu_ram_mmap(int fd, size_t size, size_t align, bool shared)
+void *qemu_ram_mmap(int fd,
+                    size_t size,
+                    size_t align,
+                    bool shared,
+                    bool is_pmem)
 {
+    int flags;
+    int map_sync_flags = 0;
+    int guardfd;
+    size_t offset;
+    size_t pagesize;
+    size_t total;
+    void *guardptr;
+    void *ptr;
+
     /*
      * Note: this always allocates at least one extra page of virtual address
      * space, even if size is already aligned.
      */
-    size_t total = size + align;
+    total = size + align;
+
 #if defined(__powerpc64__) && defined(__linux__)
     /* On ppc64 mappings in the same segment (aka slice) must share the same
      * page size. Since we will be re-allocating part of this segment
@@ -91,36 +112,76 @@ void *qemu_ram_mmap(int fd, size_t size, size_t align, bool shared)
      * We do this unless we are using the system page size, in which case
      * anonymous memory is OK.
      */
-    int anonfd = fd == -1 || qemu_fd_getpagesize(fd) == getpagesize() ? -1 : fd;
-    int flags = anonfd == -1 ? MAP_ANONYMOUS : MAP_NORESERVE;
-    void *ptr = mmap(0, total, PROT_NONE, flags | MAP_PRIVATE, anonfd, 0);
+    flags = MAP_PRIVATE;
+    pagesize = qemu_fd_getpagesize(fd);
+    if (fd == -1 || pagesize == qemu_real_host_page_size) {
+        guardfd = -1;
+        flags |= MAP_ANONYMOUS;
+    } else {
+        guardfd = fd;
+        flags |= MAP_NORESERVE;
+    }
 #else
-    void *ptr = mmap(0, total, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    guardfd = -1;
+    pagesize = qemu_real_host_page_size;
+    flags = MAP_PRIVATE | MAP_ANONYMOUS;
 #endif
-    size_t offset;
-    void *ptr1;
 
-    if (ptr == MAP_FAILED) {
+    guardptr = mmap(0, total, PROT_NONE, flags, guardfd, 0);
+
+    if (guardptr == MAP_FAILED) {
         return MAP_FAILED;
     }
 
     assert(is_power_of_2(align));
     /* Always align to host page size */
-    assert(align >= getpagesize());
+    assert(align >= pagesize);
 
-    offset = QEMU_ALIGN_UP((uintptr_t)ptr, align) - (uintptr_t)ptr;
-    ptr1 = mmap(ptr + offset, size, PROT_READ | PROT_WRITE,
-                MAP_FIXED |
-                (fd == -1 ? MAP_ANONYMOUS : 0) |
-                (shared ? MAP_SHARED : MAP_PRIVATE),
-                fd, 0);
-    if (ptr1 == MAP_FAILED) {
-        munmap(ptr, total);
+    flags = MAP_FIXED;
+    flags |= fd == -1 ? MAP_ANONYMOUS : 0;
+    flags |= shared ? MAP_SHARED : MAP_PRIVATE;
+    if (shared && is_pmem) {
+        map_sync_flags = MAP_SYNC | MAP_SHARED_VALIDATE;
+    }
+
+    offset = QEMU_ALIGN_UP((uintptr_t)guardptr, align) - (uintptr_t)guardptr;
+
+    ptr = mmap(guardptr + offset, size, PROT_READ | PROT_WRITE,
+               flags | map_sync_flags, fd, 0);
+
+    if (ptr == MAP_FAILED && map_sync_flags) {
+        if (errno == ENOTSUP) {
+            char *proc_link, *file_name;
+            int len;
+            proc_link = g_strdup_printf("/proc/self/fd/%d", fd);
+            file_name = g_malloc0(PATH_MAX);
+            len = readlink(proc_link, file_name, PATH_MAX - 1);
+            if (len < 0) {
+                len = 0;
+            }
+            file_name[len] = '\0';
+            fprintf(stderr, "Warning: requesting persistence across crashes "
+                    "for backend file %s failed. Proceeding without "
+                    "persistence, data might become corrupted in case of host "
+                    "crash.\n", file_name);
+            g_free(proc_link);
+            g_free(file_name);
+        }
+        /*
+         * if map failed with MAP_SHARED_VALIDATE | MAP_SYNC,
+         * we will remove these flags to handle compatibility.
+         */
+        ptr = mmap(guardptr + offset, size, PROT_READ | PROT_WRITE,
+                   flags, fd, 0);
+    }
+
+    if (ptr == MAP_FAILED) {
+        munmap(guardptr, total);
         return MAP_FAILED;
     }
 
     if (offset > 0) {
-        munmap(ptr, offset);
+        munmap(guardptr, offset);
     }
 
     /*
@@ -128,17 +189,24 @@ void *qemu_ram_mmap(int fd, size_t size, size_t align, bool shared)
      * a guard page guarding against potential buffer overflows.
      */
     total -= offset;
-    if (total > size + getpagesize()) {
-        munmap(ptr1 + size + getpagesize(), total - size - getpagesize());
+    if (total > size + pagesize) {
+        munmap(ptr + size + pagesize, total - size - pagesize);
     }
 
-    return ptr1;
+    return ptr;
 }
 
-void qemu_ram_munmap(void *ptr, size_t size)
+void qemu_ram_munmap(int fd, void *ptr, size_t size)
 {
+    size_t pagesize;
+
     if (ptr) {
         /* Unmap both the RAM block and the guard page */
-        munmap(ptr, size + getpagesize());
+#if defined(__powerpc64__) && defined(__linux__)
+        pagesize = qemu_fd_getpagesize(fd);
+#else
+        pagesize = qemu_real_host_page_size;
+#endif
+        munmap(ptr, size + pagesize);
     }
 }

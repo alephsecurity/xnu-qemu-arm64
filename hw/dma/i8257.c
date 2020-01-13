@@ -21,11 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/isa/isa.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/dma/i8257.h"
 #include "qemu/main-loop.h"
+#include "qemu/module.h"
+#include "qemu/log.h"
 #include "trace.h"
 
 #define I8257(obj) \
@@ -185,7 +189,8 @@ static void i8257_write_cont(void *opaque, hwaddr nport, uint64_t data,
     switch (iport) {
     case 0x00:                  /* command */
         if ((data != 0) && (data & CMD_NOT_SUPPORTED)) {
-            dolog("command %"PRIx64" not supported\n", data);
+            qemu_log_mask(LOG_UNIMP, "%s: cmd 0x%02"PRIx64" not supported\n",
+                          __func__, data);
             return;
         }
         d->command = data;

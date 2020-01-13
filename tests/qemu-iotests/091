@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Live migration test
 #
@@ -26,7 +26,6 @@ owner=jcody@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1    # failure is the default!
 
 MIG_FIFO="${TEST_DIR}/migrate"
@@ -47,8 +46,8 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 _supported_fmt qcow2
 _supported_proto file
 _supported_os Linux
-_default_cache_mode "none"
-_supported_cache_modes "writethrough" "none" "writeback"
+_default_cache_mode none
+_supported_cache_modes writethrough none writeback
 
 size=1G
 

@@ -11,20 +11,21 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "kvm_s390x.h"
 #include <sys/ioctl.h>
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "sysemu/kvm.h"
 #include "hw/s390x/s390_flic.h"
 #include "hw/s390x/adapter.h"
 #include "hw/s390x/css.h"
+#include "migration/qemu-file-types.h"
 #include "trace.h"
 
-#define FLIC_SAVE_INITIAL_SIZE getpagesize()
+#define FLIC_SAVE_INITIAL_SIZE qemu_real_host_page_size
 #define FLIC_FAILED (-1UL)
 #define FLIC_SAVEVM_VERSION 1
 
@@ -376,7 +377,7 @@ static void kvm_s390_release_adapter_routes(S390FLICState *fs,
  * reached
  */
 static int kvm_flic_save(QEMUFile *f, void *opaque, size_t size,
-                         VMStateField *field, QJSON *vmdesc)
+                         const VMStateField *field, QJSON *vmdesc)
 {
     KVMS390FLICState *flic = opaque;
     int len = FLIC_SAVE_INITIAL_SIZE;
@@ -426,7 +427,7 @@ static int kvm_flic_save(QEMUFile *f, void *opaque, size_t size,
  * in QEMUFile
  */
 static int kvm_flic_load(QEMUFile *f, void *opaque, size_t size,
-                         VMStateField *field)
+                         const VMStateField *field)
 {
     uint64_t len = 0;
     uint64_t count = 0;
@@ -588,12 +589,6 @@ static void kvm_s390_flic_realize(DeviceState *dev, Error **errp)
         goto fail;
     }
     flic_state->fd = -1;
-    if (!kvm_check_extension(kvm_state, KVM_CAP_DEVICE_CTRL)) {
-        error_setg_errno(&errp_local, errno, "KVM is missing capability"
-                         " KVM_CAP_DEVICE_CTRL");
-        trace_flic_no_device_api(errno);
-        goto fail;
-    }
 
     cd.type = KVM_DEV_TYPE_FLIC;
     ret = kvm_vm_ioctl(kvm_state, KVM_CREATE_DEVICE, &cd);

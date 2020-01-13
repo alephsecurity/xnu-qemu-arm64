@@ -27,23 +27,16 @@
 #include "qemu/osdep.h"
 #include "hw/acpi/pcihp.h"
 
-#include "hw/hw.h"
-#include "hw/i386/pc.h"
+#include "hw/pci-host/i440fx.h"
 #include "hw/pci/pci.h"
+#include "hw/pci/pci_bridge.h"
 #include "hw/acpi/acpi.h"
-#include "sysemu/sysemu.h"
 #include "exec/address-spaces.h"
 #include "hw/pci/pci_bus.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qom/qom-qobject.h"
-
-//#define DEBUG
-
-#ifdef DEBUG
-# define ACPI_PCIHP_DPRINTF(format, ...)     printf(format, ## __VA_ARGS__)
-#else
-# define ACPI_PCIHP_DPRINTF(format, ...)     do { } while (0)
-#endif
+#include "trace.h"
 
 #define ACPI_PCIHP_ADDR 0xae00
 #define ACPI_PCIHP_SIZE 0x0014
@@ -153,9 +146,12 @@ static bool acpi_pcihp_pc_no_hotplug(AcpiPciHpState *s, PCIDevice *dev)
 
 static void acpi_pcihp_eject_slot(AcpiPciHpState *s, unsigned bsel, unsigned slots)
 {
+    HotplugHandler *hotplug_ctrl;
     BusChild *kid, *next;
     int slot = ctz32(slots);
     PCIBus *bus = acpi_pcihp_find_hotplug_bus(s, bsel);
+
+    trace_acpi_pci_eject_slot(bsel, slot);
 
     if (!bus) {
         return;
@@ -170,6 +166,8 @@ static void acpi_pcihp_eject_slot(AcpiPciHpState *s, unsigned bsel, unsigned slo
         PCIDevice *dev = PCI_DEVICE(qdev);
         if (PCI_SLOT(dev->devfn) == slot) {
             if (!acpi_pcihp_pc_no_hotplug(s, dev)) {
+                hotplug_ctrl = qdev_get_hotplug_handler(qdev);
+                hotplug_handler_unplug(hotplug_ctrl, qdev, &error_abort);
                 object_unparent(OBJECT(qdev));
             }
         }
@@ -217,25 +215,48 @@ void acpi_pcihp_reset(AcpiPciHpState *s)
     acpi_pcihp_update(s);
 }
 
+void acpi_pcihp_device_pre_plug_cb(HotplugHandler *hotplug_dev,
+                                   DeviceState *dev, Error **errp)
+{
+    /* Only hotplugged devices need the hotplug capability. */
+    if (dev->hotplugged &&
+        acpi_pcihp_get_bsel(pci_get_bus(PCI_DEVICE(dev))) < 0) {
+        error_setg(errp, "Unsupported bus. Bus doesn't have property '"
+                   ACPI_PCIHP_PROP_BSEL "' set");
+        return;
+    }
+}
+
 void acpi_pcihp_device_plug_cb(HotplugHandler *hotplug_dev, AcpiPciHpState *s,
                                DeviceState *dev, Error **errp)
 {
     PCIDevice *pdev = PCI_DEVICE(dev);
     int slot = PCI_SLOT(pdev->devfn);
-    int bsel = acpi_pcihp_get_bsel(pci_get_bus(pdev));
-    if (bsel < 0) {
-        error_setg(errp, "Unsupported bus. Bus doesn't have property '"
-                   ACPI_PCIHP_PROP_BSEL "' set");
-        return;
-    }
+    int bsel;
 
     /* Don't send event when device is enabled during qemu machine creation:
      * it is present on boot, no hotplug event is necessary. We do send an
      * event when the device is disabled later. */
     if (!dev->hotplugged) {
+        /*
+         * Overwrite the default hotplug handler with the ACPI PCI one
+         * for cold plugged bridges only.
+         */
+        if (!s->legacy_piix &&
+            object_dynamic_cast(OBJECT(dev), TYPE_PCI_BRIDGE)) {
+            PCIBus *sec = pci_bridge_get_sec_bus(PCI_BRIDGE(pdev));
+
+            qbus_set_hotplug_handler(BUS(sec), OBJECT(hotplug_dev),
+                                     &error_abort);
+            /* We don't have to overwrite any other hotplug handler yet */
+            assert(QLIST_EMPTY(&sec->child));
+        }
+
         return;
     }
 
+    bsel = acpi_pcihp_get_bsel(pci_get_bus(pdev));
+    g_assert(bsel >= 0);
     s->acpi_pcihp_pci_status[bsel].up |= (1U << slot);
     acpi_send_event(DEVICE(hotplug_dev), ACPI_PCI_HOTPLUG_STATUS);
 }
@@ -243,9 +264,21 @@ void acpi_pcihp_device_plug_cb(HotplugHandler *hotplug_dev, AcpiPciHpState *s,
 void acpi_pcihp_device_unplug_cb(HotplugHandler *hotplug_dev, AcpiPciHpState *s,
                                  DeviceState *dev, Error **errp)
 {
+    trace_acpi_pci_unplug(PCI_SLOT(PCI_DEVICE(dev)->devfn),
+                          acpi_pcihp_get_bsel(pci_get_bus(PCI_DEVICE(dev))));
+    object_property_set_bool(OBJECT(dev), false, "realized", NULL);
+}
+
+void acpi_pcihp_device_unplug_request_cb(HotplugHandler *hotplug_dev,
+                                         AcpiPciHpState *s, DeviceState *dev,
+                                         Error **errp)
+{
     PCIDevice *pdev = PCI_DEVICE(dev);
     int slot = PCI_SLOT(pdev->devfn);
     int bsel = acpi_pcihp_get_bsel(pci_get_bus(pdev));
+
+    trace_acpi_pci_unplug_request(bsel, slot);
+
     if (bsel < 0) {
         error_setg(errp, "Unsupported bus. Bus doesn't have property '"
                    ACPI_PCIHP_PROP_BSEL "' set");
@@ -272,23 +305,23 @@ static uint64_t pci_read(void *opaque, hwaddr addr, unsigned int size)
         if (!s->legacy_piix) {
             s->acpi_pcihp_pci_status[bsel].up = 0;
         }
-        ACPI_PCIHP_DPRINTF("pci_up_read %" PRIu32 "\n", val);
+        trace_acpi_pci_up_read(val);
         break;
     case PCI_DOWN_BASE:
         val = s->acpi_pcihp_pci_status[bsel].down;
-        ACPI_PCIHP_DPRINTF("pci_down_read %" PRIu32 "\n", val);
+        trace_acpi_pci_down_read(val);
         break;
     case PCI_EJ_BASE:
         /* No feature defined yet */
-        ACPI_PCIHP_DPRINTF("pci_features_read %" PRIu32 "\n", val);
+        trace_acpi_pci_features_read(val);
         break;
     case PCI_RMV_BASE:
         val = s->acpi_pcihp_pci_status[bsel].hotplug_enable;
-        ACPI_PCIHP_DPRINTF("pci_rmv_read %" PRIu32 "\n", val);
+        trace_acpi_pci_rmv_read(val);
         break;
     case PCI_SEL_BASE:
         val = s->hotplug_select;
-        ACPI_PCIHP_DPRINTF("pci_sel_read %" PRIu32 "\n", val);
+        trace_acpi_pci_sel_read(val);
     default:
         break;
     }
@@ -306,13 +339,11 @@ static void pci_write(void *opaque, hwaddr addr, uint64_t data,
             break;
         }
         acpi_pcihp_eject_slot(s, s->hotplug_select, data);
-        ACPI_PCIHP_DPRINTF("pciej write %" HWADDR_PRIx " <== %" PRIu64 "\n",
-                      addr, data);
+        trace_acpi_pci_ej_write(addr, data);
         break;
     case PCI_SEL_BASE:
         s->hotplug_select = s->legacy_piix ? ACPI_PCIHP_BSEL_DEFAULT : data;
-        ACPI_PCIHP_DPRINTF("pcisel write %" HWADDR_PRIx " <== %" PRIu64 "\n",
-                      addr, data);
+        trace_acpi_pci_sel_write(addr, data);
     default:
         break;
     }

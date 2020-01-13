@@ -13,6 +13,8 @@
 #include "qemu/osdep.h"
 #include "monitor/monitor.h"
 #include "hw/i386/pc.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/i386/ioapic_internal.h"
 #include "hw/i386/apic_internal.h"
 #include "sysemu/kvm.h"
@@ -163,7 +165,7 @@ static void kvm_ioapic_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo kvm_ioapic_info = {
-    .name  = "kvm-ioapic",
+    .name  = TYPE_KVM_IOAPIC,
     .parent = TYPE_IOAPIC_COMMON,
     .instance_size = sizeof(KVMIOAPICState),
     .class_init = kvm_ioapic_class_init,

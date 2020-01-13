@@ -22,16 +22,20 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "qemu-common.h"
 #include "hw/ppc/mac.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/input/adb.h"
 #include "hw/misc/mos6522.h"
 #include "hw/misc/macio/cuda.h"
 #include "qemu/timer.h"
-#include "sysemu/sysemu.h"
+#include "sysemu/runstate.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 /* Bits in B data register: all active low */
@@ -97,16 +101,7 @@ static void cuda_set_sr_int(void *opaque)
 
 static void cuda_delay_set_sr_int(CUDAState *s)
 {
-    MOS6522CUDAState *mcs = &s->mos6522_cuda;
-    MOS6522State *ms = MOS6522(mcs);
-    MOS6522DeviceClass *mdc = MOS6522_DEVICE_GET_CLASS(ms);
     int64_t expire;
-
-    if (ms->dirb == 0xff || s->sr_delay_ns == 0) {
-        /* Disabled or not in Mac OS, fire the IRQ directly */
-        mdc->set_sr_int(ms);
-        return;
-    }
 
     trace_cuda_delay_set_sr_int();
 
@@ -542,7 +537,7 @@ static void cuda_realize(DeviceState *dev, Error **errp)
     s->tick_offset = (uint32_t)mktimegm(&tm) + RTC_OFFSET;
 
     s->sr_delay_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cuda_set_sr_int, s);
-    s->sr_delay_ns = 300 * SCALE_US;
+    s->sr_delay_ns = 20 * SCALE_US;
 
     s->adb_poll_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cuda_adb_poll, s);
     s->adb_poll_mask = 0xffff;
@@ -554,9 +549,8 @@ static void cuda_init(Object *obj)
     CUDAState *s = CUDA(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    object_initialize(&s->mos6522_cuda, sizeof(s->mos6522_cuda),
-                      TYPE_MOS6522_CUDA);
-    qdev_set_parent_bus(DEVICE(&s->mos6522_cuda), sysbus_get_default());
+    sysbus_init_child_obj(obj, "mos6522-cuda", &s->mos6522_cuda,
+                          sizeof(s->mos6522_cuda), TYPE_MOS6522_CUDA);
 
     memory_region_init_io(&s->mem, obj, &mos6522_cuda_ops, s, "cuda", 0x2000);
     sysbus_init_mmio(sbd, &s->mem);

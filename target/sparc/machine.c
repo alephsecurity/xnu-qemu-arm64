@@ -1,9 +1,6 @@
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
-#include "hw/hw.h"
-#include "hw/boards.h"
 #include "qemu/timer.h"
 
 #include "migration/cpu.h"
@@ -56,7 +53,8 @@ static const VMStateDescription vmstate_tlb_entry = {
 };
 #endif
 
-static int get_psr(QEMUFile *f, void *opaque, size_t size, VMStateField *field)
+static int get_psr(QEMUFile *f, void *opaque, size_t size,
+                   const VMStateField *field)
 {
     SPARCCPU *cpu = opaque;
     CPUSPARCState *env = &cpu->env;
@@ -69,8 +67,8 @@ static int get_psr(QEMUFile *f, void *opaque, size_t size, VMStateField *field)
     return 0;
 }
 
-static int put_psr(QEMUFile *f, void *opaque, size_t size, VMStateField *field,
-                   QJSON *vmdesc)
+static int put_psr(QEMUFile *f, void *opaque, size_t size,
+                   const VMStateField *field, QJSON *vmdesc)
 {
     SPARCCPU *cpu = opaque;
     CPUSPARCState *env = &cpu->env;

@@ -24,7 +24,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "sysemu/sysemu.h"
 #include "qemu/error-report.h"
 #include "hw/arm/xnu_pagetable.h"
@@ -44,7 +44,7 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "arm_ldst.h"
-#include "exec/semihost.h"
+#include "hw/semihosting/semihost.h"
 
 #define PHYS_ADDR_SIZE (40)
 #define TG_16K_SIZE (14)

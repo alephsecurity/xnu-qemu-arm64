@@ -9,14 +9,12 @@
 #include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "cpu.h"
-#include "hw/hw.h"
 #include "elf.h"
 #include "hw/loader.h"
-#include "hw/boards.h"
 #include "alpha_sys.h"
 #include "qemu/error-report.h"
 #include "sysemu/sysemu.h"
-#include "hw/timer/mc146818rtc.h"
+#include "hw/rtc/mc146818rtc.h"
 #include "hw/ide.h"
 #include "hw/timer/i8254.h"
 #include "hw/isa/superio.h"
@@ -63,6 +61,7 @@ static void clipper_init(MachineState *machine)
     char *palcode_filename;
     uint64_t palcode_entry, palcode_low, palcode_high;
     uint64_t kernel_entry, kernel_low, kernel_high;
+    unsigned int smp_cpus = machine->smp.cpus;
 
     /* Create up to 4 cpus.  */
     memset(cpus, 0, sizeof(cpus));
@@ -114,7 +113,7 @@ static void clipper_init(MachineState *machine)
         error_report("no palcode provided");
         exit(1);
     }
-    size = load_elf(palcode_filename, cpu_alpha_superpage_to_phys,
+    size = load_elf(palcode_filename, NULL, cpu_alpha_superpage_to_phys,
                     NULL, &palcode_entry, &palcode_low, &palcode_high,
                     0, EM_ALPHA, 0, 0);
     if (size < 0) {
@@ -133,7 +132,7 @@ static void clipper_init(MachineState *machine)
     if (kernel_filename) {
         uint64_t param_offset;
 
-        size = load_elf(kernel_filename, cpu_alpha_superpage_to_phys,
+        size = load_elf(kernel_filename, NULL, cpu_alpha_superpage_to_phys,
                         NULL, &kernel_entry, &kernel_low, &kernel_high,
                         0, EM_ALPHA, 0, 0);
         if (size < 0) {
@@ -150,7 +149,8 @@ static void clipper_init(MachineState *machine)
         }
 
         if (initrd_filename) {
-            long initrd_base, initrd_size;
+            long initrd_base;
+            int64_t initrd_size;
 
             initrd_size = get_image_size(initrd_filename);
             if (initrd_size < 0) {

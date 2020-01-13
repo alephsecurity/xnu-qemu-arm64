@@ -18,12 +18,13 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "qemu.h"
 #include "cpu_loop-common.h"
 
 void cpu_loop(CPUMBState *env)
 {
-    CPUState *cs = CPU(mb_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     int trapnr, ret;
     target_siginfo_t info;
     
@@ -107,31 +108,23 @@ void cpu_loop(CPUMBState *env)
                 default:
                     fprintf(stderr, "Unhandled hw-exception: 0x%" PRIx64 "\n",
                             env->sregs[SR_ESR] & ESR_EC_MASK);
-                    cpu_dump_state(cs, stderr, fprintf, 0);
+                    cpu_dump_state(cs, stderr, 0);
                     exit(EXIT_FAILURE);
                     break;
             }
             break;
         case EXCP_DEBUG:
-            {
-                int sig;
-
-                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
-                if (sig)
-                  {
-                    info.si_signo = sig;
-                    info.si_errno = 0;
-                    info.si_code = TARGET_TRAP_BRKPT;
-                    queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
-                  }
-            }
+            info.si_signo = TARGET_SIGTRAP;
+            info.si_errno = 0;
+            info.si_code = TARGET_TRAP_BRKPT;
+            queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             break;
         case EXCP_ATOMIC:
             cpu_exec_step_atomic(cs);
             break;
         default:
             fprintf(stderr, "Unhandled trap: 0x%x\n", trapnr);
-            cpu_dump_state(cs, stderr, fprintf, 0);
+            cpu_dump_state(cs, stderr, 0);
             exit(EXIT_FAILURE);
         }
         process_pending_signals (env);

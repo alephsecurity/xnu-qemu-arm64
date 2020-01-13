@@ -24,8 +24,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "exec/cpu-common.h"
 #include "tcg-op.h"
 
 #define CASE_OP_32_64(x)                        \
@@ -352,6 +350,15 @@ static TCGArg do_constant_folding_2(TCGOpcode op, TCGArg x, TCGArg y)
 
     CASE_OP_32_64(ext16u):
         return (uint16_t)x;
+
+    CASE_OP_32_64(bswap16):
+        return bswap16(x);
+
+    CASE_OP_32_64(bswap32):
+        return bswap32(x);
+
+    case INDEX_op_bswap64_i64:
+        return bswap64(x);
 
     case INDEX_op_ext_i32_i64:
     case INDEX_op_ext32s_i64:
@@ -725,9 +732,13 @@ void tcg_optimize(TCGContext *s)
                 } else if (opc == INDEX_op_sub_i64) {
                     neg_op = INDEX_op_neg_i64;
                     have_neg = TCG_TARGET_HAS_neg_i64;
-                } else {
+                } else if (TCG_TARGET_HAS_neg_vec) {
+                    TCGType type = TCGOP_VECL(op) + TCG_TYPE_V64;
+                    unsigned vece = TCGOP_VECE(op);
                     neg_op = INDEX_op_neg_vec;
-                    have_neg = TCG_TARGET_HAS_neg_vec;
+                    have_neg = tcg_can_emit_vec_op(neg_op, type, vece) > 0;
+                } else {
+                    break;
                 }
                 if (!have_neg) {
                     break;
@@ -1002,7 +1013,7 @@ void tcg_optimize(TCGContext *s)
         CASE_OP_32_64(qemu_ld):
             {
                 TCGMemOpIdx oi = op->args[nb_oargs + nb_iargs];
-                TCGMemOp mop = get_memop(oi);
+                MemOp mop = get_memop(oi);
                 if (!(mop & MO_SIGN)) {
                     mask = (2ULL << ((8 << (mop & MO_SIZE)) - 1)) - 1;
                 }
@@ -1094,9 +1105,9 @@ void tcg_optimize(TCGContext *s)
                 tmp = arg_info(op->args[1])->val;
                 tmp = dup_const(TCGOP_VECE(op), tmp);
                 tcg_opt_gen_movi(s, op, op->args[0], tmp);
-                continue;
+                break;
             }
-            break;
+            goto do_default;
 
         CASE_OP_32_64(not):
         CASE_OP_32_64(neg):
@@ -1105,6 +1116,9 @@ void tcg_optimize(TCGContext *s)
         CASE_OP_32_64(ext16s):
         CASE_OP_32_64(ext16u):
         CASE_OP_32_64(ctpop):
+        CASE_OP_32_64(bswap16):
+        CASE_OP_32_64(bswap32):
+        case INDEX_op_bswap64_i64:
         case INDEX_op_ext32s_i64:
         case INDEX_op_ext32u_i64:
         case INDEX_op_ext_i32_i64:
@@ -1190,6 +1204,22 @@ void tcg_optimize(TCGContext *s)
             }
             goto do_default;
 
+        CASE_OP_32_64(extract2):
+            if (arg_is_const(op->args[1]) && arg_is_const(op->args[2])) {
+                TCGArg v1 = arg_info(op->args[1])->val;
+                TCGArg v2 = arg_info(op->args[2])->val;
+
+                if (opc == INDEX_op_extract2_i64) {
+                    tmp = (v1 >> op->args[3]) | (v2 << (64 - op->args[3]));
+                } else {
+                    tmp = (int32_t)(((uint32_t)v1 >> op->args[3]) |
+                                    ((uint32_t)v2 << (32 - op->args[3])));
+                }
+                tcg_opt_gen_movi(s, op, op->args[0], tmp);
+                break;
+            }
+            goto do_default;
+
         CASE_OP_32_64(setcond):
             tmp = do_constant_folding_cond(opc, op->args[1],
                                            op->args[2], op->args[3]);
@@ -1249,7 +1279,7 @@ void tcg_optimize(TCGContext *s)
                 uint64_t a = ((uint64_t)ah << 32) | al;
                 uint64_t b = ((uint64_t)bh << 32) | bl;
                 TCGArg rl, rh;
-                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32, 2);
+                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32);
 
                 if (opc == INDEX_op_add2_i32) {
                     a += b;
@@ -1271,7 +1301,7 @@ void tcg_optimize(TCGContext *s)
                 uint32_t b = arg_info(op->args[3])->val;
                 uint64_t r = (uint64_t)a * b;
                 TCGArg rl, rh;
-                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32, 2);
+                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32);
 
                 rl = op->args[0];
                 rh = op->args[1];

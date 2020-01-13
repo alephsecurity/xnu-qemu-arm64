@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_REMAP_DEV_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 
 typedef struct {
     hwaddr pa;

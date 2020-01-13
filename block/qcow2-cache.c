@@ -23,8 +23,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "block/block_int.h"
-#include "qemu-common.h"
 #include "qcow2.h"
 #include "trace.h"
 
@@ -76,7 +74,7 @@ static void qcow2_cache_table_release(Qcow2Cache *c, int i, int num_tables)
 /* Using MADV_DONTNEED to discard memory is a Linux-specific feature */
 #ifdef CONFIG_LINUX
     void *t = qcow2_cache_get_table_addr(c, i);
-    int align = getpagesize();
+    int align = qemu_real_host_page_size;
     size_t mem_size = (size_t) c->table_size * num_tables;
     size_t offset = QEMU_ALIGN_UP((uintptr_t) t, align) - (uintptr_t) t;
     size_t length = QEMU_ALIGN_DOWN(mem_size - offset, align);
@@ -205,13 +203,13 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
 
     if (c == s->refcount_block_cache) {
         ret = qcow2_pre_write_overlap_check(bs, QCOW2_OL_REFCOUNT_BLOCK,
-                c->entries[i].offset, c->table_size);
+                c->entries[i].offset, c->table_size, false);
     } else if (c == s->l2_table_cache) {
         ret = qcow2_pre_write_overlap_check(bs, QCOW2_OL_ACTIVE_L2,
-                c->entries[i].offset, c->table_size);
+                c->entries[i].offset, c->table_size, false);
     } else {
         ret = qcow2_pre_write_overlap_check(bs, 0,
-                c->entries[i].offset, c->table_size);
+                c->entries[i].offset, c->table_size, false);
     }
 
     if (ret < 0) {

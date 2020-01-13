@@ -67,9 +67,9 @@ class TestActiveMirror(iotests.QMPTestCase):
                             'write -P 1 0 %i' % self.image_len);
 
         # Start some background requests
-        for offset in range(1 * self.image_len / 8, 3 * self.image_len / 8, 1024 * 1024):
+        for offset in range(1 * self.image_len // 8, 3 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -P 2 %i 1M' % offset)
-        for offset in range(2 * self.image_len / 8, 3 * self.image_len / 8, 1024 * 1024):
+        for offset in range(2 * self.image_len // 8, 3 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -z %i 1M' % offset)
 
         # Start the block job
@@ -83,9 +83,9 @@ class TestActiveMirror(iotests.QMPTestCase):
         self.assert_qmp(result, 'return', {})
 
         # Start some more requests
-        for offset in range(3 * self.image_len / 8, 5 * self.image_len / 8, 1024 * 1024):
+        for offset in range(3 * self.image_len // 8, 5 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -P 3 %i 1M' % offset)
-        for offset in range(4 * self.image_len / 8, 5 * self.image_len / 8, 1024 * 1024):
+        for offset in range(4 * self.image_len // 8, 5 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -z %i 1M' % offset)
 
         # Wait for the READY event
@@ -95,9 +95,9 @@ class TestActiveMirror(iotests.QMPTestCase):
         # the source) should be settled using the active mechanism.
         # The mirror code itself asserts that the source BDS's dirty
         # bitmap will stay clean between READY and COMPLETED.
-        for offset in range(5 * self.image_len / 8, 7 * self.image_len / 8, 1024 * 1024):
+        for offset in range(5 * self.image_len // 8, 7 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -P 3 %i 1M' % offset)
-        for offset in range(6 * self.image_len / 8, 7 * self.image_len / 8, 1024 * 1024):
+        for offset in range(6 * self.image_len // 8, 7 * self.image_len // 8, 1024 * 1024):
             self.vm.hmp_qemu_io('source', 'aio_write -z %i 1M' % offset)
 
         if sync_source_and_target:
@@ -114,7 +114,33 @@ class TestActiveMirror(iotests.QMPTestCase):
     def testActiveIOFlushed(self):
         self.doActiveIO(True)
 
+    def testUnalignedActiveIO(self):
+        # Fill the source image
+        result = self.vm.hmp_qemu_io('source', 'write -P 1 0 2M')
+
+        # Start the block job (very slowly)
+        result = self.vm.qmp('blockdev-mirror',
+                             job_id='mirror',
+                             filter_node_name='mirror-node',
+                             device='source-node',
+                             target='target-node',
+                             sync='full',
+                             copy_mode='write-blocking',
+                             buf_size=(1048576 // 4),
+                             speed=1)
+        self.assert_qmp(result, 'return', {})
+
+        # Start an unaligned request to a dirty area
+        result = self.vm.hmp_qemu_io('source', 'write -P 2 %i 1' % (1048576 + 42))
+
+        # Let the job finish
+        result = self.vm.qmp('block-job-set-speed', device='mirror', speed=0)
+        self.assert_qmp(result, 'return', {})
+        self.complete_and_wait(drive='mirror')
+
+        self.potential_writes_in_flight = False
 
 
 if __name__ == '__main__':
-    iotests.main(supported_fmts=['qcow2', 'raw'])
+    iotests.main(supported_fmts=['qcow2', 'raw'],
+                 supported_protocols=['file'])

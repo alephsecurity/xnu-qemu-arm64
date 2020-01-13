@@ -23,7 +23,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
 #include "hw/misc/unimp.h"
 #include "sysemu/sysemu.h"
@@ -33,7 +33,7 @@
 #include "qemu-common.h"
 #include "exec/hwaddr.h"
 #include "hw/boards.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "cpu.h"
 #include "hw/arm/xnu_mem.h"
 

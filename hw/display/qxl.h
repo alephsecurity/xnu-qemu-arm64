@@ -1,9 +1,7 @@
 #ifndef HW_QXL_H
 #define HW_QXL_H
 
-#include "qemu-common.h"
 
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "vga_int.h"
 #include "qemu/thread.h"
@@ -34,6 +32,7 @@ typedef struct PCIQXLDevice {
     PortioList         vga_port_list;
     SimpleSpiceDisplay ssd;
     int                id;
+    bool               have_vga;
     uint32_t           debug;
     uint32_t           guestdebug;
     uint32_t           cmdlog;
@@ -43,7 +42,6 @@ typedef struct PCIQXLDevice {
 
     enum qxl_mode      mode;
     uint32_t           cmdflags;
-    int                generation;
     uint32_t           revision;
 
     int32_t            num_memslots;
@@ -79,6 +77,8 @@ typedef struct PCIQXLDevice {
     QXLPHYSICAL        guest_cursor;
 
     QXLPHYSICAL        guest_monitors_config;
+    uint32_t           guest_head0_width;
+    uint32_t           guest_head0_height;
 
     QemuMutex          track_lock;
 

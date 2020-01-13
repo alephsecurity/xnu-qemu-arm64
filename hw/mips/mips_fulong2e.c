@@ -19,15 +19,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
+#include "cpu.h"
 #include "hw/i386/pc.h"
 #include "hw/dma/i8257.h"
 #include "hw/isa/superio.h"
 #include "net/net.h"
 #include "hw/boards.h"
-#include "hw/i2c/smbus.h"
+#include "hw/i2c/smbus_eeprom.h"
 #include "hw/block/flash.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/cpudevs.h"
@@ -35,23 +36,25 @@
 #include "audio/audio.h"
 #include "qemu/log.h"
 #include "hw/loader.h"
-#include "hw/mips/bios.h"
 #include "hw/ide.h"
 #include "elf.h"
 #include "hw/isa/vt82c686.h"
-#include "hw/timer/mc146818rtc.h"
+#include "hw/rtc/mc146818rtc.h"
 #include "hw/timer/i8254.h"
 #include "exec/address-spaces.h"
 #include "sysemu/qtest.h"
+#include "sysemu/reset.h"
 #include "qemu/error-report.h"
 
 #define DEBUG_FULONG2E_INIT
 
-#define ENVP_ADDR       0x80002000l
-#define ENVP_NB_ENTRIES	 	16
-#define ENVP_ENTRY_SIZE	 	256
+#define ENVP_ADDR               0x80002000l
+#define ENVP_NB_ENTRIES         16
+#define ENVP_ENTRY_SIZE         256
 
-#define MAX_IDE_BUS 2
+/* fulong 2e has a 512k flash: Winbond W39L040AP70Z */
+#define BIOS_SIZE               (512 * KiB)
+#define MAX_IDE_BUS             2
 
 /*
  * PMON is not part of qemu and released with BSD license, anyone
@@ -80,14 +83,15 @@ static struct _loaderparams {
     const char *initrd_filename;
 } loaderparams;
 
-static void GCC_FMT_ATTR(3, 4) prom_set(uint32_t* prom_buf, int index,
+static void GCC_FMT_ATTR(3, 4) prom_set(uint32_t *prom_buf, int index,
                                         const char *string, ...)
 {
     va_list ap;
     int32_t table_addr;
 
-    if (index >= ENVP_NB_ENTRIES)
+    if (index >= ENVP_NB_ENTRIES) {
         return;
+    }
 
     if (string == NULL) {
         prom_buf[index] = 0;
@@ -102,17 +106,18 @@ static void GCC_FMT_ATTR(3, 4) prom_set(uint32_t* prom_buf, int index,
     va_end(ap);
 }
 
-static int64_t load_kernel (CPUMIPSState *env)
+static int64_t load_kernel(CPUMIPSState *env)
 {
-    int64_t kernel_entry, kernel_low, kernel_high;
+    int64_t kernel_entry, kernel_low, kernel_high, initrd_size;
     int index = 0;
-    long kernel_size, initrd_size;
+    long kernel_size;
     ram_addr_t initrd_offset;
     uint32_t *prom_buf;
     long prom_size;
 
-    kernel_size = load_elf(loaderparams.kernel_filename, cpu_mips_kseg0_to_phys,
-                           NULL, (uint64_t *)&kernel_entry,
+    kernel_size = load_elf(loaderparams.kernel_filename, NULL,
+                           cpu_mips_kseg0_to_phys, NULL,
+                           (uint64_t *)&kernel_entry,
                            (uint64_t *)&kernel_low, (uint64_t *)&kernel_high,
                            0, EM_MIPS, 1, 0);
     if (kernel_size < 0) {
@@ -126,16 +131,18 @@ static int64_t load_kernel (CPUMIPSState *env)
     initrd_size = 0;
     initrd_offset = 0;
     if (loaderparams.initrd_filename) {
-        initrd_size = get_image_size (loaderparams.initrd_filename);
+        initrd_size = get_image_size(loaderparams.initrd_filename);
         if (initrd_size > 0) {
-            initrd_offset = (kernel_high + ~INITRD_PAGE_MASK) & INITRD_PAGE_MASK;
+            initrd_offset = (kernel_high + ~INITRD_PAGE_MASK) &
+                            INITRD_PAGE_MASK;
             if (initrd_offset + initrd_size > ram_size) {
                 error_report("memory too small for initial ram disk '%s'",
                              loaderparams.initrd_filename);
                 exit(1);
             }
             initrd_size = load_image_targphys(loaderparams.initrd_filename,
-                                     initrd_offset, ram_size - initrd_offset);
+                                              initrd_offset,
+                                              ram_size - initrd_offset);
         }
         if (initrd_size == (target_ulong) -1) {
             error_report("could not load initial ram disk '%s'",
@@ -150,9 +157,10 @@ static int64_t load_kernel (CPUMIPSState *env)
 
     prom_set(prom_buf, index++, "%s", loaderparams.kernel_filename);
     if (initrd_size > 0) {
-        prom_set(prom_buf, index++, "rd_start=0x%" PRIx64 " rd_size=%li %s",
-                 cpu_mips_phys_to_kseg0(NULL, initrd_offset), initrd_size,
-                 loaderparams.kernel_cmdline);
+        prom_set(prom_buf, index++,
+                 "rd_start=0x%" PRIx64 " rd_size=%" PRId64 " %s",
+                 cpu_mips_phys_to_kseg0(NULL, initrd_offset),
+                 initrd_size, loaderparams.kernel_cmdline);
     } else {
         prom_set(prom_buf, index++, "%s", loaderparams.kernel_cmdline);
     }
@@ -171,33 +179,47 @@ static int64_t load_kernel (CPUMIPSState *env)
     return kernel_entry;
 }
 
-static void write_bootloader (CPUMIPSState *env, uint8_t *base, int64_t kernel_addr)
+static void write_bootloader(CPUMIPSState *env, uint8_t *base,
+                             int64_t kernel_addr)
 {
     uint32_t *p;
 
     /* Small bootloader */
-    p = (uint32_t *) base;
+    p = (uint32_t *)base;
 
-    stl_p(p++, 0x0bf00010);                                      /* j 0x1fc00040 */
-    stl_p(p++, 0x00000000);                                      /* nop */
+    /* j 0x1fc00040 */
+    stl_p(p++, 0x0bf00010);
+    /* nop */
+    stl_p(p++, 0x00000000);
 
     /* Second part of the bootloader */
-    p = (uint32_t *) (base + 0x040);
+    p = (uint32_t *)(base + 0x040);
 
-    stl_p(p++, 0x3c040000);                                      /* lui a0, 0 */
-    stl_p(p++, 0x34840002);                                      /* ori a0, a0, 2 */
-    stl_p(p++, 0x3c050000 | ((ENVP_ADDR >> 16) & 0xffff));       /* lui a1, high(ENVP_ADDR) */
-    stl_p(p++, 0x34a50000 | (ENVP_ADDR & 0xffff));               /* ori a1, a0, low(ENVP_ADDR) */
-    stl_p(p++, 0x3c060000 | (((ENVP_ADDR + 8) >> 16) & 0xffff)); /* lui a2, high(ENVP_ADDR + 8) */
-    stl_p(p++, 0x34c60000 | ((ENVP_ADDR + 8) & 0xffff));         /* ori a2, a2, low(ENVP_ADDR + 8) */
-    stl_p(p++, 0x3c070000 | (loaderparams.ram_size >> 16));      /* lui a3, high(env->ram_size) */
-    stl_p(p++, 0x34e70000 | (loaderparams.ram_size & 0xffff));   /* ori a3, a3, low(env->ram_size) */
-    stl_p(p++, 0x3c1f0000 | ((kernel_addr >> 16) & 0xffff));     /* lui ra, high(kernel_addr) */;
-    stl_p(p++, 0x37ff0000 | (kernel_addr & 0xffff));             /* ori ra, ra, low(kernel_addr) */
-    stl_p(p++, 0x03e00008);                                      /* jr ra */
-    stl_p(p++, 0x00000000);                                      /* nop */
+    /* lui a0, 0 */
+    stl_p(p++, 0x3c040000);
+    /* ori a0, a0, 2 */
+    stl_p(p++, 0x34840002);
+    /* lui a1, high(ENVP_ADDR) */
+    stl_p(p++, 0x3c050000 | ((ENVP_ADDR >> 16) & 0xffff));
+    /* ori a1, a0, low(ENVP_ADDR) */
+    stl_p(p++, 0x34a50000 | (ENVP_ADDR & 0xffff));
+    /* lui a2, high(ENVP_ADDR + 8) */
+    stl_p(p++, 0x3c060000 | (((ENVP_ADDR + 8) >> 16) & 0xffff));
+    /* ori a2, a2, low(ENVP_ADDR + 8) */
+    stl_p(p++, 0x34c60000 | ((ENVP_ADDR + 8) & 0xffff));
+    /* lui a3, high(env->ram_size) */
+    stl_p(p++, 0x3c070000 | (loaderparams.ram_size >> 16));
+    /* ori a3, a3, low(env->ram_size) */
+    stl_p(p++, 0x34e70000 | (loaderparams.ram_size & 0xffff));
+    /* lui ra, high(kernel_addr) */
+    stl_p(p++, 0x3c1f0000 | ((kernel_addr >> 16) & 0xffff));
+    /* ori ra, ra, low(kernel_addr) */
+    stl_p(p++, 0x37ff0000 | (kernel_addr & 0xffff));
+    /* jr ra */
+    stl_p(p++, 0x03e00008);
+    /* nop */
+    stl_p(p++, 0x00000000);
 }
-
 
 static void main_cpu_reset(void *opaque)
 {
@@ -210,20 +232,6 @@ static void main_cpu_reset(void *opaque)
         env->CP0_Status &= ~((1 << CP0St_BEV) | (1 << CP0St_ERL));
     }
 }
-
-static const uint8_t eeprom_spd[0x80] = {
-    0x80,0x08,0x07,0x0d,0x09,0x02,0x40,0x00,0x04,0x70,
-    0x70,0x00,0x82,0x10,0x00,0x01,0x0e,0x04,0x0c,0x01,
-    0x02,0x20,0x80,0x75,0x70,0x00,0x00,0x50,0x3c,0x50,
-    0x2d,0x20,0xb0,0xb0,0x50,0x50,0x00,0x00,0x00,0x00,
-    0x00,0x41,0x48,0x3c,0x32,0x75,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x9c,0x7b,0x07,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x48,0x42,0x35,0x34,0x41,0x32,
-    0x35,0x36,0x38,0x4b,0x4e,0x2d,0x41,0x37,0x35,0x42,
-    0x20,0x30,0x20
-};
 
 static void vt82c686b_southbridge_init(PCIBus *pci_bus, int slot, qemu_irq intc,
                                        I2CBus **i2c_bus, ISABus **p_isa_bus)
@@ -249,7 +257,7 @@ static void vt82c686b_southbridge_init(PCIBus *pci_bus, int slot, qemu_irq intc,
     isa_create_simple(isa_bus, TYPE_VT82C686B_SUPERIO);
 
     ide_drive_get(hd, ARRAY_SIZE(hd));
-    vt82c686b_ide_init(pci_bus, hd, PCI_DEVFN(slot, 1));
+    via_ide_init(pci_bus, hd, PCI_DEVFN(slot, 1));
 
     pci_create_simple(pci_bus, PCI_DEVFN(slot, 2), "vt82c686b-usb-uhci");
     pci_create_simple(pci_bus, PCI_DEVFN(slot, 3), "vt82c686b-usb-uhci");
@@ -262,11 +270,11 @@ static void vt82c686b_southbridge_init(PCIBus *pci_bus, int slot, qemu_irq intc,
 }
 
 /* Network support */
-static void network_init (PCIBus *pci_bus)
+static void network_init(PCIBus *pci_bus)
 {
     int i;
 
-    for(i = 0; i < nb_nics; i++) {
+    for (i = 0; i < nb_nics; i++) {
         NICInfo *nd = &nd_table[i];
         const char *default_devaddr = NULL;
 
@@ -281,7 +289,6 @@ static void network_init (PCIBus *pci_bus)
 
 static void mips_fulong2e_init(MachineState *machine)
 {
-    ram_addr_t ram_size = machine->ram_size;
     const char *kernel_filename = machine->kernel_filename;
     const char *kernel_cmdline = machine->kernel_cmdline;
     const char *initrd_filename = machine->initrd_filename;
@@ -289,13 +296,17 @@ static void mips_fulong2e_init(MachineState *machine)
     MemoryRegion *address_space_mem = get_system_memory();
     MemoryRegion *ram = g_new(MemoryRegion, 1);
     MemoryRegion *bios = g_new(MemoryRegion, 1);
+    ram_addr_t ram_size = machine->ram_size;
     long bios_size;
+    uint8_t *spd_data;
+    Error *err = NULL;
     int64_t kernel_entry;
     PCIBus *pci_bus;
     ISABus *isa_bus;
     I2CBus *smbus;
     MIPSCPU *cpu;
     CPUMIPSState *env;
+    DeviceState *dev;
 
     /* init CPUs */
     cpu = MIPS_CPU(cpu_create(machine->cpu_type));
@@ -303,30 +314,29 @@ static void mips_fulong2e_init(MachineState *machine)
 
     qemu_register_reset(main_cpu_reset, cpu);
 
-    /* fulong 2e has 256M ram. */
+    /* TODO: support more than 256M RAM as highmem */
     ram_size = 256 * MiB;
-
-    /* fulong 2e has a 1M flash.Winbond W39L040AP70Z */
-    bios_size = 1 * MiB;
 
     /* allocate RAM */
     memory_region_allocate_system_memory(ram, NULL, "fulong2e.ram", ram_size);
-    memory_region_init_ram(bios, NULL, "fulong2e.bios", bios_size,
+    memory_region_init_ram(bios, NULL, "fulong2e.bios", BIOS_SIZE,
                            &error_fatal);
     memory_region_set_readonly(bios, true);
 
     memory_region_add_subregion(address_space_mem, 0, ram);
     memory_region_add_subregion(address_space_mem, 0x1fc00000LL, bios);
 
-    /* We do not support flash operation, just loading pmon.bin as raw BIOS.
-     * Please use -L to set the BIOS path and -bios to set bios name. */
+    /*
+     * We do not support flash operation, just loading pmon.bin as raw BIOS.
+     * Please use -L to set the BIOS path and -bios to set bios name.
+     */
 
     if (kernel_filename) {
         loaderparams.ram_size = ram_size;
         loaderparams.kernel_filename = kernel_filename;
         loaderparams.kernel_cmdline = kernel_cmdline;
         loaderparams.initrd_filename = initrd_filename;
-        kernel_entry = load_kernel (env);
+        kernel_entry = load_kernel(env);
         write_bootloader(env, memory_region_get_ram_ptr(bios), kernel_entry);
     } else {
         if (bios_name == NULL) {
@@ -359,8 +369,22 @@ static void mips_fulong2e_init(MachineState *machine)
     vt82c686b_southbridge_init(pci_bus, FULONG2E_VIA_SLOT, env->irq[5],
                                &smbus, &isa_bus);
 
-    /* TODO: Populate SPD eeprom data.  */
-    smbus_eeprom_init(smbus, 1, eeprom_spd, sizeof(eeprom_spd));
+    /* GPU */
+    if (vga_interface_type != VGA_NONE) {
+        dev = DEVICE(pci_create(pci_bus, -1, "ati-vga"));
+        qdev_prop_set_uint32(dev, "vgamem_mb", 16);
+        qdev_prop_set_uint16(dev, "x-device-id", 0x5159);
+        qdev_init_nofail(dev);
+    }
+
+    /* Populate SPD eeprom data */
+    spd_data = spd_data_generate(DDR, ram_size, &err);
+    if (err) {
+        warn_report_err(err);
+    }
+    if (spd_data) {
+        smbus_eeprom_init_one(smbus, 0x50, spd_data);
+    }
 
     mc146818_rtc_init(isa_bus, 2000, NULL);
 
@@ -374,6 +398,7 @@ static void mips_fulong2e_machine_init(MachineClass *mc)
     mc->init = mips_fulong2e_init;
     mc->block_default_type = IF_IDE;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("Loongson-2E");
+    mc->default_ram_size = 256 * MiB;
 }
 
 DEFINE_MACHINE("fulong2e", mips_fulong2e_machine_init)

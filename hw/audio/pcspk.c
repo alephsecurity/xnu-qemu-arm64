@@ -23,12 +23,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/isa/isa.h"
 #include "hw/audio/soundhw.h"
 #include "audio/audio.h"
+#include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/timer/i8254.h"
+#include "migration/vmstate.h"
 #include "hw/audio/pcspk.h"
 #include "qapi/error.h"
 
@@ -102,7 +103,7 @@ static void pcspk_callback(void *opaque, int free)
     }
 
     while (free > 0) {
-        n = audio_MIN(s->samples - s->play_pos, (unsigned int)free);
+        n = MIN(s->samples - s->play_pos, (unsigned int)free);
         n = AUD_write(s->voice, &s->sample_buf[s->play_pos], n);
         if (!n)
             break;
@@ -114,7 +115,7 @@ static void pcspk_callback(void *opaque, int free)
 static int pcspk_audio_init(ISABus *bus)
 {
     PCSpkState *s = pcspk_state;
-    struct audsettings as = {PCSPK_SAMPLE_RATE, 1, AUD_FMT_U8, 0};
+    struct audsettings as = {PCSPK_SAMPLE_RATE, 1, AUDIO_FORMAT_U8, 0};
 
     AUD_register_card(s_spk, &s->card);
 
@@ -208,6 +209,7 @@ static const VMStateDescription vmstate_spk = {
 };
 
 static Property pcspk_properties[] = {
+    DEFINE_AUDIO_PROPERTIES(PCSpkState, card),
     DEFINE_PROP_UINT32("iobase", PCSpkState, iobase,  -1),
     DEFINE_PROP_BOOL("migrate", PCSpkState, migrate,  true),
     DEFINE_PROP_END_OF_LIST(),
@@ -222,6 +224,7 @@ static void pcspk_class_initfn(ObjectClass *klass, void *data)
     dc->vmsd = &vmstate_spk;
     dc->props = pcspk_properties;
     /* Reason: realize sets global pcspk_state */
+    /* Reason: pit object link */
     dc->user_creatable = false;
 }
 

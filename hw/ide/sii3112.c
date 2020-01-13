@@ -14,6 +14,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/ide/pci.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 #define TYPE_SII3112_PCI "sii3112"
@@ -88,35 +89,19 @@ static uint64_t sii3112_reg_read(void *opaque, hwaddr addr,
         val |= (uint32_t)d->i.bmdma[1].status << 16;
         break;
     case 0x80 ... 0x87:
-        if (size == 1) {
-            val = ide_ioport_read(&d->i.bus[0], addr - 0x80);
-        } else if (addr == 0x80) {
-            val = (size == 2) ? ide_data_readw(&d->i.bus[0], 0) :
-                                ide_data_readl(&d->i.bus[0], 0);
-        } else {
-            val = (1ULL << (size * 8)) - 1;
-        }
+        val = pci_ide_data_le_ops.read(&d->i.bus[0], addr - 0x80, size);
         break;
     case 0x8a:
-        val = (size == 1) ? ide_status_read(&d->i.bus[0], 4) :
-                            (1ULL << (size * 8)) - 1;
+        val = pci_ide_cmd_le_ops.read(&d->i.bus[0], 2, size);
         break;
     case 0xa0:
         val = d->regs[0].confstat;
         break;
     case 0xc0 ... 0xc7:
-        if (size == 1) {
-            val = ide_ioport_read(&d->i.bus[1], addr - 0xc0);
-        } else if (addr == 0xc0) {
-            val = (size == 2) ? ide_data_readw(&d->i.bus[1], 0) :
-                                ide_data_readl(&d->i.bus[1], 0);
-        } else {
-            val = (1ULL << (size * 8)) - 1;
-        }
+        val = pci_ide_data_le_ops.read(&d->i.bus[1], addr - 0xc0, size);
         break;
     case 0xca:
-        val = (size == 1) ? ide_status_read(&d->i.bus[0], 4) :
-                            (1ULL << (size * 8)) - 1;
+        val = pci_ide_cmd_le_ops.read(&d->i.bus[1], 2, size);
         break;
     case 0xe0:
         val = d->regs[1].confstat;
@@ -186,36 +171,16 @@ static void sii3112_reg_write(void *opaque, hwaddr addr,
         bmdma_addr_ioport_ops.write(&d->i.bmdma[1], addr - 12, val, size);
         break;
     case 0x80 ... 0x87:
-        if (size == 1) {
-            ide_ioport_write(&d->i.bus[0], addr - 0x80, val);
-        } else if (addr == 0x80) {
-            if (size == 2) {
-                ide_data_writew(&d->i.bus[0], 0, val);
-            } else {
-                ide_data_writel(&d->i.bus[0], 0, val);
-            }
-        }
+        pci_ide_data_le_ops.write(&d->i.bus[0], addr - 0x80, val, size);
         break;
     case 0x8a:
-        if (size == 1) {
-            ide_cmd_write(&d->i.bus[0], 4, val);
-        }
+        pci_ide_cmd_le_ops.write(&d->i.bus[0], 2, val, size);
         break;
     case 0xc0 ... 0xc7:
-        if (size == 1) {
-            ide_ioport_write(&d->i.bus[1], addr - 0xc0, val);
-        } else if (addr == 0xc0) {
-            if (size == 2) {
-                ide_data_writew(&d->i.bus[1], 0, val);
-            } else {
-                ide_data_writel(&d->i.bus[1], 0, val);
-            }
-        }
+        pci_ide_data_le_ops.write(&d->i.bus[1], addr - 0xc0, val, size);
         break;
     case 0xca:
-        if (size == 1) {
-            ide_cmd_write(&d->i.bus[1], 4, val);
-        }
+        pci_ide_cmd_le_ops.write(&d->i.bus[1], 2, val, size);
         break;
     case 0x100:
         d->regs[0].scontrol = val & 0xfff;
@@ -271,9 +236,9 @@ static void sii3112_set_irq(void *opaque, int channel, int level)
     sii3112_update_irq(s);
 }
 
-static void sii3112_reset(void *opaque)
+static void sii3112_reset(DeviceState *dev)
 {
-    SiI3112PCIState *s = opaque;
+    SiI3112PCIState *s = SII3112_PCI(dev);
     int i;
 
     for (i = 0; i < 2; i++) {
@@ -324,7 +289,6 @@ static void sii3112_pci_realize(PCIDevice *dev, Error **errp)
         s->bmdma[i].bus = &s->bus[i];
         ide_register_restart_cb(&s->bus[i]);
     }
-    qemu_register_reset(sii3112_reset, s);
 }
 
 static void sii3112_pci_class_init(ObjectClass *klass, void *data)
@@ -337,6 +301,7 @@ static void sii3112_pci_class_init(ObjectClass *klass, void *data)
     pd->class_id = PCI_CLASS_STORAGE_RAID;
     pd->revision = 1;
     pd->realize = sii3112_pci_realize;
+    dc->reset = sii3112_reset;
     dc->desc = "SiI3112A SATA controller";
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }

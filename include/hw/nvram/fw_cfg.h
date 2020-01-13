@@ -2,7 +2,7 @@
 #define FW_CFG_H
 
 #include "exec/hwaddr.h"
-#include "hw/nvram/fw_cfg_keys.h"
+#include "standard-headers/linux/qemu_fw_cfg.h"
 #include "hw/sysbus.h"
 #include "sysemu/dma.h"
 
@@ -14,12 +14,7 @@
 #define FW_CFG_IO(obj)  OBJECT_CHECK(FWCfgIoState,  (obj), TYPE_FW_CFG_IO)
 #define FW_CFG_MEM(obj) OBJECT_CHECK(FWCfgMemState, (obj), TYPE_FW_CFG_MEM)
 
-typedef struct FWCfgFile {
-    uint32_t  size;        /* file size */
-    uint16_t  select;      /* write this to 0x510 to read it */
-    uint16_t  reserved;
-    char      name[FW_CFG_MAX_FILE_PATH];
-} FWCfgFile;
+typedef struct fw_cfg_file FWCfgFile;
 
 #define FW_CFG_ORDER_OVERRIDE_VGA    70
 #define FW_CFG_ORDER_OVERRIDE_NIC    80
@@ -34,14 +29,7 @@ typedef struct FWCfgFiles {
     FWCfgFile f[];
 } FWCfgFiles;
 
-/* Control as first field allows for different structures selected by this
- * field, which might be useful in the future
- */
-typedef struct FWCfgDmaAccess {
-    uint32_t control;
-    uint32_t length;
-    uint64_t address;
-} QEMU_PACKED FWCfgDmaAccess;
+typedef struct fw_cfg_dma_access FWCfgDmaAccess;
 
 typedef void (*FWCfgCallback)(void *opaque);
 typedef void (*FWCfgWriteCallback)(void *opaque, off_t start, size_t len);
@@ -111,6 +99,20 @@ void fw_cfg_add_bytes(FWCfgState *s, uint16_t key, void *data, size_t len);
 void fw_cfg_add_string(FWCfgState *s, uint16_t key, const char *value);
 
 /**
+ * fw_cfg_modify_string:
+ * @s: fw_cfg device being modified
+ * @key: selector key value for new fw_cfg item
+ * @value: NUL-terminated ascii string
+ *
+ * Replace the fw_cfg item available by selecting the given key. The new
+ * data will consist of a dynamically allocated copy of the provided string,
+ * including its NUL terminator. The data being replaced, assumed to have
+ * been dynamically allocated during an earlier call to either
+ * fw_cfg_add_string() or fw_cfg_modify_string(), is freed before returning.
+ */
+void fw_cfg_modify_string(FWCfgState *s, uint16_t key, const char *value);
+
+/**
  * fw_cfg_add_i16:
  * @s: fw_cfg device being modified
  * @key: selector key value for new fw_cfg item
@@ -149,6 +151,20 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value);
 void fw_cfg_add_i32(FWCfgState *s, uint16_t key, uint32_t value);
 
 /**
+ * fw_cfg_modify_i32:
+ * @s: fw_cfg device being modified
+ * @key: selector key value for new fw_cfg item
+ * @value: 32-bit integer
+ *
+ * Replace the fw_cfg item available by selecting the given key. The new
+ * data will consist of a dynamically allocated copy of the given 32-bit
+ * value, converted to little-endian representation. The data being replaced,
+ * assumed to have been dynamically allocated during an earlier call to
+ * either fw_cfg_add_i32() or fw_cfg_modify_i32(), is freed before returning.
+ */
+void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value);
+
+/**
  * fw_cfg_add_i64:
  * @s: fw_cfg device being modified
  * @key: selector key value for new fw_cfg item
@@ -159,6 +175,20 @@ void fw_cfg_add_i32(FWCfgState *s, uint16_t key, uint32_t value);
  * value, converted to little-endian representation.
  */
 void fw_cfg_add_i64(FWCfgState *s, uint16_t key, uint64_t value);
+
+/**
+ * fw_cfg_modify_i64:
+ * @s: fw_cfg device being modified
+ * @key: selector key value for new fw_cfg item
+ * @value: 64-bit integer
+ *
+ * Replace the fw_cfg item available by selecting the given key. The new
+ * data will consist of a dynamically allocated copy of the given 64-bit
+ * value, converted to little-endian representation. The data being replaced,
+ * assumed to have been dynamically allocated during an earlier call to
+ * either fw_cfg_add_i64() or fw_cfg_modify_i64(), is freed before returning.
+ */
+void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value);
 
 /**
  * fw_cfg_add_file:
@@ -237,5 +267,19 @@ FWCfgState *fw_cfg_init_mem_wide(hwaddr ctl_addr,
 
 FWCfgState *fw_cfg_find(void);
 bool fw_cfg_dma_enabled(void *opaque);
+
+/**
+ * fw_cfg_arch_key_name:
+ *
+ * @key: The uint16 selector key.
+ *
+ * The key is architecture-specific (the FW_CFG_ARCH_LOCAL mask is expected
+ * to be set in the key).
+ *
+ * Returns: The stringified architecture-specific name if the selector
+ *          refers to a well-known numerically defined item, or NULL on
+ *          key lookup failure.
+ */
+const char *fw_cfg_arch_key_name(uint16_t key);
 
 #endif

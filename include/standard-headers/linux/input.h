@@ -23,13 +23,17 @@
  */
 
 struct input_event {
-#if (HOST_LONG_BITS != 32 || !defined(__USE_TIME_BITS64)) && !defined(__KERNEL)
+#if (HOST_LONG_BITS != 32 || !defined(__USE_TIME_BITS64)) && !defined(__KERNEL__)
 	struct timeval time;
 #define input_event_sec time.tv_sec
 #define input_event_usec time.tv_usec
 #else
 	unsigned long __sec;
+#if defined(__sparc__) && defined(__arch64__)
+	unsigned int __usec;
+#else
 	unsigned long __usec;
+#endif
 #define input_event_sec  __sec
 #define input_event_usec __usec
 #endif
@@ -267,10 +271,11 @@ struct input_mask {
 /*
  * MT_TOOL types
  */
-#define MT_TOOL_FINGER		0
-#define MT_TOOL_PEN		1
-#define MT_TOOL_PALM		2
-#define MT_TOOL_MAX		2
+#define MT_TOOL_FINGER		0x00
+#define MT_TOOL_PEN		0x01
+#define MT_TOOL_PALM		0x02
+#define MT_TOOL_DIAL		0x0a
+#define MT_TOOL_MAX		0x0f
 
 /*
  * Values describing the status of a force-feedback effect

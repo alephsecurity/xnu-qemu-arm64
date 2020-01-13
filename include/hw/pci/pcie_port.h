@@ -49,6 +49,12 @@ struct PCIESlot {
     /* pci express switch port with slot */
     uint8_t     chassis;
     uint16_t    slot;
+
+    PCIExpLinkSpeed speed;
+    PCIExpLinkWidth width;
+
+    /* Disable ACS (really for a pcie_root_port) */
+    bool        disable_acs;
     QLIST_ENTRY(PCIESlot) next;
 };
 
@@ -74,6 +80,7 @@ typedef struct PCIERootPortClass {
     int exp_offset;
     int aer_offset;
     int ssvid_offset;
+    int acs_offset;    /* If nonzero, optional ACS capability offset */
     int ssid;
 } PCIERootPortClass;
 

@@ -1,6 +1,10 @@
 /*
  * Linux o32 style syscalls are in the range from 4000 to 4999.
  */
+
+#ifndef LINUX_USER_MIPS_SYSCALL_NR_H
+#define LINUX_USER_MIPS_SYSCALL_NR_H
+
 #define TARGET_NR_Linux			4000
 #define TARGET_NR_syscall		(TARGET_NR_Linux +   0)
 #define TARGET_NR_exit			(TARGET_NR_Linux +   1)
@@ -363,3 +367,14 @@
 #define TARGET_NR_userfaultfd           (TARGET_NR_Linux + 357)
 #define TARGET_NR_membarrier            (TARGET_NR_Linux + 358)
 #define TARGET_NR_mlock2                (TARGET_NR_Linux + 359)
+#define TARGET_NR_copy_file_range       (TARGET_NR_Linux + 360)
+#define TARGET_NR_preadv2               (TARGET_NR_Linux + 361)
+#define TARGET_NR_pwritev2              (TARGET_NR_Linux + 362)
+#define TARGET_NR_pkey_mprotect         (TARGET_NR_Linux + 363)
+#define TARGET_NR_pkey_alloc            (TARGET_NR_Linux + 364)
+#define TARGET_NR_pkey_free             (TARGET_NR_Linux + 365)
+#define TARGET_NR_statx                 (TARGET_NR_Linux + 366)
+#define TARGET_NR_rseq                  (TARGET_NR_Linux + 367)
+#define TARGET_NR_io_pgetevents         (TARGET_NR_Linux + 368)
+
+#endif

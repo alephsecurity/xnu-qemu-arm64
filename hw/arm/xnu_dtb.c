@@ -24,7 +24,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "sysemu/sysemu.h"
 #include "qemu/error-report.h"
 #include "hw/arm/xnu.h"

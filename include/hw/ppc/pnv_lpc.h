@@ -16,14 +16,20 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _PPC_PNV_LPC_H
-#define _PPC_PNV_LPC_H
+
+#ifndef PPC_PNV_LPC_H
+#define PPC_PNV_LPC_H
 
 #include "hw/ppc/pnv_psi.h"
 
 #define TYPE_PNV_LPC "pnv-lpc"
 #define PNV_LPC(obj) \
      OBJECT_CHECK(PnvLpcController, (obj), TYPE_PNV_LPC)
+#define TYPE_PNV8_LPC TYPE_PNV_LPC "-POWER8"
+#define PNV8_LPC(obj) OBJECT_CHECK(PnvLpcController, (obj), TYPE_PNV8_LPC)
+
+#define TYPE_PNV9_LPC TYPE_PNV_LPC "-POWER9"
+#define PNV9_LPC(obj) OBJECT_CHECK(PnvLpcController, (obj), TYPE_PNV9_LPC)
 
 typedef struct PnvLpcController {
     DeviceState parent;
@@ -50,6 +56,8 @@ typedef struct PnvLpcController {
     MemoryRegion opb_master_regs;
 
     /* OPB Master LS registers */
+    uint32_t opb_irq_route0;
+    uint32_t opb_irq_route1;
     uint32_t opb_irq_stat;
     uint32_t opb_irq_mask;
     uint32_t opb_irq_pol;
@@ -70,6 +78,25 @@ typedef struct PnvLpcController {
     PnvPsi *psi;
 } PnvLpcController;
 
-ISABus *pnv_lpc_isa_create(PnvLpcController *lpc, bool use_cpld, Error **errp);
+#define PNV_LPC_CLASS(klass) \
+     OBJECT_CLASS_CHECK(PnvLpcClass, (klass), TYPE_PNV_LPC)
+#define PNV_LPC_GET_CLASS(obj) \
+     OBJECT_GET_CLASS(PnvLpcClass, (obj), TYPE_PNV_LPC)
 
-#endif /* _PPC_PNV_LPC_H */
+typedef struct PnvLpcClass {
+    DeviceClass parent_class;
+
+    int psi_irq;
+
+    DeviceRealize parent_realize;
+} PnvLpcClass;
+
+/*
+ * Old compilers error on typdef forward declarations. Keep them happy.
+ */
+struct PnvChip;
+
+ISABus *pnv_lpc_isa_create(PnvLpcController *lpc, bool use_cpld, Error **errp);
+int pnv_dt_lpc(struct PnvChip *chip, void *fdt, int root_offset);
+
+#endif /* PPC_PNV_LPC_H */

@@ -24,7 +24,6 @@
  * THE SOFTWARE.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "hw/usb.h"
 #include "qemu/iov.h"
 #include "trace.h"
@@ -87,10 +86,10 @@ void usb_device_reset(USBDevice *dev)
     if (dev == NULL || !dev->attached) {
         return;
     }
+    usb_device_handle_reset(dev);
     dev->remote_wakeup = 0;
     dev->addr = 0;
     dev->state = USB_STATE_DEFAULT;
-    usb_device_handle_reset(dev);
 }
 
 void usb_wakeup(USBEndpoint *ep, unsigned int stream)
@@ -717,15 +716,13 @@ struct USBEndpoint *usb_ep_get(USBDevice *dev, int pid, int ep)
 {
     struct USBEndpoint *eps;
 
-    if (dev == NULL) {
-        return NULL;
-    }
-    eps = (pid == USB_TOKEN_IN) ? dev->ep_in : dev->ep_out;
+    assert(dev != NULL);
     if (ep == 0) {
         return &dev->ep_ctl;
     }
     assert(pid == USB_TOKEN_IN || pid == USB_TOKEN_OUT);
     assert(ep > 0 && ep <= USB_MAX_ENDPOINTS);
+    eps = (pid == USB_TOKEN_IN) ? dev->ep_in : dev->ep_out;
     return eps + ep - 1;
 }
 

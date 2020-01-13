@@ -17,12 +17,11 @@
  * See the COPYING.LIB file in the top-level directory.
  *
  */
+
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "block/block_int.h"
 #include "qemu/error-report.h"
-#include "qemu/module.h"
 #include "qemu/bswap.h"
 #include "vhdx.h"
 
@@ -551,15 +550,15 @@ static int vhdx_log_flush(BlockDriverState *bs, BDRVVHDXState *s,
         }
         if (file_length < desc_entries->hdr.last_file_offset) {
             new_file_size = desc_entries->hdr.last_file_offset;
-            if (new_file_size % (1024*1024)) {
+            if (new_file_size % (1 * MiB)) {
                 /* round up to nearest 1MB boundary */
                 new_file_size = QEMU_ALIGN_UP(new_file_size, MiB);
                 if (new_file_size > INT64_MAX) {
                     ret = -EINVAL;
                     goto exit;
                 }
-                ret = bdrv_truncate(bs->file, new_file_size, PREALLOC_MODE_OFF,
-                                    NULL);
+                ret = bdrv_truncate(bs->file, new_file_size, false,
+                                    PREALLOC_MODE_OFF, NULL);
                 if (ret < 0) {
                     goto exit;
                 }
@@ -803,6 +802,7 @@ int vhdx_parse_log(BlockDriverState *bs, BDRVVHDXState *s, bool *flushed,
 
     if (logs.valid) {
         if (bs->read_only) {
+            bdrv_refresh_filename(bs);
             ret = -EPERM;
             error_setg(errp,
                        "VHDX image file '%s' opened read-only, but "
@@ -835,11 +835,11 @@ static void vhdx_log_raw_to_le_sector(VHDXLogDescriptor *desc,
     /* 8 + 4084 + 4 = 4096, 1 log sector */
     memcpy(&desc->leading_bytes, data, 8);
     data += 8;
-    cpu_to_le64s(&desc->leading_bytes);
+    desc->leading_bytes = cpu_to_le64(desc->leading_bytes);
     memcpy(sector->data, data, 4084);
     data += 4084;
     memcpy(&desc->trailing_bytes, data, 4);
-    cpu_to_le32s(&desc->trailing_bytes);
+    desc->trailing_bytes = cpu_to_le32(desc->trailing_bytes);
     data += 4;
 
     sector->sequence_high  = (uint32_t) (seq >> 32);

@@ -34,14 +34,19 @@ int64_t ptimer_test_time_ns;
 int use_icount = 1;
 bool qtest_allowed;
 
-void timer_init_tl(QEMUTimer *ts,
-                   QEMUTimerList *timer_list, int scale,
-                   QEMUTimerCB *cb, void *opaque)
+void timer_init_full(QEMUTimer *ts,
+                     QEMUTimerListGroup *timer_list_group, QEMUClockType type,
+                     int scale, int attributes,
+                     QEMUTimerCB *cb, void *opaque)
 {
-    ts->timer_list = timer_list;
+    if (!timer_list_group) {
+        timer_list_group = &main_loop_tlg;
+    }
+    ts->timer_list = timer_list_group->tl[type];
     ts->cb = cb;
     ts->opaque = opaque;
     ts->scale = scale;
+    ts->attributes = attributes;
     ts->expire_time = -1;
 }
 
@@ -83,9 +88,9 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
     return ptimer_test_time_ns;
 }
 
-int64_t qemu_clock_deadline_ns_all(QEMUClockType type)
+int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
 {
-    QEMUTimerList *timer_list = main_loop_tlg.tl[type];
+    QEMUTimerList *timer_list = main_loop_tlg.tl[QEMU_CLOCK_VIRTUAL];
     QEMUTimer *t = timer_list->active_timers.next;
     int64_t deadline = -1;
 

@@ -19,7 +19,6 @@
  */
 #include "qemu/osdep.h"
 #include "chardev/char.h"
-#include "hw/hw.h"
 #include "hw/arm/omap.h"
 #include "hw/char/serial.h"
 #include "exec/address-spaces.h"
@@ -63,7 +62,7 @@ struct omap_uart_s *omap_uart_init(hwaddr base,
     s->irq = irq;
     s->serial = serial_mm_init(get_system_memory(), base, 2, irq,
                                omap_clk_getrate(fclk)/16,
-                               chr ?: qemu_chr_new(label, "null"),
+                               chr ?: qemu_chr_new(label, "null", NULL),
                                DEVICE_NATIVE_ENDIAN);
     return s;
 }
@@ -183,6 +182,6 @@ void omap_uart_attach(struct omap_uart_s *s, Chardev *chr)
     /* TODO: Should reuse or destroy current s->serial */
     s->serial = serial_mm_init(get_system_memory(), s->base, 2, s->irq,
                                omap_clk_getrate(s->fclk) / 16,
-                               chr ?: qemu_chr_new("null", "null"),
+                               chr ?: qemu_chr_new("null", "null", NULL),
                                DEVICE_NATIVE_ENDIAN);
 }

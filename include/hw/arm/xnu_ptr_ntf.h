@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_PTR_NTF_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 
 typedef void (*PtrNtfCb)(void *opaque, hwaddr ptr_val);
 

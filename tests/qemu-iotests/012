@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Make sure we can open read-only images
 #
@@ -26,7 +26,6 @@ owner=hch@lst.de
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -41,7 +40,6 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt generic
 _supported_proto file
-_supported_os Linux
 
 # Remove once all tests are fixed to use TEST_IMG_FILE
 # correctly and common.rc sets it unconditionally

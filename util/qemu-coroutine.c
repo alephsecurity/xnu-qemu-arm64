@@ -14,7 +14,6 @@
 
 #include "qemu/osdep.h"
 #include "trace.h"
-#include "qemu-common.h"
 #include "qemu/thread.h"
 #include "qemu/atomic.h"
 #include "qemu/coroutine.h"
@@ -197,4 +196,9 @@ void coroutine_fn qemu_coroutine_yield(void)
 bool qemu_coroutine_entered(Coroutine *co)
 {
     return co->caller;
+}
+
+AioContext *coroutine_fn qemu_coroutine_get_aio_context(Coroutine *co)
+{
+    return co->ctx;
 }

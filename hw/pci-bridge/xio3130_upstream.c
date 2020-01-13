@@ -23,7 +23,9 @@
 #include "hw/pci/pci_ids.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/pcie.h"
-#include "xio3130_upstream.h"
+#include "hw/pci/pcie_port.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 
 #define PCI_DEVICE_ID_TI_XIO3130U       0x8232  /* upstream port */
 #define XIO3130_REVISION                0x2
@@ -108,28 +110,6 @@ static void xio3130_upstream_exitfn(PCIDevice *d)
     pci_bridge_exitfn(d);
 }
 
-PCIEPort *xio3130_upstream_init(PCIBus *bus, int devfn, bool multifunction,
-                             const char *bus_name, pci_map_irq_fn map_irq,
-                             uint8_t port)
-{
-    PCIDevice *d;
-    PCIBridge *br;
-    DeviceState *qdev;
-
-    d = pci_create_multifunction(bus, devfn, multifunction, "x3130-upstream");
-    if (!d) {
-        return NULL;
-    }
-    br = PCI_BRIDGE(d);
-
-    qdev = DEVICE(d);
-    pci_bridge_map_irq(br, bus_name, map_irq);
-    qdev_prop_set_uint8(qdev, "port", port);
-    qdev_init_nofail(qdev);
-
-    return PCIE_PORT(d);
-}
-
 static const VMStateDescription vmstate_xio3130_upstream = {
     .name = "xio3130-express-upstream-port",
     .priority = MIG_PRI_PCI_BUS,
@@ -148,7 +128,7 @@ static void xio3130_upstream_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
 
-    k->is_bridge = 1;
+    k->is_bridge = true;
     k->config_write = xio3130_upstream_write_config;
     k->realize = xio3130_upstream_realize;
     k->exit = xio3130_upstream_exitfn;

@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -30,19 +31,23 @@
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "hw/sparc/sun4m_iommu.h"
-#include "hw/timer/m48t59.h"
+#include "hw/rtc/m48t59.h"
+#include "migration/vmstate.h"
 #include "hw/sparc/sparc32_dma.h"
 #include "hw/block/fdc.h"
+#include "sysemu/reset.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
 #include "net/net.h"
 #include "hw/boards.h"
 #include "hw/scsi/esp.h"
-#include "hw/isa/isa.h"
 #include "hw/nvram/sun_nvram.h"
+#include "hw/qdev-properties.h"
 #include "hw/nvram/chrp_nvram.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/char/escc.h"
 #include "hw/empty_slot.h"
+#include "hw/irq.h"
 #include "hw/loader.h"
 #include "elf.h"
 #include "trace.h"
@@ -98,6 +103,25 @@ struct sun4m_hwdef {
     uint8_t nvram_machine_id;
 };
 
+const char *fw_cfg_arch_key_name(uint16_t key)
+{
+    static const struct {
+        uint16_t key;
+        const char *name;
+    } fw_cfg_arch_wellknown_keys[] = {
+        {FW_CFG_SUN4M_DEPTH, "depth"},
+        {FW_CFG_SUN4M_WIDTH, "width"},
+        {FW_CFG_SUN4M_HEIGHT, "height"},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(fw_cfg_arch_wellknown_keys); i++) {
+        if (fw_cfg_arch_wellknown_keys[i].key == key) {
+            return fw_cfg_arch_wellknown_keys[i].name;
+        }
+    }
+    return NULL;
+}
+
 static void fw_cfg_boot_set(void *opaque, const char *boot_device,
                             Error **errp)
 {
@@ -148,7 +172,7 @@ void cpu_check_irqs(CPUSPARCState *env)
 
                 env->interrupt_index = TT_EXTINT | i;
                 if (old_interrupt != env->interrupt_index) {
-                    cs = CPU(sparc_env_get_cpu(env));
+                    cs = env_cpu(env);
                     trace_sun4m_cpu_interrupt(i);
                     cpu_interrupt(cs, CPU_INTERRUPT_HARD);
                 }
@@ -156,7 +180,7 @@ void cpu_check_irqs(CPUSPARCState *env)
             }
         }
     } else if (!env->pil_in && (env->interrupt_index & ~15) == TT_EXTINT) {
-        cs = CPU(sparc_env_get_cpu(env));
+        cs = env_cpu(env);
         trace_sun4m_cpu_reset_interrupt(env->interrupt_index & 15);
         env->interrupt_index = 0;
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
@@ -225,11 +249,12 @@ static uint64_t translate_kernel_address(void *opaque, uint64_t addr)
 
 static unsigned long sun4m_load_kernel(const char *kernel_filename,
                                        const char *initrd_filename,
-                                       ram_addr_t RAM_size)
+                                       ram_addr_t RAM_size,
+                                       uint32_t *initrd_size)
 {
     int linux_boot;
     unsigned int i;
-    long initrd_size, kernel_size;
+    long kernel_size;
     uint8_t *ptr;
 
     linux_boot = (kernel_filename != NULL);
@@ -243,7 +268,8 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
 #else
         bswap_needed = 0;
 #endif
-        kernel_size = load_elf(kernel_filename, translate_kernel_address, NULL,
+        kernel_size = load_elf(kernel_filename, NULL,
+                               translate_kernel_address, NULL,
                                NULL, NULL, NULL, 1, EM_SPARC, 0, 0);
         if (kernel_size < 0)
             kernel_size = load_aout(kernel_filename, KERNEL_LOAD_ADDR,
@@ -259,23 +285,23 @@ static unsigned long sun4m_load_kernel(const char *kernel_filename,
         }
 
         /* load initrd */
-        initrd_size = 0;
+        *initrd_size = 0;
         if (initrd_filename) {
-            initrd_size = load_image_targphys(initrd_filename,
-                                              INITRD_LOAD_ADDR,
-                                              RAM_size - INITRD_LOAD_ADDR);
-            if (initrd_size < 0) {
+            *initrd_size = load_image_targphys(initrd_filename,
+                                               INITRD_LOAD_ADDR,
+                                               RAM_size - INITRD_LOAD_ADDR);
+            if ((int)*initrd_size < 0) {
                 error_report("could not load initial ram disk '%s'",
                              initrd_filename);
                 exit(1);
             }
         }
-        if (initrd_size > 0) {
+        if (*initrd_size > 0) {
             for (i = 0; i < 64 * TARGET_PAGE_SIZE; i += TARGET_PAGE_SIZE) {
                 ptr = rom_ptr(KERNEL_LOAD_ADDR + i, 24);
                 if (ptr && ldl_p(ptr) == 0x48647253) { /* HdrS */
                     stl_p(ptr + 16, INITRD_LOAD_ADDR);
-                    stl_p(ptr + 20, initrd_size);
+                    stl_p(ptr + 20, *initrd_size);
                     break;
                 }
             }
@@ -559,8 +585,9 @@ static void idreg_init(hwaddr addr)
     s = SYS_BUS_DEVICE(dev);
 
     sysbus_mmio_map(s, 0, addr);
-    cpu_physical_memory_write_rom(&address_space_memory,
-                                  addr, idreg_data, sizeof(idreg_data));
+    address_space_write_rom(&address_space_memory, addr,
+                            MEMTXATTRS_UNSPECIFIED,
+                            idreg_data, sizeof(idreg_data));
 }
 
 #define MACIO_ID_REGISTER(obj) \
@@ -692,7 +719,8 @@ static void prom_init(hwaddr addr, const char *bios_name)
     }
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);
     if (filename) {
-        ret = load_elf(filename, translate_prom_address, &addr, NULL,
+        ret = load_elf(filename, NULL,
+                       translate_prom_address, &addr, NULL,
                        NULL, NULL, 1, EM_SPARC, 0, 0);
         if (ret < 0 || ret > PROM_SIZE_MAX) {
             ret = load_image_targphys(filename, addr, PROM_SIZE_MAX);
@@ -844,11 +872,13 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
     qemu_irq *cpu_irqs[MAX_CPUS], slavio_irq[32], slavio_cpu_irq[MAX_CPUS];
     qemu_irq fdc_tc;
     unsigned long kernel_size;
+    uint32_t initrd_size;
     DriveInfo *fd[MAX_FD];
     FWCfgState *fw_cfg;
-    unsigned int num_vsimms;
     DeviceState *dev;
     SysBusDevice *s;
+    unsigned int smp_cpus = machine->smp.cpus;
+    unsigned int max_cpus = machine->smp.max_cpus;
 
     /* init CPUs */
     for(i = 0; i < smp_cpus; i++) {
@@ -905,8 +935,7 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
         error_report("Unsupported depth: %d", graphic_depth);
         exit (1);
     }
-    num_vsimms = 0;
-    if (num_vsimms == 0) {
+    if (vga_interface_type != VGA_NONE) {
         if (vga_interface_type == VGA_CG3) {
             if (graphic_depth != 8) {
                 error_report("Unsupported depth: %d", graphic_depth);
@@ -941,7 +970,7 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
         }
     }
 
-    for (i = num_vsimms; i < MAX_VSIMMS; i++) {
+    for (i = 0; i < MAX_VSIMMS; i++) {
         /* vsimm registers probed by OBP */
         if (hwdef->vsimm[i].reg_base) {
             empty_slot_init(hwdef->vsimm[i].reg_base, 0x2000);
@@ -1022,9 +1051,10 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
         empty_slot_init(hwdef->bpp_base, 0x20);
     }
 
+    initrd_size = 0;
     kernel_size = sun4m_load_kernel(machine->kernel_filename,
                                     machine->initrd_filename,
-                                    machine->ram_size);
+                                    machine->ram_size, &initrd_size);
 
     nvram_init(nvram, (uint8_t *)&nd_table[0].macaddr, machine->kernel_cmdline,
                machine->boot_order, machine->ram_size, kernel_size,
@@ -1035,7 +1065,17 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
         ecc_init(hwdef->ecc_base, slavio_irq[28],
                  hwdef->ecc_version);
 
-    fw_cfg = fw_cfg_init_mem(CFG_ADDR, CFG_ADDR + 2);
+    dev = qdev_create(NULL, TYPE_FW_CFG_MEM);
+    fw_cfg = FW_CFG(dev);
+    qdev_prop_set_uint32(dev, "data_width", 1);
+    qdev_prop_set_bit(dev, "dma_enabled", false);
+    object_property_add_child(OBJECT(qdev_get_machine()), TYPE_FW_CFG,
+                              OBJECT(fw_cfg), NULL);
+    qdev_init_nofail(dev);
+    s = SYS_BUS_DEVICE(dev);
+    sysbus_mmio_map(s, 0, CFG_ADDR);
+    sysbus_mmio_map(s, 1, CFG_ADDR + 2);
+
     fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, (uint16_t)smp_cpus);
     fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, (uint16_t)max_cpus);
     fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, (uint64_t)ram_size);
@@ -1057,7 +1097,7 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef,
         fw_cfg_add_i32(fw_cfg, FW_CFG_CMDLINE_SIZE, 0);
     }
     fw_cfg_add_i32(fw_cfg, FW_CFG_INITRD_ADDR, INITRD_LOAD_ADDR);
-    fw_cfg_add_i32(fw_cfg, FW_CFG_INITRD_SIZE, 0); // not used
+    fw_cfg_add_i32(fw_cfg, FW_CFG_INITRD_SIZE, initrd_size);
     fw_cfg_add_i16(fw_cfg, FW_CFG_BOOT_DEVICE, machine->boot_order[0]);
     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
 }
@@ -1374,6 +1414,7 @@ static void ss5_class_init(ObjectClass *oc, void *data)
     mc->is_default = 1;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("Fujitsu-MB86904");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss5_type = {
@@ -1392,6 +1433,7 @@ static void ss10_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 4;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-SuperSparc-II");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss10_type = {
@@ -1410,6 +1452,7 @@ static void ss600mp_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 4;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-SuperSparc-II");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss600mp_type = {
@@ -1428,6 +1471,7 @@ static void ss20_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 4;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-SuperSparc-II");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss20_type = {
@@ -1445,6 +1489,7 @@ static void voyager_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("Fujitsu-MB86904");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo voyager_type = {
@@ -1462,6 +1507,7 @@ static void ss_lx_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-MicroSparc-I");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss_lx_type = {
@@ -1479,6 +1525,7 @@ static void ss4_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("Fujitsu-MB86904");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo ss4_type = {
@@ -1496,6 +1543,7 @@ static void scls_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-MicroSparc-I");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo scls_type = {
@@ -1513,6 +1561,7 @@ static void sbook_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-MicroSparc-I");
+    mc->default_display = "tcx";
 }
 
 static const TypeInfo sbook_type = {

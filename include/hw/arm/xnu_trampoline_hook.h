@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_TRAMPOLINE_HOOK_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "cpu.h"
 
 #define HOOK_CODE_ALLOC_SIZE (1 << 20)

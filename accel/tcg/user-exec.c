@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,6 +25,7 @@
 #include "exec/cpu_ldst.h"
 #include "translate-all.h"
 #include "exec/helper-proto.h"
+#include "qemu/atomic128.h"
 
 #undef EAX
 #undef ECX
@@ -62,28 +63,57 @@ static inline int handle_cpu_signal(uintptr_t pc, siginfo_t *info,
 {
     CPUState *cpu = current_cpu;
     CPUClass *cc;
-    int ret;
     unsigned long address = (unsigned long)info->si_addr;
+    MMUAccessType access_type = is_write ? MMU_DATA_STORE : MMU_DATA_LOAD;
 
-    /* We must handle PC addresses from two different sources:
-     * a call return address and a signal frame address.
-     *
-     * Within cpu_restore_state_from_tb we assume the former and adjust
-     * the address by -GETPC_ADJ so that the address is within the call
-     * insn so that addr does not accidentally match the beginning of the
-     * next guest insn.
-     *
-     * However, when the PC comes from the signal frame, it points to
-     * the actual faulting host insn and not a call insn.  Subtracting
-     * GETPC_ADJ in that case may accidentally match the previous guest insn.
-     *
-     * So for the later case, adjust forward to compensate for what
-     * will be done later by cpu_restore_state_from_tb.
-     */
-    if (helper_retaddr) {
+    switch (helper_retaddr) {
+    default:
+        /*
+         * Fault during host memory operation within a helper function.
+         * The helper's host return address, saved here, gives us a
+         * pointer into the generated code that will unwind to the
+         * correct guest pc.
+         */
         pc = helper_retaddr;
-    } else {
+        break;
+
+    case 0:
+        /*
+         * Fault during host memory operation within generated code.
+         * (Or, a unrelated bug within qemu, but we can't tell from here).
+         *
+         * We take the host pc from the signal frame.  However, we cannot
+         * use that value directly.  Within cpu_restore_state_from_tb, we
+         * assume PC comes from GETPC(), as used by the helper functions,
+         * so we adjust the address by -GETPC_ADJ to form an address that
+         * is within the call insn, so that the address does not accidentially
+         * match the beginning of the next guest insn.  However, when the
+         * pc comes from the signal frame it points to the actual faulting
+         * host memory insn and not the return from a call insn.
+         *
+         * Therefore, adjust to compensate for what will be done later
+         * by cpu_restore_state_from_tb.
+         */
         pc += GETPC_ADJ;
+        break;
+
+    case 1:
+        /*
+         * Fault during host read for translation, or loosely, "execution".
+         *
+         * The guest pc is already pointing to the start of the TB for which
+         * code is being generated.  If the guest translator manages the
+         * page crossings correctly, this is exactly the correct address
+         * (and if the translator doesn't handle page boundaries correctly
+         * there's little we can do about that here).  Therefore, do not
+         * trigger the unwinder.
+         *
+         * Like tb_gen_code, release the memory lock before cpu_loop_exit.
+         */
+        pc = 0;
+        access_type = MMU_INST_FETCH;
+        mmap_unlock();
+        break;
     }
 
     /* For synchronous signals we expect to be coming from the vCPU
@@ -133,7 +163,7 @@ static inline int handle_cpu_signal(uintptr_t pc, siginfo_t *info,
              * currently executing TB was modified and must be exited
              * immediately.  Clear helper_retaddr for next execution.
              */
-            helper_retaddr = 0;
+            clear_helper_retaddr();
             cpu_exit_tb_from_sighandler(cpu, old_set);
             /* NORETURN */
 
@@ -146,35 +176,48 @@ static inline int handle_cpu_signal(uintptr_t pc, siginfo_t *info,
        are still valid segv ones */
     address = h2g_nocheck(address);
 
-    cc = CPU_GET_CLASS(cpu);
-    /* see if it is an MMU fault */
-    g_assert(cc->handle_mmu_fault);
-    ret = cc->handle_mmu_fault(cpu, address, 0, is_write, MMU_USER_IDX);
-
-    if (ret == 0) {
-        /* The MMU fault was handled without causing real CPU fault.
-         *  Retain helper_retaddr for a possible second fault.
-         */
-        return 1;
-    }
-
-    /* All other paths lead to cpu_exit; clear helper_retaddr
-     * for next execution.
+    /*
+     * There is no way the target can handle this other than raising
+     * an exception.  Undo signal and retaddr state prior to longjmp.
      */
-    helper_retaddr = 0;
+    sigprocmask(SIG_SETMASK, old_set, NULL);
+    clear_helper_retaddr();
 
-    if (ret < 0) {
-        return 0; /* not an MMU fault */
+    cc = CPU_GET_CLASS(cpu);
+    cc->tlb_fill(cpu, address, 0, access_type, MMU_USER_IDX, false, pc);
+    g_assert_not_reached();
+}
+
+void *probe_access(CPUArchState *env, target_ulong addr, int size,
+                   MMUAccessType access_type, int mmu_idx, uintptr_t retaddr)
+{
+    int flags;
+
+    g_assert(-(addr | TARGET_PAGE_MASK) >= size);
+
+    switch (access_type) {
+    case MMU_DATA_STORE:
+        flags = PAGE_WRITE;
+        break;
+    case MMU_DATA_LOAD:
+        flags = PAGE_READ;
+        break;
+    case MMU_INST_FETCH:
+        flags = PAGE_EXEC;
+        break;
+    default:
+        g_assert_not_reached();
     }
 
-    /* Now we have a real cpu fault.  */
-    cpu_restore_state(cpu, pc, true);
+    if (!guest_addr_valid(addr) || page_check_range(addr, size, flags) < 0) {
+        CPUState *cpu = env_cpu(env);
+        CPUClass *cc = CPU_GET_CLASS(cpu);
+        cc->tlb_fill(cpu, addr, size, access_type, MMU_USER_IDX, false,
+                     retaddr);
+        g_assert_not_reached();
+    }
 
-    sigprocmask(SIG_SETMASK, old_set, NULL);
-    cpu_loop_exit(cpu);
-
-    /* never comes here */
-    return 1;
+    return size ? g2h(addr) : NULL;
 }
 
 #if defined(__i386__)
@@ -478,28 +521,66 @@ int cpu_signal_handler(int host_signum, void *pinfo,
 
 #elif defined(__aarch64__)
 
+#ifndef ESR_MAGIC
+/* Pre-3.16 kernel headers don't have these, so provide fallback definitions */
+#define ESR_MAGIC 0x45535201
+struct esr_context {
+    struct _aarch64_ctx head;
+    uint64_t esr;
+};
+#endif
+
+static inline struct _aarch64_ctx *first_ctx(ucontext_t *uc)
+{
+    return (struct _aarch64_ctx *)&uc->uc_mcontext.__reserved;
+}
+
+static inline struct _aarch64_ctx *next_ctx(struct _aarch64_ctx *hdr)
+{
+    return (struct _aarch64_ctx *)((char *)hdr + hdr->size);
+}
+
 int cpu_signal_handler(int host_signum, void *pinfo, void *puc)
 {
     siginfo_t *info = pinfo;
     ucontext_t *uc = puc;
     uintptr_t pc = uc->uc_mcontext.pc;
-    uint32_t insn = *(uint32_t *)pc;
     bool is_write;
+    struct _aarch64_ctx *hdr;
+    struct esr_context const *esrctx = NULL;
 
-    /* XXX: need kernel patch to get write flag faster.  */
-    is_write = (   (insn & 0xbfff0000) == 0x0c000000   /* C3.3.1 */
-                || (insn & 0xbfe00000) == 0x0c800000   /* C3.3.2 */
-                || (insn & 0xbfdf0000) == 0x0d000000   /* C3.3.3 */
-                || (insn & 0xbfc00000) == 0x0d800000   /* C3.3.4 */
-                || (insn & 0x3f400000) == 0x08000000   /* C3.3.6 */
-                || (insn & 0x3bc00000) == 0x39000000   /* C3.3.13 */
-                || (insn & 0x3fc00000) == 0x3d800000   /* ... 128bit */
-                /* Ingore bits 10, 11 & 21, controlling indexing.  */
-                || (insn & 0x3bc00000) == 0x38000000   /* C3.3.8-12 */
-                || (insn & 0x3fe00000) == 0x3c800000   /* ... 128bit */
-                /* Ignore bits 23 & 24, controlling indexing.  */
-                || (insn & 0x3a400000) == 0x28000000); /* C3.3.7,14-16 */
+    /* Find the esr_context, which has the WnR bit in it */
+    for (hdr = first_ctx(uc); hdr->magic; hdr = next_ctx(hdr)) {
+        if (hdr->magic == ESR_MAGIC) {
+            esrctx = (struct esr_context const *)hdr;
+            break;
+        }
+    }
 
+    if (esrctx) {
+        /* For data aborts ESR.EC is 0b10010x: then bit 6 is the WnR bit */
+        uint64_t esr = esrctx->esr;
+        is_write = extract32(esr, 27, 5) == 0x12 && extract32(esr, 6, 1) == 1;
+    } else {
+        /*
+         * Fall back to parsing instructions; will only be needed
+         * for really ancient (pre-3.16) kernels.
+         */
+        uint32_t insn = *(uint32_t *)pc;
+
+        is_write = ((insn & 0xbfff0000) == 0x0c000000   /* C3.3.1 */
+                    || (insn & 0xbfe00000) == 0x0c800000   /* C3.3.2 */
+                    || (insn & 0xbfdf0000) == 0x0d000000   /* C3.3.3 */
+                    || (insn & 0xbfc00000) == 0x0d800000   /* C3.3.4 */
+                    || (insn & 0x3f400000) == 0x08000000   /* C3.3.6 */
+                    || (insn & 0x3bc00000) == 0x39000000   /* C3.3.13 */
+                    || (insn & 0x3fc00000) == 0x3d800000   /* ... 128bit */
+                    /* Ignore bits 10, 11 & 21, controlling indexing.  */
+                    || (insn & 0x3bc00000) == 0x38000000   /* C3.3.8-12 */
+                    || (insn & 0x3fe00000) == 0x3c800000   /* ... 128bit */
+                    /* Ignore bits 23 & 24, controlling indexing.  */
+                    || (insn & 0x3a400000) == 0x28000000); /* C3.3.7,14-16 */
+    }
     return handle_cpu_signal(pc, info, is_write, &uc->uc_sigmask);
 }
 
@@ -570,6 +651,81 @@ int cpu_signal_handler(int host_signum, void *pinfo,
     return handle_cpu_signal(pc, info, is_write, &uc->uc_sigmask);
 }
 
+#elif defined(__riscv)
+
+int cpu_signal_handler(int host_signum, void *pinfo,
+                       void *puc)
+{
+    siginfo_t *info = pinfo;
+    ucontext_t *uc = puc;
+    greg_t pc = uc->uc_mcontext.__gregs[REG_PC];
+    uint32_t insn = *(uint32_t *)pc;
+    int is_write = 0;
+
+    /* Detect store by reading the instruction at the program
+       counter. Note: we currently only generate 32-bit
+       instructions so we thus only detect 32-bit stores */
+    switch (((insn >> 0) & 0b11)) {
+    case 3:
+        switch (((insn >> 2) & 0b11111)) {
+        case 8:
+            switch (((insn >> 12) & 0b111)) {
+            case 0: /* sb */
+            case 1: /* sh */
+            case 2: /* sw */
+            case 3: /* sd */
+            case 4: /* sq */
+                is_write = 1;
+                break;
+            default:
+                break;
+            }
+            break;
+        case 9:
+            switch (((insn >> 12) & 0b111)) {
+            case 2: /* fsw */
+            case 3: /* fsd */
+            case 4: /* fsq */
+                is_write = 1;
+                break;
+            default:
+                break;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* Check for compressed instructions */
+    switch (((insn >> 13) & 0b111)) {
+    case 7:
+        switch (insn & 0b11) {
+        case 0: /*c.sd */
+        case 2: /* c.sdsp */
+            is_write = 1;
+            break;
+        default:
+            break;
+        }
+        break;
+    case 6:
+        switch (insn & 0b11) {
+        case 0: /* c.sw */
+        case 3: /* c.swsp */
+            is_write = 1;
+            break;
+        default:
+            break;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return handle_cpu_signal(pc, info, is_write, &uc->uc_sigmask);
+}
+
 #else
 
 #error host CPU specific signal handler needed
@@ -584,19 +740,23 @@ static void *atomic_mmu_lookup(CPUArchState *env, target_ulong addr,
 {
     /* Enforce qemu required alignment.  */
     if (unlikely(addr & (size - 1))) {
-        cpu_loop_exit_atomic(ENV_GET_CPU(env), retaddr);
+        cpu_loop_exit_atomic(env_cpu(env), retaddr);
     }
-    helper_retaddr = retaddr;
-    return g2h(addr);
+    void *ret = g2h(addr);
+    set_helper_retaddr(retaddr);
+    return ret;
 }
 
 /* Macro to call the above, with local variables from the use context.  */
 #define ATOMIC_MMU_DECLS do {} while (0)
 #define ATOMIC_MMU_LOOKUP  atomic_mmu_lookup(env, addr, DATA_SIZE, GETPC())
-#define ATOMIC_MMU_CLEANUP do { helper_retaddr = 0; } while (0)
+#define ATOMIC_MMU_CLEANUP do { clear_helper_retaddr(); } while (0)
+#define ATOMIC_MMU_IDX MMU_USER_IDX
 
 #define ATOMIC_NAME(X)   HELPER(glue(glue(atomic_ ## X, SUFFIX), END))
 #define EXTRA_ARGS
+
+#include "atomic_common.inc.c"
 
 #define DATA_SIZE 1
 #include "atomic_template.h"
@@ -615,7 +775,7 @@ static void *atomic_mmu_lookup(CPUArchState *env, target_ulong addr,
 /* The following is only callable from other helpers, and matches up
    with the softmmu version.  */
 
-#ifdef CONFIG_ATOMIC128
+#if HAVE_ATOMIC128 || HAVE_CMPXCHG128
 
 #undef EXTRA_ARGS
 #undef ATOMIC_NAME
@@ -628,4 +788,4 @@ static void *atomic_mmu_lookup(CPUArchState *env, target_ulong addr,
 
 #define DATA_SIZE 16
 #include "atomic_template.h"
-#endif /* CONFIG_ATOMIC128 */
+#endif

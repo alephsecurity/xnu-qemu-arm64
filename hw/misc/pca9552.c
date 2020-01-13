@@ -11,9 +11,10 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/hw.h"
+#include "qemu/module.h"
 #include "hw/misc/pca9552.h"
 #include "hw/misc/pca9552_regs.h"
+#include "migration/vmstate.h"
 
 #define PCA9552_LED_ON   0x0
 #define PCA9552_LED_OFF  0x1
@@ -115,7 +116,7 @@ static void pca9552_autoinc(PCA9552State *s)
     }
 }
 
-static int pca9552_recv(I2CSlave *i2c)
+static uint8_t pca9552_recv(I2CSlave *i2c)
 {
     PCA9552State *s = PCA9552(i2c);
     uint8_t ret;

@@ -176,7 +176,7 @@ int qemu_ftruncate64(int fd, int64_t length)
     BOOL res;
 
     if ((GetVersion() & 0x80000000UL) && (length >> 32) != 0)
-	return -1;
+        return -1;
 
     h = (HANDLE)_get_osfhandle(fd);
 
@@ -184,13 +184,13 @@ int qemu_ftruncate64(int fd, int64_t length)
     li.HighPart = 0;
     li.LowPart = SetFilePointer (h, 0, &li.HighPart, FILE_CURRENT);
     if (li.LowPart == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
-	return -1;
+        return -1;
     }
 
     high = length >> 32;
     dw = SetFilePointer(h, (DWORD) length, &high, FILE_BEGIN);
     if (dw == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
-	return -1;
+        return -1;
     }
     res = SetEndOfFile(h);
 
@@ -203,7 +203,7 @@ static int set_sparse(int fd)
 {
     DWORD returned;
     return (int) DeviceIoControl((HANDLE)_get_osfhandle(fd), FSCTL_SET_SPARSE,
-				 NULL, 0, NULL, 0, &returned, NULL);
+                                 NULL, 0, NULL, 0, &returned, NULL);
 }
 
 static void raw_detach_aio_context(BlockDriverState *bs)
@@ -468,7 +468,8 @@ static void raw_close(BlockDriverState *bs)
 }
 
 static int coroutine_fn raw_co_truncate(BlockDriverState *bs, int64_t offset,
-                                        PreallocMode prealloc, Error **errp)
+                                        bool exact, PreallocMode prealloc,
+                                        Error **errp)
 {
     BDRVRawState *s = bs->opaque;
     LONG low, high;
@@ -635,6 +636,7 @@ BlockDriver bdrv_file = {
     .bdrv_close         = raw_close,
     .bdrv_co_create_opts = raw_co_create_opts,
     .bdrv_has_zero_init = bdrv_has_zero_init_1,
+    .bdrv_has_zero_init_truncate = bdrv_has_zero_init_1,
 
     .bdrv_aio_preadv    = raw_aio_preadv,
     .bdrv_aio_pwritev   = raw_aio_pwritev,

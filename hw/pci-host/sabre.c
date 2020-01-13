@@ -28,13 +28,16 @@
 #include "hw/sysbus.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
+#include "hw/qdev-properties.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/pci/pci_bus.h"
+#include "hw/irq.h"
 #include "hw/pci-bridge/simba.h"
 #include "hw/pci-host/sabre.h"
-#include "sysemu/sysemu.h"
 #include "exec/address-spaces.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
+#include "sysemu/runstate.h"
 #include "trace.h"
 
 /*
@@ -496,6 +499,15 @@ static const TypeInfo sabre_pci_info = {
     },
 };
 
+static char *sabre_ofw_unit_address(const SysBusDevice *dev)
+{
+    SabreState *s = SABRE_DEVICE(dev);
+
+    return g_strdup_printf("%x,%x",
+               (uint32_t)((s->special_base >> 32) & 0xffffffff),
+               (uint32_t)(s->special_base & 0xffffffff));
+}
+
 static Property sabre_properties[] = {
     DEFINE_PROP_UINT64("special-base", SabreState, special_base, 0),
     DEFINE_PROP_UINT64("mem-base", SabreState, mem_base, 0),
@@ -505,11 +517,14 @@ static Property sabre_properties[] = {
 static void sabre_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    SysBusDeviceClass *sbc = SYS_BUS_DEVICE_CLASS(klass);
 
     dc->realize = sabre_realize;
     dc->reset = sabre_reset;
     dc->props = sabre_properties;
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
+    dc->fw_name = "pci";
+    sbc->explicit_ofw_unit_address = sabre_ofw_unit_address;
 }
 
 static const TypeInfo sabre_info = {

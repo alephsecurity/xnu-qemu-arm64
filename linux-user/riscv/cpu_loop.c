@@ -18,12 +18,15 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "qemu/error-report.h"
 #include "qemu.h"
 #include "cpu_loop-common.h"
+#include "elf.h"
 
 void cpu_loop(CPURISCVState *env)
 {
-    CPUState *cs = CPU(riscv_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     int trapnr, signum, sigcode;
     target_ulong sigaddr;
     target_ulong ret;
@@ -53,7 +56,8 @@ void cpu_loop(CPURISCVState *env)
                 ret = 0;
             } else {
                 ret = do_syscall(env,
-                                 env->gpr[xA7],
+                                 env->gpr[(env->elf_flags & EF_RISCV_RVE)
+                                    ? xT0 : xA7],
                                  env->gpr[xA0],
                                  env->gpr[xA1],
                                  env->gpr[xA2],
@@ -85,10 +89,11 @@ void cpu_loop(CPURISCVState *env)
         case RISCV_EXCP_STORE_PAGE_FAULT:
             signum = TARGET_SIGSEGV;
             sigcode = TARGET_SEGV_MAPERR;
+            sigaddr = env->badaddr;
             break;
         case EXCP_DEBUG:
         gdbstep:
-            signum = gdb_handlesig(cs, TARGET_SIGTRAP);
+            signum = TARGET_SIGTRAP;
             sigcode = TARGET_TRAP_BRKPT;
             break;
         default:
@@ -104,7 +109,7 @@ void cpu_loop(CPURISCVState *env)
                 .si_code = sigcode,
                 ._sifields._sigfault._addr = sigaddr
             };
-            queue_signal(env, info.si_signo, QEMU_SI_KILL, &info);
+            queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
         }
 
         process_pending_signals(env);
@@ -113,6 +118,16 @@ void cpu_loop(CPURISCVState *env)
 
 void target_cpu_copy_regs(CPUArchState *env, struct target_pt_regs *regs)
 {
+    CPUState *cpu = env_cpu(env);
+    TaskState *ts = cpu->opaque;
+    struct image_info *info = ts->info;
+
     env->pc = regs->sepc;
     env->gpr[xSP] = regs->sp;
+    env->elf_flags = info->elf_flags;
+
+    if ((env->misa & RVE) && !(env->elf_flags & EF_RISCV_RVE)) {
+        error_report("Incompatible ELF: RVE cpu requires RVE ABI binary");
+        exit(EXIT_FAILURE);
+    }
 }

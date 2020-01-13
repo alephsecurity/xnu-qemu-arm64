@@ -11,7 +11,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/irq.h"
 #include "hw/ssi/ssi.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 
 typedef struct {
     SSISlave parent_obj;
@@ -43,9 +46,9 @@ typedef struct {
 #define CB_START	(1 << 7)
 
 #define CHANNEL_NUM(v, b0, b1, b2)	\
-			((((v) >> (2 + (b0))) & 4) |	\
-			 (((v) >> (3 + (b1))) & 2) |	\
-			 (((v) >> (4 + (b2))) & 1))
+                        ((((v) >> (2 + (b0))) & 4) |	\
+                         (((v) >> (3 + (b1))) & 2) |	\
+                         (((v) >> (4 + (b2))) & 1))
 
 static uint32_t max111x_read(MAX111xState *s)
 {

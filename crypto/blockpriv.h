@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,6 +22,7 @@
 #define QCRYPTO_BLOCKPRIV_H
 
 #include "crypto/block.h"
+#include "qemu/thread.h"
 
 typedef struct QCryptoBlockDriver QCryptoBlockDriver;
 
@@ -31,8 +32,12 @@ struct QCryptoBlock {
     const QCryptoBlockDriver *driver;
     void *opaque;
 
-    QCryptoCipher *cipher;
+    QCryptoCipher **ciphers;
+    size_t n_ciphers;
+    size_t n_free_ciphers;
     QCryptoIVGen *ivgen;
+    QemuMutex mutex;
+
     QCryptoHashAlgorithm kdfhash;
     size_t niv;
     uint64_t payload_offset; /* In bytes */
@@ -46,6 +51,7 @@ struct QCryptoBlockDriver {
                 QCryptoBlockReadFunc readfunc,
                 void *opaque,
                 unsigned int flags,
+                size_t n_threads,
                 Error **errp);
 
     int (*create)(QCryptoBlock *block,
@@ -78,22 +84,44 @@ struct QCryptoBlockDriver {
 };
 
 
-int qcrypto_block_decrypt_helper(QCryptoCipher *cipher,
-                                 size_t niv,
-                                 QCryptoIVGen *ivgen,
+int qcrypto_block_cipher_decrypt_helper(QCryptoCipher *cipher,
+                                        size_t niv,
+                                        QCryptoIVGen *ivgen,
+                                        int sectorsize,
+                                        uint64_t offset,
+                                        uint8_t *buf,
+                                        size_t len,
+                                        Error **errp);
+
+int qcrypto_block_cipher_encrypt_helper(QCryptoCipher *cipher,
+                                        size_t niv,
+                                        QCryptoIVGen *ivgen,
+                                        int sectorsize,
+                                        uint64_t offset,
+                                        uint8_t *buf,
+                                        size_t len,
+                                        Error **errp);
+
+int qcrypto_block_decrypt_helper(QCryptoBlock *block,
                                  int sectorsize,
                                  uint64_t offset,
                                  uint8_t *buf,
                                  size_t len,
                                  Error **errp);
 
-int qcrypto_block_encrypt_helper(QCryptoCipher *cipher,
-                                 size_t niv,
-                                 QCryptoIVGen *ivgen,
+int qcrypto_block_encrypt_helper(QCryptoBlock *block,
                                  int sectorsize,
                                  uint64_t offset,
                                  uint8_t *buf,
                                  size_t len,
                                  Error **errp);
+
+int qcrypto_block_init_cipher(QCryptoBlock *block,
+                              QCryptoCipherAlgorithm alg,
+                              QCryptoCipherMode mode,
+                              const uint8_t *key, size_t nkey,
+                              size_t n_threads, Error **errp);
+
+void qcrypto_block_free_cipher(QCryptoBlock *block);
 
 #endif /* QCRYPTO_BLOCKPRIV_H */

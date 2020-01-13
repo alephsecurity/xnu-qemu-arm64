@@ -13,10 +13,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/sysemu.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
+#include "sysemu/runstate.h"
 
 #include "hw/nvram/fw_cfg.h"
+#include "hw/qdev-properties.h"
 #include "hw/misc/pvpanic.h"
 
 /* The bit of supported pv event */
@@ -97,17 +99,6 @@ static void pvpanic_isa_realizefn(DeviceState *dev, Error **errp)
                     sizeof(*pvpanic_port));
 
     isa_register_ioport(d, &s->io, s->ioport);
-}
-
-#define PVPANIC_IOPORT_PROP "ioport"
-
-uint16_t pvpanic_port(void)
-{
-    Object *o = object_resolve_path_type("", TYPE_PVPANIC, NULL);
-    if (!o) {
-        return 0;
-    }
-    return object_property_get_uint(o, PVPANIC_IOPORT_PROP, NULL);
 }
 
 static Property pvpanic_isa_properties[] = {

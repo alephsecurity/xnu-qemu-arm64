@@ -176,7 +176,6 @@ enum microblaze_instr_type {
 #define REG_TLBSX 36869 /* MMU: TLB Search Index reg */
 
 /* alternate names for gen purpose regs */
-#define REG_SP  1 /* stack pointer */
 #define REG_ROSDP 2 /* read-only small data pointer */
 #define REG_RWSDP 13 /* read-write small data pointer */
 
@@ -578,7 +577,7 @@ static const char pvr_register_prefix[] = "rpvr";
 
 #endif /* MICROBLAZE_OPC */
 
-#include "disas/bfd.h"
+#include "disas/dis-asm.h"
 
 #define get_field_rd(instr) get_field(instr, RD_MASK, RD_LOW)
 #define get_field_r1(instr) get_field(instr, RA_MASK, RA_LOW)

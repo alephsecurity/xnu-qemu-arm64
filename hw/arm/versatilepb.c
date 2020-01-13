@@ -9,15 +9,16 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/arm/arm.h"
-#include "hw/devices.h"
+#include "migration/vmstate.h"
+#include "hw/arm/boot.h"
+#include "hw/net/smc91c111.h"
 #include "net/net.h"
 #include "sysemu/sysemu.h"
 #include "hw/pci/pci.h"
 #include "hw/i2c/i2c.h"
+#include "hw/irq.h"
 #include "hw/boards.h"
 #include "exec/address-spaces.h"
 #include "hw/block/flash.h"
@@ -278,7 +279,8 @@ static void versatile_init(MachineState *machine, int board_id)
     }
     n = drive_get_max_bus(IF_SCSI);
     while (n >= 0) {
-        lsi53c895a_create(pci_bus);
+        dev = DEVICE(pci_create_simple(pci_bus, -1, "lsi53c895a"));
+        lsi53c8xx_handle_legacy_cmdline(dev);
         n--;
     }
 
@@ -287,7 +289,14 @@ static void versatile_init(MachineState *machine, int board_id)
     pl011_create(0x101f3000, pic[14], serial_hd(2));
     pl011_create(0x10009000, sic[6], serial_hd(3));
 
-    sysbus_create_simple("pl080", 0x10130000, pic[17]);
+    dev = qdev_create(NULL, "pl080");
+    object_property_set_link(OBJECT(dev), OBJECT(sysmem), "downstream",
+                             &error_fatal);
+    qdev_init_nofail(dev);
+    busdev = SYS_BUS_DEVICE(dev);
+    sysbus_mmio_map(busdev, 0, 0x10130000);
+    sysbus_connect_irq(busdev, 0, pic[17]);
+
     sysbus_create_simple("sp804", 0x101e2000, pic[4]);
     sysbus_create_simple("sp804", 0x101e3000, pic[5]);
 
@@ -357,21 +366,17 @@ static void versatile_init(MachineState *machine, int board_id)
     /* 0x34000000 NOR Flash */
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
-    if (!pflash_cfi01_register(VERSATILE_FLASH_ADDR, NULL, "versatile.flash",
+    if (!pflash_cfi01_register(VERSATILE_FLASH_ADDR, "versatile.flash",
                           VERSATILE_FLASH_SIZE,
                           dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
                           VERSATILE_FLASH_SECT_SIZE,
-                          VERSATILE_FLASH_SIZE / VERSATILE_FLASH_SECT_SIZE,
                           4, 0x0089, 0x0018, 0x0000, 0x0, 0)) {
         fprintf(stderr, "qemu: Error registering flash memory.\n");
     }
 
     versatile_binfo.ram_size = machine->ram_size;
-    versatile_binfo.kernel_filename = machine->kernel_filename;
-    versatile_binfo.kernel_cmdline = machine->kernel_cmdline;
-    versatile_binfo.initrd_filename = machine->initrd_filename;
     versatile_binfo.board_id = board_id;
-    arm_load_kernel(cpu, &versatile_binfo);
+    arm_load_kernel(cpu, machine, &versatile_binfo);
 }
 
 static void vpb_init(MachineState *machine)

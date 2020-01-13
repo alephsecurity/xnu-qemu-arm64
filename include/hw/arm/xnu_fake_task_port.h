@@ -27,7 +27,7 @@
 #include "qemu-common.h"
 #include "exec/hwaddr.h"
 #include "hw/boards.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "hw/arm/xnu.h"
 #include "exec/memory.h"
 #include "cpu.h"

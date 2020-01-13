@@ -18,12 +18,13 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "qemu.h"
 #include "cpu_loop-common.h"
 
 void cpu_loop(CPUAlphaState *env)
 {
-    CPUState *cs = CPU(alpha_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     int trapnr;
     target_siginfo_t info;
     abi_long sysret;
@@ -179,14 +180,10 @@ void cpu_loop(CPUAlphaState *env)
             }
             break;
         case EXCP_DEBUG:
-            info.si_signo = gdb_handlesig(cs, TARGET_SIGTRAP);
-            if (info.si_signo) {
-                info.si_errno = 0;
-                info.si_code = TARGET_TRAP_BRKPT;
-                queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
-            } else {
-                arch_interrupt = false;
-            }
+            info.si_signo = TARGET_SIGTRAP;
+            info.si_errno = 0;
+            info.si_code = TARGET_TRAP_BRKPT;
+            queue_signal(env, info.si_signo, QEMU_SI_FAULT, &info);
             break;
         case EXCP_INTERRUPT:
             /* Just indicate that signals should be handled asap.  */
@@ -197,7 +194,7 @@ void cpu_loop(CPUAlphaState *env)
             break;
         default:
             fprintf(stderr, "Unhandled trap: 0x%x\n", trapnr);
-            cpu_dump_state(cs, stderr, fprintf, 0);
+            cpu_dump_state(cs, stderr, 0);
             exit(EXIT_FAILURE);
         }
         process_pending_signals (env);

@@ -8,9 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "cpu.h"
-#include "hw/hw.h"
 #include "hw/m68k/mcf.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -66,7 +64,7 @@ static void an5206_init(MachineState *machine)
         exit(1);
     }
 
-    kernel_size = load_elf(kernel_filename, NULL, NULL, &elf_entry,
+    kernel_size = load_elf(kernel_filename, NULL, NULL, NULL, &elf_entry,
                            NULL, NULL, 1, EM_68K, 0, 0);
     entry = elf_entry;
     if (kernel_size < 0) {

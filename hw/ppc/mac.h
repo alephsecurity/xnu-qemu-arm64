@@ -30,7 +30,6 @@
 #include "exec/memory.h"
 #include "hw/boards.h"
 #include "hw/sysbus.h"
-#include "hw/ide/internal.h"
 #include "hw/input/adb.h"
 #include "hw/misc/mos6522.h"
 #include "hw/pci/pci_host.h"
@@ -85,32 +84,6 @@ typedef struct Core99MachineState {
 
     uint8_t via_config;
 } Core99MachineState;
-
-/* MacIO */
-#define TYPE_MACIO_IDE "macio-ide"
-#define MACIO_IDE(obj) OBJECT_CHECK(MACIOIDEState, (obj), TYPE_MACIO_IDE)
-
-typedef struct MACIOIDEState {
-    /*< private >*/
-    SysBusDevice parent_obj;
-    /*< public >*/
-    uint32_t channel;
-    qemu_irq real_ide_irq;
-    qemu_irq real_dma_irq;
-    qemu_irq ide_irq;
-    qemu_irq dma_irq;
-
-    MemoryRegion mem;
-    IDEBus bus;
-    IDEDMA dma;
-    void *dbdma;
-    bool dma_active;
-    uint32_t timing_reg;
-    uint32_t irq_reg;
-} MACIOIDEState;
-
-void macio_ide_init_drives(MACIOIDEState *ide, DriveInfo **hd_table);
-void macio_ide_register_dma(MACIOIDEState *ide);
 
 /* Grackle PCI */
 #define TYPE_GRACKLE_PCI_HOST_BRIDGE "grackle-pcihost"

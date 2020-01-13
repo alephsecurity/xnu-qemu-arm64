@@ -24,10 +24,12 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "qemu/module.h"
+#include "hw/arm/boot.h"
 #include "exec/address-spaces.h"
 #include "hw/arm/stm32f205_soc.h"
+#include "hw/qdev-properties.h"
+#include "sysemu/sysemu.h"
 
 /* At the moment only Timer 2 to 5 are modelled */
 static const uint32_t timer_addr[STM_NUM_TIMERS] = { 0x40000000, 0x40000400,
@@ -109,6 +111,7 @@ static void stm32f205_soc_realize(DeviceState *dev_soc, Error **errp)
     armv7m = DEVICE(&s->armv7m);
     qdev_prop_set_uint32(armv7m, "num-irq", 96);
     qdev_prop_set_string(armv7m, "cpu-type", s->cpu_type);
+    qdev_prop_set_bit(armv7m, "enable-bitband", true);
     object_property_set_link(OBJECT(&s->armv7m), OBJECT(get_system_memory()),
                                      "memory", &error_abort);
     object_property_set_bool(OBJECT(&s->armv7m), true, "realized", &err);

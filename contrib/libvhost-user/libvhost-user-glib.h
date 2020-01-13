@@ -25,8 +25,11 @@ typedef struct VugDev {
     GSource *src;
 } VugDev;
 
-void vug_init(VugDev *dev, int socket,
+bool vug_init(VugDev *dev, uint16_t max_queues, int socket,
               vu_panic_cb panic, const VuDevIface *iface);
 void vug_deinit(VugDev *dev);
+
+GSource *vug_source_new(VugDev *dev, int fd, GIOCondition cond,
+                        vu_watch_cb vu_cb, gpointer data);
 
 #endif /* LIBVHOST_USER_GLIB_H */

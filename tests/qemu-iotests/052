@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test bdrv_read/bdrv_write using BDRV_O_SNAPSHOT
 #
@@ -24,7 +24,6 @@ owner=stefanha@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -39,10 +38,9 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt generic
 _supported_proto file
-_supported_os Linux
 
 # Don't do O_DIRECT on tmpfs
-_supported_cache_modes "writeback" "writethrough" "unsafe"
+_supported_cache_modes writeback writethrough unsafe
 
 size=128M
 _make_test_img $size

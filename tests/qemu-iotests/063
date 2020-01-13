@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # test of qemu-img convert -n - convert without creation
 #
@@ -25,7 +25,6 @@ owner=alex@alex.org.uk
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -42,10 +41,10 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt qcow qcow2 vmdk qed raw
 _supported_proto file
-_supported_os Linux
 _unsupported_imgopts "subformat=monolithicFlat" \
                      "subformat=twoGbMaxExtentFlat" \
-                     "subformat=twoGbMaxExtentSparse"
+                     "subformat=twoGbMaxExtentSparse" \
+                     "subformat=streamOptimized"
 
 _make_test_img 4M
 

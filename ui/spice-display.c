@@ -18,10 +18,10 @@
 #include "qemu/osdep.h"
 #include "ui/qemu-spice.h"
 #include "qemu/timer.h"
+#include "qemu/main-loop.h"
 #include "qemu/option.h"
 #include "qemu/queue.h"
 #include "ui/console.h"
-#include "sysemu/sysemu.h"
 #include "trace.h"
 
 #include "ui/spice-display.h"
@@ -450,27 +450,33 @@ void qemu_spice_display_switch(SimpleSpiceDisplay *ssd,
     qemu_mutex_unlock(&ssd->lock);
 }
 
-static void qemu_spice_cursor_refresh_unlocked(SimpleSpiceDisplay *ssd)
-{
-    if (ssd->cursor) {
-        assert(ssd->dcl.con);
-        dpy_cursor_define(ssd->dcl.con, ssd->cursor);
-    }
-    if (ssd->mouse_x != -1 && ssd->mouse_y != -1) {
-        assert(ssd->dcl.con);
-        dpy_mouse_set(ssd->dcl.con, ssd->mouse_x, ssd->mouse_y, 1);
-        ssd->mouse_x = -1;
-        ssd->mouse_y = -1;
-    }
-}
-
 void qemu_spice_cursor_refresh_bh(void *opaque)
 {
     SimpleSpiceDisplay *ssd = opaque;
 
     qemu_mutex_lock(&ssd->lock);
-    qemu_spice_cursor_refresh_unlocked(ssd);
-    qemu_mutex_unlock(&ssd->lock);
+    if (ssd->cursor) {
+        QEMUCursor *c = ssd->cursor;
+        assert(ssd->dcl.con);
+        cursor_get(c);
+        qemu_mutex_unlock(&ssd->lock);
+        dpy_cursor_define(ssd->dcl.con, c);
+        qemu_mutex_lock(&ssd->lock);
+        cursor_put(c);
+    }
+
+    if (ssd->mouse_x != -1 && ssd->mouse_y != -1) {
+        int x, y;
+        assert(ssd->dcl.con);
+        x = ssd->mouse_x;
+        y = ssd->mouse_y;
+        ssd->mouse_x = -1;
+        ssd->mouse_y = -1;
+        qemu_mutex_unlock(&ssd->lock);
+        dpy_mouse_set(ssd->dcl.con, x, y, 1);
+    } else {
+        qemu_mutex_unlock(&ssd->lock);
+    }
 }
 
 void qemu_spice_display_refresh(SimpleSpiceDisplay *ssd)
@@ -668,10 +674,28 @@ static int interface_client_monitors_config(QXLInstance *sin,
 
     memset(&info, 0, sizeof(info));
 
-    head = qemu_console_get_head(ssd->dcl.con);
-    if (mc->num_of_monitors > head) {
-        info.width  = mc->monitors[head].width;
-        info.height = mc->monitors[head].height;
+    if (mc->num_of_monitors == 1) {
+        /*
+         * New spice-server version which filters the list of monitors
+         * to only include those that belong to our display channel.
+         *
+         * single-head configuration (where filtering doesn't matter)
+         * takes this code path too.
+         */
+        info.width  = mc->monitors[0].width;
+        info.height = mc->monitors[0].height;
+    } else {
+        /*
+         * Old spice-server which gives us all monitors, so we have to
+         * figure ourself which entry we need.  Array index is the
+         * channel_id, which is the qemu console index, see
+         * qemu_spice_add_display_interface().
+         */
+        head = qemu_console_get_index(ssd->dcl.con);
+        if (mc->num_of_monitors > head) {
+            info.width  = mc->monitors[head].width;
+            info.height = mc->monitors[head].height;
+        }
     }
 
     trace_qemu_spice_ui_info(ssd->qxl.id, info.width, info.height);
@@ -864,7 +888,8 @@ static void spice_gl_switch(DisplayChangeListener *dcl,
     if (ssd->ds) {
         surface_gl_create_texture(ssd->gls, ssd->ds);
         fd = egl_get_fd_for_texture(ssd->ds->texture,
-                                    &stride, &fourcc);
+                                    &stride, &fourcc,
+                                    NULL);
         if (fd < 0) {
             surface_gl_destroy_texture(ssd->gls, ssd->ds);
             return;
@@ -921,7 +946,7 @@ static void qemu_spice_gl_scanout_texture(DisplayChangeListener *dcl,
     int fd = -1;
 
     assert(tex_id);
-    fd = egl_get_fd_for_texture(tex_id, &stride, &fourcc);
+    fd = egl_get_fd_for_texture(tex_id, &stride, &fourcc, NULL);
     if (fd < 0) {
         fprintf(stderr, "%s: failed to get fd for texture\n", __func__);
         return;
@@ -976,8 +1001,10 @@ static void qemu_spice_gl_cursor_position(DisplayChangeListener *dcl,
 {
     SimpleSpiceDisplay *ssd = container_of(dcl, SimpleSpiceDisplay, dcl);
 
+    qemu_mutex_lock(&ssd->lock);
     ssd->ptr_x = pos_x;
     ssd->ptr_y = pos_y;
+    qemu_mutex_unlock(&ssd->lock);
 }
 
 static void qemu_spice_gl_release_dmabuf(DisplayChangeListener *dcl,
@@ -1037,7 +1064,7 @@ static void qemu_spice_gl_update(DisplayChangeListener *dcl,
                 egl_fb_setup_new_tex(&ssd->blit_fb,
                                      dmabuf->width, dmabuf->height);
                 fd = egl_get_fd_for_texture(ssd->blit_fb.texture,
-                                            &stride, &fourcc);
+                                            &stride, &fourcc, NULL);
                 spice_qxl_gl_scanout(&ssd->qxl, fd,
                                      dmabuf->width, dmabuf->height,
                                      stride, fourcc, false);
@@ -1048,17 +1075,23 @@ static void qemu_spice_gl_update(DisplayChangeListener *dcl,
             /* note: spice server will close the fd, so hand over a dup */
             spice_qxl_gl_scanout(&ssd->qxl, dup(dmabuf->fd),
                                  dmabuf->width, dmabuf->height,
-                                 dmabuf->stride, dmabuf->fourcc, false);
+                                 dmabuf->stride, dmabuf->fourcc,
+                                 dmabuf->y0_top);
         }
         qemu_spice_gl_monitor_config(ssd, 0, 0, dmabuf->width, dmabuf->height);
         ssd->guest_dmabuf_refresh = false;
     }
 
     if (render_cursor) {
+        int x, y;
+        qemu_mutex_lock(&ssd->lock);
+        x = ssd->ptr_x;
+        y = ssd->ptr_y;
+        qemu_mutex_unlock(&ssd->lock);
         egl_texture_blit(ssd->gls, &ssd->blit_fb, &ssd->guest_fb,
                          !y_0_top);
         egl_texture_blend(ssd->gls, &ssd->blit_fb, &ssd->cursor_fb,
-                          !y_0_top, ssd->ptr_x, ssd->ptr_y);
+                          !y_0_top, x, y, 1.0, 1.0);
         glFlush();
     }
 
@@ -1115,6 +1148,17 @@ static void qemu_spice_display_init_one(QemuConsole *con)
 
     ssd->qxl.base.sif = &dpy_interface.base;
     qemu_spice_add_display_interface(&ssd->qxl, con);
+
+#if SPICE_SERVER_VERSION >= 0x000e02 /* release 0.14.2 */
+    char device_address[256] = "";
+    if (qemu_spice_fill_device_address(con, device_address, 256)) {
+        spice_qxl_set_device_info(&ssd->qxl,
+                                  device_address,
+                                  qemu_console_get_head(con),
+                                  1);
+    }
+#endif
+
     qemu_spice_create_host_memslot(ssd);
 
     register_displaychangelistener(&ssd->dcl);

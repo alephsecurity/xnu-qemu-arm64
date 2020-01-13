@@ -11,42 +11,32 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "exec/address-spaces.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
+#include "hw/arm/aspeed.h"
 #include "hw/arm/aspeed_soc.h"
 #include "hw/boards.h"
-#include "hw/i2c/smbus.h"
+#include "hw/i2c/smbus_eeprom.h"
+#include "hw/misc/pca9552.h"
+#include "hw/misc/tmp105.h"
+#include "hw/qdev-properties.h"
 #include "qemu/log.h"
 #include "sysemu/block-backend.h"
+#include "sysemu/sysemu.h"
 #include "hw/loader.h"
 #include "qemu/error-report.h"
+#include "qemu/units.h"
 
 static struct arm_boot_info aspeed_board_binfo = {
     .board_id = -1, /* device-tree-only board */
-    .nb_cpus = 1,
 };
 
-typedef struct AspeedBoardState {
+struct AspeedBoardState {
     AspeedSoCState soc;
+    MemoryRegion ram_container;
     MemoryRegion ram;
-} AspeedBoardState;
-
-typedef struct AspeedBoardConfig {
-    const char *soc_name;
-    uint32_t hw_strap1;
-    const char *fmc_model;
-    const char *spi_model;
-    uint32_t num_cs;
-    void (*i2c_init)(AspeedBoardState *bmc);
-} AspeedBoardConfig;
-
-enum {
-    PALMETTO_BMC,
-    AST2500_EVB,
-    ROMULUS_BMC,
-    WITHERSPOON_BMC,
+    MemoryRegion max_ram;
 };
 
 /* Palmetto hardware value: 0x120CE416 */
@@ -84,47 +74,43 @@ enum {
         SCU_AST2500_HW_STRAP_ACPI_ENABLE |                              \
         SCU_HW_STRAP_SPI_MODE(SCU_HW_STRAP_SPI_MASTER))
 
+/* Swift hardware value: 0xF11AD206 */
+#define SWIFT_BMC_HW_STRAP1 (                                           \
+        AST2500_HW_STRAP1_DEFAULTS |                                    \
+        SCU_AST2500_HW_STRAP_SPI_AUTOFETCH_ENABLE |                     \
+        SCU_AST2500_HW_STRAP_GPIO_STRAP_ENABLE |                        \
+        SCU_AST2500_HW_STRAP_UART_DEBUG |                               \
+        SCU_AST2500_HW_STRAP_DDR4_ENABLE |                              \
+        SCU_H_PLL_BYPASS_EN |                                           \
+        SCU_AST2500_HW_STRAP_ACPI_ENABLE |                              \
+        SCU_HW_STRAP_SPI_MODE(SCU_HW_STRAP_SPI_MASTER))
+
 /* Witherspoon hardware value: 0xF10AD216 (but use romulus definition) */
 #define WITHERSPOON_BMC_HW_STRAP1 ROMULUS_BMC_HW_STRAP1
 
-static void palmetto_bmc_i2c_init(AspeedBoardState *bmc);
-static void ast2500_evb_i2c_init(AspeedBoardState *bmc);
-static void romulus_bmc_i2c_init(AspeedBoardState *bmc);
-static void witherspoon_bmc_i2c_init(AspeedBoardState *bmc);
+/* AST2600 evb hardware value */
+#define AST2600_EVB_HW_STRAP1 0x000000C0
+#define AST2600_EVB_HW_STRAP2 0x00000003
 
-static const AspeedBoardConfig aspeed_boards[] = {
-    [PALMETTO_BMC] = {
-        .soc_name  = "ast2400-a1",
-        .hw_strap1 = PALMETTO_BMC_HW_STRAP1,
-        .fmc_model = "n25q256a",
-        .spi_model = "mx25l25635e",
-        .num_cs    = 1,
-        .i2c_init  = palmetto_bmc_i2c_init,
-    },
-    [AST2500_EVB]  = {
-        .soc_name  = "ast2500-a1",
-        .hw_strap1 = AST2500_EVB_HW_STRAP1,
-        .fmc_model = "n25q256a",
-        .spi_model = "mx25l25635e",
-        .num_cs    = 1,
-        .i2c_init  = ast2500_evb_i2c_init,
-    },
-    [ROMULUS_BMC]  = {
-        .soc_name  = "ast2500-a1",
-        .hw_strap1 = ROMULUS_BMC_HW_STRAP1,
-        .fmc_model = "n25q256a",
-        .spi_model = "mx66l1g45g",
-        .num_cs    = 2,
-        .i2c_init  = romulus_bmc_i2c_init,
-    },
-    [WITHERSPOON_BMC]  = {
-        .soc_name  = "ast2500-a1",
-        .hw_strap1 = WITHERSPOON_BMC_HW_STRAP1,
-        .fmc_model = "mx25l25635e",
-        .spi_model = "mx66l1g45g",
-        .num_cs    = 2,
-        .i2c_init  = witherspoon_bmc_i2c_init,
-    },
+/*
+ * The max ram region is for firmwares that scan the address space
+ * with load/store to guess how much RAM the SoC has.
+ */
+static uint64_t max_ram_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0;
+}
+
+static void max_ram_write(void *opaque, hwaddr offset, uint64_t value,
+                           unsigned size)
+{
+    /* Discard writes */
+}
+
+static const MemoryRegionOps max_ram_ops = {
+    .read = max_ram_read,
+    .write = max_ram_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
 #define FIRMWARE_ADDR 0x0
@@ -187,11 +173,17 @@ static void aspeed_board_init(MachineState *machine,
     AspeedBoardState *bmc;
     AspeedSoCClass *sc;
     DriveInfo *drive0 = drive_get(IF_MTD, 0, 0);
+    ram_addr_t max_ram_size;
+    int i;
 
     bmc = g_new0(AspeedBoardState, 1);
-    object_initialize(&bmc->soc, (sizeof(bmc->soc)), cfg->soc_name);
-    object_property_add_child(OBJECT(machine), "soc", OBJECT(&bmc->soc),
-                              &error_abort);
+
+    memory_region_init(&bmc->ram_container, NULL, "aspeed-ram-container",
+                       UINT32_MAX);
+
+    object_initialize_child(OBJECT(machine), "soc", &bmc->soc,
+                            (sizeof(bmc->soc)), cfg->soc_name, &error_abort,
+                            NULL);
 
     sc = ASPEED_SOC_GET_CLASS(&bmc->soc);
 
@@ -199,8 +191,14 @@ static void aspeed_board_init(MachineState *machine,
                              &error_abort);
     object_property_set_int(OBJECT(&bmc->soc), cfg->hw_strap1, "hw-strap1",
                             &error_abort);
+    object_property_set_int(OBJECT(&bmc->soc), cfg->hw_strap2, "hw-strap2",
+                            &error_abort);
     object_property_set_int(OBJECT(&bmc->soc), cfg->num_cs, "num-cs",
                             &error_abort);
+    object_property_set_int(OBJECT(&bmc->soc), machine->smp.cpus, "num-cpus",
+                            &error_abort);
+    object_property_set_link(OBJECT(&bmc->soc), OBJECT(&bmc->ram_container),
+                             "dram", &error_abort);
     if (machine->kernel_filename) {
         /*
          * When booting with a -kernel command line there is no u-boot
@@ -221,10 +219,16 @@ static void aspeed_board_init(MachineState *machine,
                                         &error_abort);
 
     memory_region_allocate_system_memory(&bmc->ram, NULL, "ram", ram_size);
-    memory_region_add_subregion(get_system_memory(), sc->info->sdram_base,
-                                &bmc->ram);
-    object_property_add_const_link(OBJECT(&bmc->soc), "ram", OBJECT(&bmc->ram),
-                                   &error_abort);
+    memory_region_add_subregion(&bmc->ram_container, 0, &bmc->ram);
+    memory_region_add_subregion(get_system_memory(),
+                                sc->memmap[ASPEED_SDRAM],
+                                &bmc->ram_container);
+
+    max_ram_size = object_property_get_uint(OBJECT(&bmc->soc), "max-ram-size",
+                                            &error_abort);
+    memory_region_init_io(&bmc->max_ram, NULL, &max_ram_ops, NULL,
+                          "max_ram", max_ram_size  - ram_size);
+    memory_region_add_subregion(&bmc->ram_container, ram_size, &bmc->max_ram);
 
     aspeed_board_init_flashes(&bmc->soc.fmc, cfg->fmc_model, &error_abort);
     aspeed_board_init_flashes(&bmc->soc.spi[0], cfg->spi_model, &error_abort);
@@ -247,17 +251,28 @@ static void aspeed_board_init(MachineState *machine,
         write_boot_rom(drive0, FIRMWARE_ADDR, fl->size, &error_abort);
     }
 
-    aspeed_board_binfo.kernel_filename = machine->kernel_filename;
-    aspeed_board_binfo.initrd_filename = machine->initrd_filename;
-    aspeed_board_binfo.kernel_cmdline = machine->kernel_cmdline;
     aspeed_board_binfo.ram_size = ram_size;
-    aspeed_board_binfo.loader_start = sc->info->sdram_base;
+    aspeed_board_binfo.loader_start = sc->memmap[ASPEED_SDRAM];
+    aspeed_board_binfo.nb_cpus = bmc->soc.num_cpus;
 
     if (cfg->i2c_init) {
         cfg->i2c_init(bmc);
     }
 
-    arm_load_kernel(ARM_CPU(first_cpu), &aspeed_board_binfo);
+    for (i = 0; i < ARRAY_SIZE(bmc->soc.sdhci.slots); i++) {
+        SDHCIState *sdhci = &bmc->soc.sdhci.slots[i];
+        DriveInfo *dinfo = drive_get_next(IF_SD);
+        BlockBackend *blk;
+        DeviceState *card;
+
+        blk = dinfo ? blk_by_legacy_dinfo(dinfo) : NULL;
+        card = qdev_create(qdev_get_child_bus(DEVICE(sdhci), "sd-bus"),
+                           TYPE_SD_CARD);
+        qdev_prop_set_drive(card, "drive", blk, &error_fatal);
+        object_property_set_bool(OBJECT(card), true, "realized", &error_fatal);
+    }
+
+    arm_load_kernel(ARM_CPU(first_cpu), machine, &aspeed_board_binfo);
 }
 
 static void palmetto_bmc_i2c_init(AspeedBoardState *bmc)
@@ -282,30 +297,6 @@ static void palmetto_bmc_i2c_init(AspeedBoardState *bmc)
     object_property_set_int(OBJECT(dev), 110000, "temperature3", &error_abort);
 }
 
-static void palmetto_bmc_init(MachineState *machine)
-{
-    aspeed_board_init(machine, &aspeed_boards[PALMETTO_BMC]);
-}
-
-static void palmetto_bmc_class_init(ObjectClass *oc, void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    mc->desc = "OpenPOWER Palmetto BMC (ARM926EJ-S)";
-    mc->init = palmetto_bmc_init;
-    mc->max_cpus = 1;
-    mc->no_sdcard = 1;
-    mc->no_floppy = 1;
-    mc->no_cdrom = 1;
-    mc->no_parallel = 1;
-}
-
-static const TypeInfo palmetto_bmc_type = {
-    .name = MACHINE_TYPE_NAME("palmetto-bmc"),
-    .parent = TYPE_MACHINE,
-    .class_init = palmetto_bmc_class_init,
-};
-
 static void ast2500_evb_i2c_init(AspeedBoardState *bmc)
 {
     AspeedSoCState *soc = &bmc->soc;
@@ -315,36 +306,19 @@ static void ast2500_evb_i2c_init(AspeedBoardState *bmc)
                           eeprom_buf);
 
     /* The AST2500 EVB expects a LM75 but a TMP105 is compatible */
-    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 7), "tmp105", 0x4d);
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 7),
+                     TYPE_TMP105, 0x4d);
 
     /* The AST2500 EVB does not have an RTC. Let's pretend that one is
      * plugged on the I2C bus header */
     i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 11), "ds1338", 0x32);
 }
 
-static void ast2500_evb_init(MachineState *machine)
+static void ast2600_evb_i2c_init(AspeedBoardState *bmc)
 {
-    aspeed_board_init(machine, &aspeed_boards[AST2500_EVB]);
+    /* Start with some devices on our I2C busses */
+    ast2500_evb_i2c_init(bmc);
 }
-
-static void ast2500_evb_class_init(ObjectClass *oc, void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    mc->desc = "Aspeed AST2500 EVB (ARM1176)";
-    mc->init = ast2500_evb_init;
-    mc->max_cpus = 1;
-    mc->no_sdcard = 1;
-    mc->no_floppy = 1;
-    mc->no_cdrom = 1;
-    mc->no_parallel = 1;
-}
-
-static const TypeInfo ast2500_evb_type = {
-    .name = MACHINE_TYPE_NAME("ast2500-evb"),
-    .parent = TYPE_MACHINE,
-    .class_init = ast2500_evb_class_init,
-};
 
 static void romulus_bmc_i2c_init(AspeedBoardState *bmc)
 {
@@ -355,42 +329,49 @@ static void romulus_bmc_i2c_init(AspeedBoardState *bmc)
     i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 11), "ds1338", 0x32);
 }
 
-static void romulus_bmc_init(MachineState *machine)
+static void swift_bmc_i2c_init(AspeedBoardState *bmc)
 {
-    aspeed_board_init(machine, &aspeed_boards[ROMULUS_BMC]);
+    AspeedSoCState *soc = &bmc->soc;
+
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 3), "pca9552", 0x60);
+
+    /* The swift board expects a TMP275 but a TMP105 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 7), "tmp105", 0x48);
+    /* The swift board expects a pca9551 but a pca9552 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 7), "pca9552", 0x60);
+
+    /* The swift board expects an Epson RX8900 RTC but a ds1338 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 8), "ds1338", 0x32);
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 8), "pca9552", 0x60);
+
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 9), "tmp423", 0x4c);
+    /* The swift board expects a pca9539 but a pca9552 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 9), "pca9552", 0x74);
+
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 10), "tmp423", 0x4c);
+    /* The swift board expects a pca9539 but a pca9552 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 10), "pca9552",
+                     0x74);
+
+    /* The swift board expects a TMP275 but a TMP105 is compatible */
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 12), "tmp105", 0x48);
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 12), "tmp105", 0x4a);
 }
-
-static void romulus_bmc_class_init(ObjectClass *oc, void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    mc->desc = "OpenPOWER Romulus BMC (ARM1176)";
-    mc->init = romulus_bmc_init;
-    mc->max_cpus = 1;
-    mc->no_sdcard = 1;
-    mc->no_floppy = 1;
-    mc->no_cdrom = 1;
-    mc->no_parallel = 1;
-}
-
-static const TypeInfo romulus_bmc_type = {
-    .name = MACHINE_TYPE_NAME("romulus-bmc"),
-    .parent = TYPE_MACHINE,
-    .class_init = romulus_bmc_class_init,
-};
 
 static void witherspoon_bmc_i2c_init(AspeedBoardState *bmc)
 {
     AspeedSoCState *soc = &bmc->soc;
     uint8_t *eeprom_buf = g_malloc0(8 * 1024);
 
-    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 3), "pca9552", 0x60);
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 3), TYPE_PCA9552,
+                     0x60);
 
     i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 4), "tmp423", 0x4c);
     i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 5), "tmp423", 0x4c);
 
     /* The Witherspoon expects a TMP275 but a TMP105 is compatible */
-    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 9), "tmp105", 0x4a);
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 9), TYPE_TMP105,
+                     0x4a);
 
     /* The witherspoon board expects Epson RX8900 I2C RTC but a ds1338 is
      * good enough */
@@ -398,40 +379,122 @@ static void witherspoon_bmc_i2c_init(AspeedBoardState *bmc)
 
     smbus_eeprom_init_one(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 11), 0x51,
                           eeprom_buf);
-    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 11), "pca9552",
+    i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 11), TYPE_PCA9552,
                      0x60);
 }
 
-static void witherspoon_bmc_init(MachineState *machine)
+static void aspeed_machine_init(MachineState *machine)
 {
-    aspeed_board_init(machine, &aspeed_boards[WITHERSPOON_BMC]);
+    AspeedMachineClass *amc = ASPEED_MACHINE_GET_CLASS(machine);
+
+    aspeed_board_init(machine, amc->board);
 }
 
-static void witherspoon_bmc_class_init(ObjectClass *oc, void *data)
+static void aspeed_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    AspeedMachineClass *amc = ASPEED_MACHINE_CLASS(oc);
+    const AspeedBoardConfig *board = data;
 
-    mc->desc = "OpenPOWER Witherspoon BMC (ARM1176)";
-    mc->init = witherspoon_bmc_init;
-    mc->max_cpus = 1;
-    mc->no_sdcard = 1;
+    mc->desc = board->desc;
+    mc->init = aspeed_machine_init;
+    mc->max_cpus = ASPEED_CPUS_NUM;
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
     mc->no_parallel = 1;
+    if (board->ram) {
+        mc->default_ram_size = board->ram;
+    }
+    amc->board = board;
 }
 
-static const TypeInfo witherspoon_bmc_type = {
-    .name = MACHINE_TYPE_NAME("witherspoon-bmc"),
+static const TypeInfo aspeed_machine_type = {
+    .name = TYPE_ASPEED_MACHINE,
     .parent = TYPE_MACHINE,
-    .class_init = witherspoon_bmc_class_init,
+    .instance_size = sizeof(AspeedMachine),
+    .class_size = sizeof(AspeedMachineClass),
+    .abstract = true,
 };
 
-static void aspeed_machine_init(void)
+static const AspeedBoardConfig aspeed_boards[] = {
+    {
+        .name      = MACHINE_TYPE_NAME("palmetto-bmc"),
+        .desc      = "OpenPOWER Palmetto BMC (ARM926EJ-S)",
+        .soc_name  = "ast2400-a1",
+        .hw_strap1 = PALMETTO_BMC_HW_STRAP1,
+        .fmc_model = "n25q256a",
+        .spi_model = "mx25l25635e",
+        .num_cs    = 1,
+        .i2c_init  = palmetto_bmc_i2c_init,
+        .ram       = 256 * MiB,
+    }, {
+        .name      = MACHINE_TYPE_NAME("ast2500-evb"),
+        .desc      = "Aspeed AST2500 EVB (ARM1176)",
+        .soc_name  = "ast2500-a1",
+        .hw_strap1 = AST2500_EVB_HW_STRAP1,
+        .fmc_model = "w25q256",
+        .spi_model = "mx25l25635e",
+        .num_cs    = 1,
+        .i2c_init  = ast2500_evb_i2c_init,
+        .ram       = 512 * MiB,
+    }, {
+        .name      = MACHINE_TYPE_NAME("romulus-bmc"),
+        .desc      = "OpenPOWER Romulus BMC (ARM1176)",
+        .soc_name  = "ast2500-a1",
+        .hw_strap1 = ROMULUS_BMC_HW_STRAP1,
+        .fmc_model = "n25q256a",
+        .spi_model = "mx66l1g45g",
+        .num_cs    = 2,
+        .i2c_init  = romulus_bmc_i2c_init,
+        .ram       = 512 * MiB,
+    }, {
+        .name      = MACHINE_TYPE_NAME("swift-bmc"),
+        .desc      = "OpenPOWER Swift BMC (ARM1176)",
+        .soc_name  = "ast2500-a1",
+        .hw_strap1 = SWIFT_BMC_HW_STRAP1,
+        .fmc_model = "mx66l1g45g",
+        .spi_model = "mx66l1g45g",
+        .num_cs    = 2,
+        .i2c_init  = swift_bmc_i2c_init,
+        .ram       = 512 * MiB,
+    }, {
+        .name      = MACHINE_TYPE_NAME("witherspoon-bmc"),
+        .desc      = "OpenPOWER Witherspoon BMC (ARM1176)",
+        .soc_name  = "ast2500-a1",
+        .hw_strap1 = WITHERSPOON_BMC_HW_STRAP1,
+        .fmc_model = "mx25l25635e",
+        .spi_model = "mx66l1g45g",
+        .num_cs    = 2,
+        .i2c_init  = witherspoon_bmc_i2c_init,
+        .ram       = 512 * MiB,
+    }, {
+        .name      = MACHINE_TYPE_NAME("ast2600-evb"),
+        .desc      = "Aspeed AST2600 EVB (Cortex A7)",
+        .soc_name  = "ast2600-a0",
+        .hw_strap1 = AST2600_EVB_HW_STRAP1,
+        .hw_strap2 = AST2600_EVB_HW_STRAP2,
+        .fmc_model = "w25q512jv",
+        .spi_model = "mx66u51235f",
+        .num_cs    = 1,
+        .i2c_init  = ast2600_evb_i2c_init,
+        .ram       = 1 * GiB,
+    },
+};
+
+static void aspeed_machine_types(void)
 {
-    type_register_static(&palmetto_bmc_type);
-    type_register_static(&ast2500_evb_type);
-    type_register_static(&romulus_bmc_type);
-    type_register_static(&witherspoon_bmc_type);
+    int i;
+
+    type_register_static(&aspeed_machine_type);
+    for (i = 0; i < ARRAY_SIZE(aspeed_boards); ++i) {
+        TypeInfo ti = {
+            .name       = aspeed_boards[i].name,
+            .parent     = TYPE_ASPEED_MACHINE,
+            .class_init = aspeed_machine_class_init,
+            .class_data = (void *)&aspeed_boards[i],
+        };
+        type_register(&ti);
+    }
 }
 
-type_init(aspeed_machine_init)
+type_init(aspeed_machine_types)

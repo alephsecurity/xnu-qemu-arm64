@@ -13,7 +13,9 @@
 #include "qemu/osdep.h"
 #include "chardev/char-fe.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "trace.h"
+#include "hw/qdev-properties.h"
 #include "hw/virtio/virtio-serial.h"
 #include "qapi/error.h"
 #include "qapi/qapi-events-char.h"
@@ -114,8 +116,7 @@ static void set_guest_connected(VirtIOSerialPort *port, int guest_connected)
     }
 
     if (dev->id) {
-        qapi_event_send_vserport_change(dev->id, guest_connected,
-                                        &error_abort);
+        qapi_event_send_vserport_change(dev->id, guest_connected);
     }
 }
 

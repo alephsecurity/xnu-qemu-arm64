@@ -15,9 +15,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
-#include <glob.h>
-#include <dirent.h>
-
+#include "qemu/drm.h"
 #include "qemu/error-report.h"
 #include "ui/console.h"
 #include "ui/egl-helpers.h"
@@ -104,12 +102,12 @@ void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip)
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
 }
 
-void egl_fb_read(void *dst, egl_fb *src)
+void egl_fb_read(DisplaySurface *dst, egl_fb *src)
 {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, src->framebuffer);
     glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
-    glReadPixels(0, 0, src->width, src->height,
-                 GL_BGRA, GL_UNSIGNED_BYTE, dst);
+    glReadPixels(0, 0, surface_width(dst), surface_height(dst),
+                 GL_BGRA, GL_UNSIGNED_BYTE, surface_data(dst));
 }
 
 void egl_texture_blit(QemuGLShader *gls, egl_fb *dst, egl_fb *src, bool flip)
@@ -122,14 +120,15 @@ void egl_texture_blit(QemuGLShader *gls, egl_fb *dst, egl_fb *src, bool flip)
 }
 
 void egl_texture_blend(QemuGLShader *gls, egl_fb *dst, egl_fb *src, bool flip,
-                       int x, int y)
+                       int x, int y, double scale_x, double scale_y)
 {
     glBindFramebuffer(GL_FRAMEBUFFER_EXT, dst->framebuffer);
+    int w = scale_x * src->width;
+    int h = scale_y * src->height;
     if (flip) {
-        glViewport(x, y, src->width, src->height);
+        glViewport(x, y, w, h);
     } else {
-        glViewport(x, dst->height - src->height - y,
-                   src->width, src->height);
+        glViewport(x, dst->height - h - y, w, h);
     }
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, src->texture);
@@ -147,57 +146,12 @@ int qemu_egl_rn_fd;
 struct gbm_device *qemu_egl_rn_gbm_dev;
 EGLContext qemu_egl_rn_ctx;
 
-static int qemu_egl_rendernode_open(const char *rendernode)
-{
-    DIR *dir;
-    struct dirent *e;
-    int r, fd;
-    char *p;
-
-    if (rendernode) {
-        return open(rendernode, O_RDWR | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
-    }
-
-    dir = opendir("/dev/dri");
-    if (!dir) {
-        return -1;
-    }
-
-    fd = -1;
-    while ((e = readdir(dir))) {
-        if (e->d_type != DT_CHR) {
-            continue;
-        }
-
-        if (strncmp(e->d_name, "renderD", 7)) {
-            continue;
-        }
-
-        p = g_strdup_printf("/dev/dri/%s", e->d_name);
-
-        r = open(p, O_RDWR | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
-        if (r < 0) {
-            g_free(p);
-            continue;
-        }
-        fd = r;
-        g_free(p);
-        break;
-    }
-
-    closedir(dir);
-    if (fd < 0) {
-        return -1;
-    }
-    return fd;
-}
-
 int egl_rendernode_init(const char *rendernode, DisplayGLMode mode)
 {
     qemu_egl_rn_fd = -1;
     int rc;
 
-    qemu_egl_rn_fd = qemu_egl_rendernode_open(rendernode);
+    qemu_egl_rn_fd = qemu_drm_rendernode_open(rendernode);
     if (qemu_egl_rn_fd == -1) {
         error_report("egl: no drm render node available");
         goto err;
@@ -246,7 +200,8 @@ err:
     return -1;
 }
 
-int egl_get_fd_for_texture(uint32_t tex_id, EGLint *stride, EGLint *fourcc)
+int egl_get_fd_for_texture(uint32_t tex_id, EGLint *stride, EGLint *fourcc,
+                           EGLuint64KHR *modifier)
 {
     EGLImageKHR image;
     EGLint num_planes, fd;
@@ -260,7 +215,7 @@ int egl_get_fd_for_texture(uint32_t tex_id, EGLint *stride, EGLint *fourcc)
     }
 
     eglExportDMABUFImageQueryMESA(qemu_egl_display, image, fourcc,
-                                  &num_planes, NULL);
+                                  &num_planes, modifier);
     if (num_planes != 1) {
         eglDestroyImageKHR(qemu_egl_display, image);
         return -1;
@@ -274,19 +229,35 @@ int egl_get_fd_for_texture(uint32_t tex_id, EGLint *stride, EGLint *fourcc)
 void egl_dmabuf_import_texture(QemuDmaBuf *dmabuf)
 {
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
-    EGLint attrs[] = {
-        EGL_DMA_BUF_PLANE0_FD_EXT,      dmabuf->fd,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT,   dmabuf->stride,
-        EGL_DMA_BUF_PLANE0_OFFSET_EXT,  0,
-        EGL_WIDTH,                      dmabuf->width,
-        EGL_HEIGHT,                     dmabuf->height,
-        EGL_LINUX_DRM_FOURCC_EXT,       dmabuf->fourcc,
-        EGL_NONE, /* end of list */
-    };
+    EGLint attrs[64];
+    int i = 0;
 
     if (dmabuf->texture != 0) {
         return;
     }
+
+    attrs[i++] = EGL_WIDTH;
+    attrs[i++] = dmabuf->width;
+    attrs[i++] = EGL_HEIGHT;
+    attrs[i++] = dmabuf->height;
+    attrs[i++] = EGL_LINUX_DRM_FOURCC_EXT;
+    attrs[i++] = dmabuf->fourcc;
+
+    attrs[i++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+    attrs[i++] = dmabuf->fd;
+    attrs[i++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+    attrs[i++] = dmabuf->stride;
+    attrs[i++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+    attrs[i++] = 0;
+#ifdef EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
+    if (dmabuf->modifier) {
+        attrs[i++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+        attrs[i++] = (dmabuf->modifier >>  0) & 0xffffffff;
+        attrs[i++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+        attrs[i++] = (dmabuf->modifier >> 32) & 0xffffffff;
+    }
+#endif
+    attrs[i++] = EGL_NONE;
 
     image = eglCreateImageKHR(qemu_egl_display,
                               EGL_NO_CONTEXT,
@@ -320,14 +291,14 @@ void egl_dmabuf_release_texture(QemuDmaBuf *dmabuf)
 
 /* ---------------------------------------------------------------------- */
 
-EGLSurface qemu_egl_init_surface_x11(EGLContext ectx, Window win)
+EGLSurface qemu_egl_init_surface_x11(EGLContext ectx, EGLNativeWindowType win)
 {
     EGLSurface esurface;
     EGLBoolean b;
 
     esurface = eglCreateWindowSurface(qemu_egl_display,
                                       qemu_egl_config,
-                                      (EGLNativeWindowType)win, NULL);
+                                      win, NULL);
     if (esurface == EGL_NO_SURFACE) {
         error_report("egl: eglCreateWindowSurface failed");
         return NULL;

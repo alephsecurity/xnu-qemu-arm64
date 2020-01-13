@@ -23,13 +23,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
 #include "qemu-common.h"
+#include "qapi/error.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
 #include "hw/loader.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 
 #define TCX_ROM_FILE "QEMU,tcx.bin"
 #define FCODE_MAX_ROM_SIZE 0x10000
@@ -823,7 +826,7 @@ static void tcx_realizefn(DeviceState *dev, Error **errp)
         ret = load_image_mr(fcode_filename, &s->rom);
         g_free(fcode_filename);
         if (ret < 0 || ret > FCODE_MAX_ROM_SIZE) {
-            error_report("tcx: could not load prom '%s'", TCX_ROM_FILE);
+            warn_report("tcx: could not load prom '%s'", TCX_ROM_FILE);
         }
     }
 

@@ -16,14 +16,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/pci/msix.h"
 #include "net/net.h"
 #include "net/eth.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-rocker.h"
 #include "qemu/iov.h"
+#include "qemu/module.h"
 #include "qemu/bitops.h"
 
 #include "rocker.h"
@@ -1279,7 +1281,7 @@ static World *rocker_world_type_by_name(Rocker *r, const char *name)
     for (i = 0; i < ROCKER_WORLD_TYPE_MAX; i++) {
         if (strcmp(name, world_name(r->worlds[i])) == 0) {
             return r->worlds[i];
-	}
+        }
     }
     return NULL;
 }

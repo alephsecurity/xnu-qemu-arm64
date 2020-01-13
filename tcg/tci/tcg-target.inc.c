@@ -369,7 +369,7 @@ static const char *const tcg_target_reg_names[TCG_TARGET_NB_REGS] = {
 };
 #endif
 
-static void patch_reloc(tcg_insn_unit *code_ptr, int type,
+static bool patch_reloc(tcg_insn_unit *code_ptr, int type,
                         intptr_t value, intptr_t addend)
 {
     /* tcg_out_reloc always uses the same type, addend. */
@@ -381,6 +381,7 @@ static void patch_reloc(tcg_insn_unit *code_ptr, int type,
     } else {
         tcg_patch64(code_ptr, value);
     }
+    return true;
 }
 
 /* Parse target specific constraints. */
@@ -508,7 +509,7 @@ static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg1,
     old_code_ptr[1] = s->code_ptr - old_code_ptr;
 }
 
-static void tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
+static bool tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
 {
     uint8_t *old_code_ptr = s->code_ptr;
     tcg_debug_assert(ret != arg);
@@ -520,6 +521,7 @@ static void tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
     tcg_out_r(s, ret);
     tcg_out_r(s, arg);
     old_code_ptr[1] = s->code_ptr - old_code_ptr;
+    return true;
 }
 
 static void tcg_out_movi(TCGContext *s, TCGType type,

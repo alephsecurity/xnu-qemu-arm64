@@ -29,7 +29,6 @@
 
 #include "qemu/osdep.h"
 #include "qom/object.h"
-#include "sysemu/sysemu.h"
 #include "hw/pci-host/pam.h"
 
 void init_pam(DeviceState *dev, MemoryRegion *ram_memory,
@@ -52,11 +51,13 @@ void init_pam(DeviceState *dev, MemoryRegion *ram_memory,
     memory_region_init_alias(&mem->alias[2], OBJECT(dev), "pam-pci", ram_memory,
                              start, size);
 
+    memory_region_transaction_begin();
     for (i = 0; i < 4; ++i) {
         memory_region_set_enabled(&mem->alias[i], false);
         memory_region_add_subregion_overlap(system_memory, start,
                                             &mem->alias[i], 1);
     }
+    memory_region_transaction_commit();
     mem->current = 0;
 }
 

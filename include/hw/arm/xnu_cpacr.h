@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_CPACR_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "cpu.h"
 
 typedef struct {

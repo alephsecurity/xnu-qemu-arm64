@@ -16,7 +16,6 @@
 #ifndef QEMU_UUID_H
 #define QEMU_UUID_H
 
-#include "qemu-common.h"
 
 /* Version 4 UUID (pseudo random numbers), RFC4122 4.4. */
 
@@ -56,6 +55,6 @@ char *qemu_uuid_unparse_strdup(const QemuUUID *uuid);
 
 int qemu_uuid_parse(const char *str, QemuUUID *uuid);
 
-void qemu_uuid_bswap(QemuUUID *uuid);
+QemuUUID qemu_uuid_bswap(QemuUUID uuid);
 
 #endif

@@ -17,6 +17,7 @@
 #include "hw/s390x/s390_flic.h"
 #include "hw/s390x/ioinst.h"
 #include "sysemu/kvm.h"
+#include "target/s390x/cpu-qom.h"
 
 /* Channel subsystem constants. */
 #define MAX_DEVNO 65535
@@ -48,7 +49,7 @@ typedef struct SenseId {
     uint8_t unused;          /* padding byte */
     /* extended part */
     CIW ciw[MAX_CIWS];       /* variable # of CIWs */
-} QEMU_PACKED SenseId;
+} SenseId;                   /* Note: No QEMU_PACKED due to unaligned members */
 
 /* Channel measurements, from linux/drivers/s390/cio/cmf.c. */
 typedef struct CMB {
@@ -97,6 +98,7 @@ typedef struct CcwDataStream {
     int (*op_handler)(struct CcwDataStream *cds, void *buff, int len,
                       CcwDataStreamOp op);
     hwaddr cda;
+    bool do_skip;
 } CcwDataStream;
 
 /*
@@ -118,11 +120,12 @@ typedef enum IOInstEnding {
 typedef struct SubchDev SubchDev;
 struct SubchDev {
     /* channel-subsystem related things: */
+    SCHIB curr_status;           /* Needs alignment and thus must come first */
+    ORB orb;
     uint8_t cssid;
     uint8_t ssid;
     uint16_t schid;
     uint16_t devno;
-    SCHIB curr_status;
     uint8_t sense_data[32];
     hwaddr channel_prog;
     CCW1 last_cmd;
@@ -131,7 +134,6 @@ struct SubchDev {
     bool thinint_active;
     uint8_t ccw_no_data_cnt;
     uint16_t migrated_schid; /* used for missmatch detection */
-    ORB orb;
     CcwDataStream cds;
     /* transport-provided data: */
     int (*ccw_cb) (SubchDev *, CCW1);
@@ -214,6 +216,9 @@ IOInstEnding s390_ccw_cmd_request(SubchDev *sch);
 IOInstEnding do_subchannel_work_virtual(SubchDev *sub);
 IOInstEnding do_subchannel_work_passthrough(SubchDev *sub);
 
+int s390_ccw_halt(SubchDev *sch);
+int s390_ccw_clear(SubchDev *sch);
+
 typedef enum {
     CSS_IO_ADAPTER_VIRTIO = 0,
     CSS_IO_ADAPTER_PCI = 1,
@@ -266,11 +271,8 @@ extern const PropertyInfo css_devid_ro_propinfo;
 /**
  * Create a subchannel for the given bus id.
  *
- * If @p bus_id is valid, and @p squash_mcss is true, verify that it is
- * not already in use in the default css, and find a free devno from the
- * default css image for it.
- * If @p bus_id is valid, and @p squash_mcss is false, verify that it is
- * not already in use, and find a free devno for it.
+ * If @p bus_id is valid, verify that it is not already in use, and find a
+ * free devno for it.
  * If @p bus_id is not valid find a free subchannel id and device number
  * across all subchannel sets and all css images starting from the default
  * css image.
@@ -282,7 +284,7 @@ extern const PropertyInfo css_devid_ro_propinfo;
  * The caller becomes owner of the returned subchannel structure and
  * is responsible for unregistering and freeing it.
  */
-SubchDev *css_create_sch(CssDevId bus_id, bool squash_mcss, Error **errp);
+SubchDev *css_create_sch(CssDevId bus_id, Error **errp);
 
 /** Turn on css migration */
 void css_register_vmstate(void);

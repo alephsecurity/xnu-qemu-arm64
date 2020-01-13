@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright (C) 2009 Red Hat, Inc.
 #
@@ -16,22 +16,22 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-function do_is_allocated() {
+do_is_allocated() {
     local start=$1
     local size=$2
     local step=$3
     local count=$4
 
-    for i in `seq 1 $count`; do
+    for ((i=1;i<=$count;i++)); do
         echo alloc $(( start + (i - 1) * step )) $size
     done
 }
 
-function is_allocated() {
+is_allocated() {
     do_is_allocated "$@" | $QEMU_IO "$TEST_IMG" | _filter_qemu_io
 }
 
-function do_io() {
+do_io() {
     local op=$1
     local start=$2
     local size=$3
@@ -40,27 +40,27 @@ function do_io() {
     local pattern=$6
 
     echo === IO: pattern $pattern >&2
-    for i in `seq 1 $count`; do
+    for ((i=1;i<=$count;i++)); do
         echo $op -P $pattern $(( start + (i - 1) * step )) $size
     done
 }
 
-function io_pattern() {
+io_pattern() {
     do_io "$@" | $QEMU_IO "$TEST_IMG" | _filter_qemu_io
 }
 
-function io() {
+io() {
     local start=$2
     local pattern=$(( (start >> 9) % 256 ))
 
     do_io "$@" $pattern | $QEMU_IO "$TEST_IMG" | _filter_qemu_io
 }
 
-function io_zero() {
+io_zero() {
     do_io "$@" 0 | $QEMU_IO "$TEST_IMG" | _filter_qemu_io
 }
 
-function io_test() {
+io_test() {
     local op=$1
     local offset=$2
     local cluster_size=$3
@@ -100,7 +100,7 @@ function io_test() {
     offset=$((offset + num_large * ( l2_size + half_cluster )))
 }
 
-function io_test2() {
+io_test2() {
     local orig_offset=$1
     local cluster_size=$2
     local num=$3

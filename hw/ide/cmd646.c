@@ -22,12 +22,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "hw/isa/isa.h"
-#include "sysemu/sysemu.h"
 #include "sysemu/dma.h"
+#include "sysemu/reset.h"
 
 #include "hw/ide/pci.h"
 #include "trace.h"
@@ -49,86 +52,6 @@
 #define UDIDETCR1	0x7B
 
 static void cmd646_update_irq(PCIDevice *pd);
-
-static uint64_t cmd646_cmd_read(void *opaque, hwaddr addr,
-                                unsigned size)
-{
-    CMD646BAR *cmd646bar = opaque;
-
-    if (addr != 2 || size != 1) {
-        return ((uint64_t)1 << (size * 8)) - 1;
-    }
-    return ide_status_read(cmd646bar->bus, addr + 2);
-}
-
-static void cmd646_cmd_write(void *opaque, hwaddr addr,
-                             uint64_t data, unsigned size)
-{
-    CMD646BAR *cmd646bar = opaque;
-
-    if (addr != 2 || size != 1) {
-        return;
-    }
-    ide_cmd_write(cmd646bar->bus, addr + 2, data);
-}
-
-static const MemoryRegionOps cmd646_cmd_ops = {
-    .read = cmd646_cmd_read,
-    .write = cmd646_cmd_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-};
-
-static uint64_t cmd646_data_read(void *opaque, hwaddr addr,
-                                 unsigned size)
-{
-    CMD646BAR *cmd646bar = opaque;
-
-    if (size == 1) {
-        return ide_ioport_read(cmd646bar->bus, addr);
-    } else if (addr == 0) {
-        if (size == 2) {
-            return ide_data_readw(cmd646bar->bus, addr);
-        } else {
-            return ide_data_readl(cmd646bar->bus, addr);
-        }
-    }
-    return ((uint64_t)1 << (size * 8)) - 1;
-}
-
-static void cmd646_data_write(void *opaque, hwaddr addr,
-                             uint64_t data, unsigned size)
-{
-    CMD646BAR *cmd646bar = opaque;
-
-    if (size == 1) {
-        ide_ioport_write(cmd646bar->bus, addr, data);
-    } else if (addr == 0) {
-        if (size == 2) {
-            ide_data_writew(cmd646bar->bus, addr, data);
-        } else {
-            ide_data_writel(cmd646bar->bus, addr, data);
-        }
-    }
-}
-
-static const MemoryRegionOps cmd646_data_ops = {
-    .read = cmd646_data_read,
-    .write = cmd646_data_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-};
-
-static void setup_cmd646_bar(PCIIDEState *d, int bus_num)
-{
-    IDEBus *bus = &d->bus[bus_num];
-    CMD646BAR *bar = &d->cmd646_bar[bus_num];
-
-    bar->bus = bus;
-    bar->pci_dev = d;
-    memory_region_init_io(&bar->cmd, OBJECT(d), &cmd646_cmd_ops, bar,
-                          "cmd646-cmd", 4);
-    memory_region_init_io(&bar->data, OBJECT(d), &cmd646_data_ops, bar,
-                          "cmd646-data", 8);
-}
 
 static void cmd646_update_dma_interrupts(PCIDevice *pd)
 {
@@ -346,12 +269,22 @@ static void pci_cmd646_ide_realize(PCIDevice *dev, Error **errp)
     dev->wmask[MRDMODE] = 0x0;
     dev->w1cmask[MRDMODE] = MRDMODE_INTR_CH0 | MRDMODE_INTR_CH1;
 
-    setup_cmd646_bar(d, 0);
-    setup_cmd646_bar(d, 1);
-    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd646_bar[0].data);
-    pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd646_bar[0].cmd);
-    pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd646_bar[1].data);
-    pci_register_bar(dev, 3, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd646_bar[1].cmd);
+    memory_region_init_io(&d->data_bar[0], OBJECT(d), &pci_ide_data_le_ops,
+                          &d->bus[0], "cmd646-data0", 8);
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &d->data_bar[0]);
+
+    memory_region_init_io(&d->cmd_bar[0], OBJECT(d), &pci_ide_cmd_le_ops,
+                          &d->bus[0], "cmd646-cmd0", 4);
+    pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd_bar[0]);
+
+    memory_region_init_io(&d->data_bar[1], OBJECT(d), &pci_ide_data_le_ops,
+                          &d->bus[1], "cmd646-data1", 8);
+    pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_IO, &d->data_bar[1]);
+
+    memory_region_init_io(&d->cmd_bar[1], OBJECT(d), &pci_ide_cmd_le_ops,
+                          &d->bus[1], "cmd646-cmd1", 4);
+    pci_register_bar(dev, 3, PCI_BASE_ADDRESS_SPACE_IO, &d->cmd_bar[1]);
+
     bmdma_setup_bar(d);
     pci_register_bar(dev, 4, PCI_BASE_ADDRESS_SPACE_IO, &d->bmdma_bar);
 
@@ -367,6 +300,7 @@ static void pci_cmd646_ide_realize(PCIDevice *dev, Error **errp)
         d->bmdma[i].bus = &d->bus[i];
         ide_register_restart_cb(&d->bus[i]);
     }
+    g_free(irq);
 
     vmstate_register(DEVICE(dev), 0, &vmstate_ide_pci, d);
     qemu_register_reset(cmd646_reset, d);

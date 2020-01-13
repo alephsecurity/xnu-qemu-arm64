@@ -20,8 +20,11 @@
 
 #include "qemu/osdep.h"
 #include "hw/char/imx_serial.h"
-#include "sysemu/sysemu.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 #ifndef DEBUG_IMX_UART
 #define DEBUG_IMX_UART 0
@@ -74,8 +77,9 @@ static void imx_update(IMXSerialState *s)
     mask = (s->ucr1 & UCR1_TXMPTYEN) ? USR2_TXFE : 0;
     /*
      * TCEN and TXDC are both bit 3
+     * RDR and DREN are both bit 0
      */
-    mask |= s->ucr4 & UCR4_TCEN;
+    mask |= s->ucr4 & (UCR4_TCEN | UCR4_DREN);
 
     usr2 = s->usr2 & mask;
 

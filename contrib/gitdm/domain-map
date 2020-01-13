@@ -1,0 +1,28 @@
+#
+# QEMU gitdm domain-map
+#
+# This maps email domains to nice easy to read company names
+#
+
+amd.com         AMD
+cmss.chinamobile.com China Mobile
+citrix.com      Citrix
+greensocs.com   GreenSocs
+fujitsu.com     Fujitsu
+huawei.com      Huawei
+ibm.com         IBM
+igalia.com      Igalia
+intel.com       Intel
+linaro.org      Linaro
+microsoft.com   Microsoft
+nokia.com       Nokia
+oracle.com      Oracle
+proxmox.com     Proxmox
+redhat.com      Red Hat
+rt-rk.com       RT-RK
+siemens.com     Siemens
+sifive.com      SiFive
+suse.de         SUSE
+virtuozzo.com   Virtuozzo
+wdc.com         Western Digital
+xilinx.com      Xilinx

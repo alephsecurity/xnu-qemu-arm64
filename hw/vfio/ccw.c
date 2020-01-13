@@ -2,9 +2,12 @@
  * vfio based subchannel assignment support
  *
  * Copyright 2017 IBM Corp.
+ * Copyright 2019 Red Hat, Inc.
+ *
  * Author(s): Dong Jia Shi <bjsdjshi@linux.vnet.ibm.com>
  *            Xiao Feng Ren <renxiaof@linux.vnet.ibm.com>
  *            Pierre Morel <pmorel@linux.vnet.ibm.com>
+ *            Cornelia Huck <cohuck@redhat.com>
  *
  * This work is licensed under the terms of the GNU GPL, version 2 or (at
  * your option) any later version. See the COPYING file in the top-level
@@ -21,40 +24,34 @@
 #include "hw/vfio/vfio.h"
 #include "hw/vfio/vfio-common.h"
 #include "hw/s390x/s390-ccw.h"
+#include "hw/s390x/vfio-ccw.h"
+#include "hw/qdev-properties.h"
 #include "hw/s390x/ccw-device.h"
 #include "exec/address-spaces.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
+#include "qemu/module.h"
 
-#define TYPE_VFIO_CCW "vfio-ccw"
-typedef struct VFIOCCWDevice {
+struct VFIOCCWDevice {
     S390CCWDevice cdev;
     VFIODevice vdev;
     uint64_t io_region_size;
     uint64_t io_region_offset;
     struct ccw_io_region *io_region;
+    uint64_t async_cmd_region_size;
+    uint64_t async_cmd_region_offset;
+    struct ccw_cmd_region *async_cmd_region;
     EventNotifier io_notifier;
     bool force_orb_pfch;
     bool warned_orb_pfch;
-} VFIOCCWDevice;
-
-static inline void warn_once(bool *warned, const char *fmt, ...)
-{
-    va_list ap;
-
-    if (!warned || *warned) {
-        return;
-    }
-    *warned = true;
-    va_start(ap, fmt);
-    warn_vreport(fmt, ap);
-    va_end(ap);
-}
+};
 
 static inline void warn_once_pfch(VFIOCCWDevice *vcdev, SubchDev *sch,
                                   const char *msg)
 {
-    warn_once(&vcdev->warned_orb_pfch, "vfio-ccw (devno %x.%x.%04x): %s",
-              sch->cssid, sch->ssid, sch->devno, msg);
+    warn_report_once_cond(&vcdev->warned_orb_pfch,
+                          "vfio-ccw (devno %x.%x.%04x): %s",
+                          sch->cssid, sch->ssid, sch->devno, msg);
 }
 
 static void vfio_ccw_compute_needs_reset(VFIODevice *vdev)
@@ -126,6 +123,87 @@ again:
     }
 }
 
+static int vfio_ccw_handle_clear(SubchDev *sch)
+{
+    S390CCWDevice *cdev = sch->driver_data;
+    VFIOCCWDevice *vcdev = DO_UPCAST(VFIOCCWDevice, cdev, cdev);
+    struct ccw_cmd_region *region = vcdev->async_cmd_region;
+    int ret;
+
+    if (!vcdev->async_cmd_region) {
+        /* Async command region not available, fall back to emulation */
+        return -ENOSYS;
+    }
+
+    memset(region, 0, sizeof(*region));
+    region->command = VFIO_CCW_ASYNC_CMD_CSCH;
+
+again:
+    ret = pwrite(vcdev->vdev.fd, region,
+                 vcdev->async_cmd_region_size, vcdev->async_cmd_region_offset);
+    if (ret != vcdev->async_cmd_region_size) {
+        if (errno == EAGAIN) {
+            goto again;
+        }
+        error_report("vfio-ccw: write cmd region failed with errno=%d", errno);
+        ret = -errno;
+    } else {
+        ret = region->ret_code;
+    }
+    switch (ret) {
+    case 0:
+    case -ENODEV:
+    case -EACCES:
+        return 0;
+    case -EFAULT:
+    default:
+        sch_gen_unit_exception(sch);
+        css_inject_io_interrupt(sch);
+        return 0;
+    }
+}
+
+static int vfio_ccw_handle_halt(SubchDev *sch)
+{
+    S390CCWDevice *cdev = sch->driver_data;
+    VFIOCCWDevice *vcdev = DO_UPCAST(VFIOCCWDevice, cdev, cdev);
+    struct ccw_cmd_region *region = vcdev->async_cmd_region;
+    int ret;
+
+    if (!vcdev->async_cmd_region) {
+        /* Async command region not available, fall back to emulation */
+        return -ENOSYS;
+    }
+
+    memset(region, 0, sizeof(*region));
+    region->command = VFIO_CCW_ASYNC_CMD_HSCH;
+
+again:
+    ret = pwrite(vcdev->vdev.fd, region,
+                 vcdev->async_cmd_region_size, vcdev->async_cmd_region_offset);
+    if (ret != vcdev->async_cmd_region_size) {
+        if (errno == EAGAIN) {
+            goto again;
+        }
+        error_report("vfio-ccw: write cmd region failed with errno=%d", errno);
+        ret = -errno;
+    } else {
+        ret = region->ret_code;
+    }
+    switch (ret) {
+    case 0:
+    case -EBUSY:
+    case -ENODEV:
+    case -EACCES:
+        return 0;
+    case -EFAULT:
+    default:
+        sch_gen_unit_exception(sch);
+        css_inject_io_interrupt(sch);
+        return 0;
+    }
+}
+
 static void vfio_ccw_reset(DeviceState *dev)
 {
     CcwDevice *ccw_dev = DO_UPCAST(CcwDevice, parent_obj, dev);
@@ -142,8 +220,8 @@ static void vfio_ccw_io_notifier_handler(void *opaque)
     S390CCWDevice *cdev = S390_CCW_DEVICE(vcdev);
     CcwDevice *ccw_dev = CCW_DEVICE(cdev);
     SubchDev *sch = ccw_dev->sch;
-    SCSW *s = &sch->curr_status.scsw;
-    PMCW *p = &sch->curr_status.pmcw;
+    SCHIB *schib = &sch->curr_status;
+    SCSW s;
     IRB irb;
     int size;
 
@@ -157,33 +235,33 @@ static void vfio_ccw_io_notifier_handler(void *opaque)
         switch (errno) {
         case ENODEV:
             /* Generate a deferred cc 3 condition. */
-            s->flags |= SCSW_FLAGS_MASK_CC;
-            s->ctrl &= ~SCSW_CTRL_MASK_STCTL;
-            s->ctrl |= (SCSW_STCTL_ALERT | SCSW_STCTL_STATUS_PEND);
+            schib->scsw.flags |= SCSW_FLAGS_MASK_CC;
+            schib->scsw.ctrl &= ~SCSW_CTRL_MASK_STCTL;
+            schib->scsw.ctrl |= (SCSW_STCTL_ALERT | SCSW_STCTL_STATUS_PEND);
             goto read_err;
         case EFAULT:
             /* Memory problem, generate channel data check. */
-            s->ctrl &= ~SCSW_ACTL_START_PEND;
-            s->cstat = SCSW_CSTAT_DATA_CHECK;
-            s->ctrl &= ~SCSW_CTRL_MASK_STCTL;
-            s->ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
+            schib->scsw.ctrl &= ~SCSW_ACTL_START_PEND;
+            schib->scsw.cstat = SCSW_CSTAT_DATA_CHECK;
+            schib->scsw.ctrl &= ~SCSW_CTRL_MASK_STCTL;
+            schib->scsw.ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
                        SCSW_STCTL_ALERT | SCSW_STCTL_STATUS_PEND;
             goto read_err;
         default:
             /* Error, generate channel program check. */
-            s->ctrl &= ~SCSW_ACTL_START_PEND;
-            s->cstat = SCSW_CSTAT_PROG_CHECK;
-            s->ctrl &= ~SCSW_CTRL_MASK_STCTL;
-            s->ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
+            schib->scsw.ctrl &= ~SCSW_ACTL_START_PEND;
+            schib->scsw.cstat = SCSW_CSTAT_PROG_CHECK;
+            schib->scsw.ctrl &= ~SCSW_CTRL_MASK_STCTL;
+            schib->scsw.ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
                        SCSW_STCTL_ALERT | SCSW_STCTL_STATUS_PEND;
             goto read_err;
         }
     } else if (size != vcdev->io_region_size) {
         /* Information transfer error, generate channel-control check. */
-        s->ctrl &= ~SCSW_ACTL_START_PEND;
-        s->cstat = SCSW_CSTAT_CHN_CTRL_CHK;
-        s->ctrl &= ~SCSW_CTRL_MASK_STCTL;
-        s->ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
+        schib->scsw.ctrl &= ~SCSW_ACTL_START_PEND;
+        schib->scsw.cstat = SCSW_CSTAT_CHN_CTRL_CHK;
+        schib->scsw.ctrl &= ~SCSW_CTRL_MASK_STCTL;
+        schib->scsw.ctrl |= SCSW_STCTL_PRIMARY | SCSW_STCTL_SECONDARY |
                    SCSW_STCTL_ALERT | SCSW_STCTL_STATUS_PEND;
         goto read_err;
     }
@@ -191,11 +269,13 @@ static void vfio_ccw_io_notifier_handler(void *opaque)
     memcpy(&irb, region->irb_area, sizeof(IRB));
 
     /* Update control block via irb. */
-    copy_scsw_to_guest(s, &irb.scsw);
+    s = schib->scsw;
+    copy_scsw_to_guest(&s, &irb.scsw);
+    schib->scsw = s;
 
     /* If a uint check is pending, copy sense data. */
-    if ((s->dstat & SCSW_DSTAT_UNIT_CHECK) &&
-        (p->chars & PMCW_CHARS_MASK_CSENSE)) {
+    if ((schib->scsw.dstat & SCSW_DSTAT_UNIT_CHECK) &&
+        (schib->pmcw.chars & PMCW_CHARS_MASK_CSENSE)) {
         memcpy(sch->sense_data, irb.ecw, sizeof(irb.ecw));
     }
 
@@ -207,9 +287,8 @@ static void vfio_ccw_register_io_notifier(VFIOCCWDevice *vcdev, Error **errp)
 {
     VFIODevice *vdev = &vcdev->vdev;
     struct vfio_irq_info *irq_info;
-    struct vfio_irq_set *irq_set;
     size_t argsz;
-    int32_t *pfd;
+    int fd;
 
     if (vdev->num_irqs < VFIO_CCW_IO_IRQ_INDEX + 1) {
         error_setg(errp, "vfio: unexpected number of io irqs %u",
@@ -233,25 +312,14 @@ static void vfio_ccw_register_io_notifier(VFIOCCWDevice *vcdev, Error **errp)
         goto out_free_info;
     }
 
-    argsz = sizeof(*irq_set) + sizeof(*pfd);
-    irq_set = g_malloc0(argsz);
-    irq_set->argsz = argsz;
-    irq_set->flags = VFIO_IRQ_SET_DATA_EVENTFD |
-                     VFIO_IRQ_SET_ACTION_TRIGGER;
-    irq_set->index = VFIO_CCW_IO_IRQ_INDEX;
-    irq_set->start = 0;
-    irq_set->count = 1;
-    pfd = (int32_t *) &irq_set->data;
+    fd = event_notifier_get_fd(&vcdev->io_notifier);
+    qemu_set_fd_handler(fd, vfio_ccw_io_notifier_handler, NULL, vcdev);
 
-    *pfd = event_notifier_get_fd(&vcdev->io_notifier);
-    qemu_set_fd_handler(*pfd, vfio_ccw_io_notifier_handler, NULL, vcdev);
-    if (ioctl(vdev->fd, VFIO_DEVICE_SET_IRQS, irq_set)) {
-        error_setg(errp, "vfio: Failed to set up io notification");
-        qemu_set_fd_handler(*pfd, NULL, NULL, vcdev);
+    if (vfio_set_irq_signaling(vdev, VFIO_CCW_IO_IRQ_INDEX, 0,
+                               VFIO_IRQ_SET_ACTION_TRIGGER, fd, errp)) {
+        qemu_set_fd_handler(fd, NULL, NULL, vcdev);
         event_notifier_cleanup(&vcdev->io_notifier);
     }
-
-    g_free(irq_set);
 
 out_free_info:
     g_free(irq_info);
@@ -259,30 +327,16 @@ out_free_info:
 
 static void vfio_ccw_unregister_io_notifier(VFIOCCWDevice *vcdev)
 {
-    struct vfio_irq_set *irq_set;
-    size_t argsz;
-    int32_t *pfd;
+    Error *err = NULL;
 
-    argsz = sizeof(*irq_set) + sizeof(*pfd);
-    irq_set = g_malloc0(argsz);
-    irq_set->argsz = argsz;
-    irq_set->flags = VFIO_IRQ_SET_DATA_EVENTFD |
-                     VFIO_IRQ_SET_ACTION_TRIGGER;
-    irq_set->index = VFIO_CCW_IO_IRQ_INDEX;
-    irq_set->start = 0;
-    irq_set->count = 1;
-    pfd = (int32_t *) &irq_set->data;
-    *pfd = -1;
-
-    if (ioctl(vcdev->vdev.fd, VFIO_DEVICE_SET_IRQS, irq_set)) {
-        error_report("vfio: Failed to de-assign device io fd: %m");
+    if (vfio_set_irq_signaling(&vcdev->vdev, VFIO_CCW_IO_IRQ_INDEX, 0,
+                               VFIO_IRQ_SET_ACTION_TRIGGER, -1, &err)) {
+        error_reportf_err(err, VFIO_MSG_PREFIX, vcdev->vdev.name);
     }
 
     qemu_set_fd_handler(event_notifier_get_fd(&vcdev->io_notifier),
                         NULL, NULL, vcdev);
     event_notifier_cleanup(&vcdev->io_notifier);
-
-    g_free(irq_set);
 }
 
 static void vfio_ccw_get_region(VFIOCCWDevice *vcdev, Error **errp)
@@ -297,9 +351,13 @@ static void vfio_ccw_get_region(VFIOCCWDevice *vcdev, Error **errp)
         return;
     }
 
+    /*
+     * We always expect at least the I/O region to be present. We also
+     * may have a variable number of regions governed by capabilities.
+     */
     if (vdev->num_regions < VFIO_CCW_CONFIG_REGION_INDEX + 1) {
-        error_setg(errp, "vfio: Unexpected number of the I/O region %u",
-                   vdev->num_regions);
+        error_setg(errp, "vfio: too few regions (%u), expected at least %u",
+                   vdev->num_regions, VFIO_CCW_CONFIG_REGION_INDEX + 1);
         return;
     }
 
@@ -319,11 +377,27 @@ static void vfio_ccw_get_region(VFIOCCWDevice *vcdev, Error **errp)
     vcdev->io_region_offset = info->offset;
     vcdev->io_region = g_malloc0(info->size);
 
+    /* check for the optional async command region */
+    ret = vfio_get_dev_region_info(vdev, VFIO_REGION_TYPE_CCW,
+                                   VFIO_REGION_SUBTYPE_CCW_ASYNC_CMD, &info);
+    if (!ret) {
+        vcdev->async_cmd_region_size = info->size;
+        if (sizeof(*vcdev->async_cmd_region) != vcdev->async_cmd_region_size) {
+            error_setg(errp, "vfio: Unexpected size of the async cmd region");
+            g_free(vcdev->io_region);
+            g_free(info);
+            return;
+        }
+        vcdev->async_cmd_region_offset = info->offset;
+        vcdev->async_cmd_region = g_malloc0(info->size);
+    }
+
     g_free(info);
 }
 
 static void vfio_ccw_put_region(VFIOCCWDevice *vcdev)
 {
+    g_free(vcdev->async_cmd_region);
     g_free(vcdev->io_region);
 }
 
@@ -348,6 +422,15 @@ static void vfio_ccw_get_device(VFIOGroup *group, VFIOCCWDevice *vcdev,
             goto out_err;
         }
     }
+
+    /*
+     * All vfio-ccw devices are believed to operate in a way compatible with
+     * memory ballooning, ie. pages pinned in the host are in the current
+     * working set of the guest driver and therefore never overlap with pages
+     * available to the guest balloon driver.  This needs to be set before
+     * vfio_get_device() for vfio common to handle the balloon inhibitor.
+     */
+    vcdev->vdev.balloon_allowed = true;
 
     if (vfio_get_device(group, vcdev->cdev.mdevid, &vcdev->vdev, errp)) {
         goto out_err;
@@ -469,7 +552,7 @@ static Property vfio_ccw_properties[] = {
 };
 
 static const VMStateDescription vfio_ccw_vmstate = {
-    .name = TYPE_VFIO_CCW,
+    .name = "vfio-ccw",
     .unmigratable = 1,
 };
 
@@ -487,6 +570,8 @@ static void vfio_ccw_class_init(ObjectClass *klass, void *data)
     dc->reset = vfio_ccw_reset;
 
     cdc->handle_request = vfio_ccw_handle_request;
+    cdc->handle_halt = vfio_ccw_handle_halt;
+    cdc->handle_clear = vfio_ccw_handle_clear;
 }
 
 static const TypeInfo vfio_ccw_info = {

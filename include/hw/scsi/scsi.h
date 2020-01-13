@@ -1,9 +1,9 @@
 #ifndef QEMU_HW_SCSI_H
 #define QEMU_HW_SCSI_H
 
-#include "hw/qdev.h"
+#include "block/aio.h"
 #include "hw/block/block.h"
-#include "sysemu/sysemu.h"
+#include "hw/qdev-core.h"
 #include "scsi/utils.h"
 #include "qemu/notify.h"
 
@@ -59,6 +59,7 @@ struct SCSIRequest {
 typedef struct SCSIDeviceClass {
     DeviceClass parent_class;
     void (*realize)(SCSIDevice *dev, Error **errp);
+    void (*unrealize)(SCSIDevice *dev, Error **errp);
     int (*parse_cdb)(SCSIDevice *dev, SCSICommand *cmd, uint8_t *buf,
                      void *hba_private);
     SCSIRequest *(*alloc_req)(SCSIDevice *s, uint32_t tag, uint32_t lun,
@@ -88,6 +89,7 @@ struct SCSIDevice
     int scsi_version;
     int default_scsi_version;
     bool needs_vpd_bl_emulation;
+    bool hba_supports_iothread;
 };
 
 extern const VMStateDescription vmstate_scsi_device;
@@ -189,7 +191,6 @@ void scsi_device_report_change(SCSIDevice *dev, SCSISense sense);
 void scsi_device_unit_attention_reported(SCSIDevice *dev);
 void scsi_generic_read_device_inquiry(SCSIDevice *dev);
 int scsi_device_get_sense(SCSIDevice *dev, uint8_t *buf, int len, bool fixed);
-int scsi_disk_emulate_vpd_page(SCSIRequest *req, uint8_t *outbuf);
 int scsi_SG_IO_FROM_DEV(BlockBackend *blk, uint8_t *cmd, uint8_t cmd_size,
                         uint8_t *buf, uint8_t buf_size);
 SCSIDevice *scsi_device_find(SCSIBus *bus, int channel, int target, int lun);

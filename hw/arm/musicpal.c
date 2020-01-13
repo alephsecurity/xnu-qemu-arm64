@@ -11,22 +11,25 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/arm/arm.h"
-#include "hw/devices.h"
+#include "migration/vmstate.h"
+#include "hw/arm/boot.h"
 #include "net/net.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "hw/char/serial.h"
+#include "hw/hw.h"
 #include "qemu/timer.h"
 #include "hw/ptimer.h"
+#include "hw/qdev-properties.h"
 #include "hw/block/flash.h"
 #include "ui/console.h"
 #include "hw/i2c/i2c.h"
+#include "hw/irq.h"
 #include "hw/audio/wm8750.h"
 #include "sysemu/block-backend.h"
+#include "sysemu/runstate.h"
 #include "exec/address-spaces.h"
 #include "ui/pixel_ops.h"
 
@@ -840,13 +843,10 @@ static void mv88w8618_timer_tick(void *opaque)
 static void mv88w8618_timer_init(SysBusDevice *dev, mv88w8618_timer_state *s,
                                  uint32_t freq)
 {
-    QEMUBH *bh;
-
     sysbus_init_irq(dev, &s->irq);
     s->freq = freq;
 
-    bh = qemu_bh_new(mv88w8618_timer_tick, s);
-    s->ptimer = ptimer_init(bh, PTIMER_POLICY_DEFAULT);
+    s->ptimer = ptimer_init(mv88w8618_timer_tick, s, PTIMER_POLICY_DEFAULT);
 }
 
 static uint64_t mv88w8618_pit_read(void *opaque, hwaddr offset,
@@ -876,16 +876,19 @@ static void mv88w8618_pit_write(void *opaque, hwaddr offset,
     case MP_PIT_TIMER1_LENGTH ... MP_PIT_TIMER4_LENGTH:
         t = &s->timer[offset >> 2];
         t->limit = value;
+        ptimer_transaction_begin(t->ptimer);
         if (t->limit > 0) {
             ptimer_set_limit(t->ptimer, t->limit, 1);
         } else {
             ptimer_stop(t->ptimer);
         }
+        ptimer_transaction_commit(t->ptimer);
         break;
 
     case MP_PIT_CONTROL:
         for (i = 0; i < 4; i++) {
             t = &s->timer[i];
+            ptimer_transaction_begin(t->ptimer);
             if (value & 0xf && t->limit > 0) {
                 ptimer_set_limit(t->ptimer, t->limit, 0);
                 ptimer_set_freq(t->ptimer, t->freq);
@@ -893,6 +896,7 @@ static void mv88w8618_pit_write(void *opaque, hwaddr offset,
             } else {
                 ptimer_stop(t->ptimer);
             }
+            ptimer_transaction_commit(t->ptimer);
             value >>= 4;
         }
         break;
@@ -911,8 +915,11 @@ static void mv88w8618_pit_reset(DeviceState *d)
     int i;
 
     for (i = 0; i < 4; i++) {
-        ptimer_stop(s->timer[i].ptimer);
-        s->timer[i].limit = 0;
+        mv88w8618_timer_state *t = &s->timer[i];
+        ptimer_transaction_begin(t->ptimer);
+        ptimer_stop(t->ptimer);
+        ptimer_transaction_commit(t->ptimer);
+        t->limit = 0;
     }
 }
 
@@ -1147,14 +1154,13 @@ static const MemoryRegionOps mv88w8618_wlan_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static int mv88w8618_wlan_init(SysBusDevice *dev)
+static void mv88w8618_wlan_realize(DeviceState *dev, Error **errp)
 {
     MemoryRegion *iomem = g_new(MemoryRegion, 1);
 
     memory_region_init_io(iomem, OBJECT(dev), &mv88w8618_wlan_ops, NULL,
                           "musicpal-wlan", MP_WLAN_SIZE);
-    sysbus_init_mmio(dev, iomem);
-    return 0;
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), iomem);
 }
 
 /* GPIO register offsets */
@@ -1571,9 +1577,6 @@ static struct arm_boot_info musicpal_binfo = {
 
 static void musicpal_init(MachineState *machine)
 {
-    const char *kernel_filename = machine->kernel_filename;
-    const char *kernel_cmdline = machine->kernel_cmdline;
-    const char *initrd_filename = machine->initrd_filename;
     ARMCPU *cpu;
     qemu_irq pic[32];
     DeviceState *dev;
@@ -1637,16 +1640,16 @@ static void musicpal_init(MachineState *machine)
          * image is smaller than 32 MB.
          */
 #ifdef TARGET_WORDS_BIGENDIAN
-        pflash_cfi02_register(0x100000000ULL-MP_FLASH_SIZE_MAX, NULL,
+        pflash_cfi02_register(0x100000000ULL - MP_FLASH_SIZE_MAX,
                               "musicpal.flash", flash_size,
-                              blk, 0x10000, (flash_size + 0xffff) >> 16,
+                              blk, 0x10000,
                               MP_FLASH_SIZE_MAX / flash_size,
                               2, 0x00BF, 0x236D, 0x0000, 0x0000,
                               0x5555, 0x2AAA, 1);
 #else
-        pflash_cfi02_register(0x100000000ULL-MP_FLASH_SIZE_MAX, NULL,
+        pflash_cfi02_register(0x100000000ULL - MP_FLASH_SIZE_MAX,
                               "musicpal.flash", flash_size,
-                              blk, 0x10000, (flash_size + 0xffff) >> 16,
+                              blk, 0x10000,
                               MP_FLASH_SIZE_MAX / flash_size,
                               2, 0x00BF, 0x236D, 0x0000, 0x0000,
                               0x5555, 0x2AAA, 0);
@@ -1693,18 +1696,16 @@ static void musicpal_init(MachineState *machine)
     }
 
     wm8750_dev = i2c_create_slave(i2c, TYPE_WM8750, MP_WM_ADDR);
-    dev = qdev_create(NULL, "mv88w8618_audio");
+    dev = qdev_create(NULL, TYPE_MV88W8618_AUDIO);
     s = SYS_BUS_DEVICE(dev);
-    qdev_prop_set_ptr(dev, "wm8750", wm8750_dev);
+    object_property_set_link(OBJECT(dev), OBJECT(wm8750_dev),
+                             "wm8750", NULL);
     qdev_init_nofail(dev);
     sysbus_mmio_map(s, 0, MP_AUDIO_BASE);
     sysbus_connect_irq(s, 0, pic[MP_AUDIO_IRQ]);
 
     musicpal_binfo.ram_size = MP_RAM_DEFAULT_SIZE;
-    musicpal_binfo.kernel_filename = kernel_filename;
-    musicpal_binfo.kernel_cmdline = kernel_cmdline;
-    musicpal_binfo.initrd_filename = initrd_filename;
-    arm_load_kernel(cpu, &musicpal_binfo);
+    arm_load_kernel(cpu, machine, &musicpal_binfo);
 }
 
 static void musicpal_machine_init(MachineClass *mc)
@@ -1719,9 +1720,9 @@ DEFINE_MACHINE("musicpal", musicpal_machine_init)
 
 static void mv88w8618_wlan_class_init(ObjectClass *klass, void *data)
 {
-    SysBusDeviceClass *sdc = SYS_BUS_DEVICE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
-    sdc->init = mv88w8618_wlan_init;
+    dc->realize = mv88w8618_wlan_realize;
 }
 
 static const TypeInfo mv88w8618_wlan_info = {

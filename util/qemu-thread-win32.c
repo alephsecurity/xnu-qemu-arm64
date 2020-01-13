@@ -11,10 +11,6 @@
  *
  */
 
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
-#endif
-
 #include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qemu/thread.h"
@@ -97,13 +93,13 @@ void qemu_rec_mutex_destroy(QemuRecMutex *mutex)
     DeleteCriticalSection(&mutex->lock);
 }
 
-void qemu_rec_mutex_lock(QemuRecMutex *mutex)
+void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line)
 {
     assert(mutex->initialized);
     EnterCriticalSection(&mutex->lock);
 }
 
-int qemu_rec_mutex_trylock(QemuRecMutex *mutex)
+int qemu_rec_mutex_trylock_impl(QemuRecMutex *mutex, const char *file, int line)
 {
     assert(mutex->initialized);
     return !TryEnterCriticalSection(&mutex->lock);
@@ -147,6 +143,23 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
     qemu_mutex_pre_unlock(mutex, file, line);
     SleepConditionVariableSRW(&cond->var, &mutex->lock, INFINITE, 0);
     qemu_mutex_post_lock(mutex, file, line);
+}
+
+bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
+                              const char *file, const int line)
+{
+    int rc = 0;
+
+    assert(cond->initialized);
+    trace_qemu_mutex_unlock(mutex, file, line);
+    if (!SleepConditionVariableSRW(&cond->var, &mutex->lock, ms, 0)) {
+        rc = GetLastError();
+    }
+    trace_qemu_mutex_locked(mutex, file, line);
+    if (rc && rc != ERROR_TIMEOUT) {
+        error_exit(rc, __func__);
+    }
+    return rc != ERROR_TIMEOUT;
 }
 
 void qemu_sem_init(QemuSemaphore *sem, int init)

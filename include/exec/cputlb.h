@@ -16,13 +16,16 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
 #ifndef CPUTLB_H
 #define CPUTLB_H
+
+#include "exec/cpu-common.h"
 
 #if !defined(CONFIG_USER_ONLY)
 /* cputlb.c */
 void tlb_protect_code(ram_addr_t ram_addr);
 void tlb_unprotect_code(ram_addr_t ram_addr);
-size_t tlb_flush_count(void);
+void tlb_flush_counts(size_t *full, size_t *part, size_t *elide);
 #endif
 #endif

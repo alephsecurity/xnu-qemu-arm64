@@ -8,15 +8,19 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/error-report.h"
-#include "qapi/error.h"
 #include "qemu-common.h"
+#include "qemu/error-report.h"
+#include "qemu/module.h"
+#include "qapi/error.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/arm/pxa.h"
 #include "sysemu/sysemu.h"
 #include "hw/char/serial.h"
 #include "hw/i2c/i2c.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/ssi/ssi.h"
 #include "chardev/char-fe.h"
 #include "sysemu/blockdev.h"
@@ -409,7 +413,7 @@ static uint64_t pxa2xx_mm_read(void *opaque, hwaddr addr,
     case MDCNFG ... SA1110:
         if ((addr & 3) == 0)
             return s->mm_regs[addr >> 2];
-
+        /* fall through */
     default:
         printf("%s: Bad register " REG_FMT "\n", __func__, addr);
         break;
@@ -1286,7 +1290,7 @@ static int pxa2xx_i2c_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
-static int pxa2xx_i2c_rx(I2CSlave *i2c)
+static uint8_t pxa2xx_i2c_rx(I2CSlave *i2c)
 {
     PXA2xxI2CSlaveState *slave = PXA2XX_I2C_SLAVE(i2c);
     PXA2xxI2CState *s = slave->host;

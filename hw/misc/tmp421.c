@@ -25,10 +25,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/i2c/i2c.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qemu/module.h"
 
 /* Manufacturer / Device ID's */
 #define TMP421_MANUFACTURER_ID          0x55
@@ -119,7 +120,7 @@ static void tmp421_get_temperature(Object *obj, Visitor *v, const char *name,
     int tempid;
 
     if (sscanf(name, "temperature%d", &tempid) != 1) {
-        error_setg(errp, "error reading %s: %m", name);
+        error_setg(errp, "error reading %s: %s", name, g_strerror(errno));
         return;
     }
 
@@ -153,13 +154,13 @@ static void tmp421_set_temperature(Object *obj, Visitor *v, const char *name,
     }
 
     if (temp >= maxs[ext_range] || temp < mins[ext_range]) {
-        error_setg(errp, "value %" PRId64 ".%03" PRIu64 " °C is out of range",
+        error_setg(errp, "value %" PRId64 ".%03" PRIu64 " C is out of range",
                    temp / 1000, temp % 1000);
         return;
     }
 
     if (sscanf(name, "temperature%d", &tempid) != 1) {
-        error_setg(errp, "error reading %s: %m", name);
+        error_setg(errp, "error reading %s: %s", name, g_strerror(errno));
         return;
     }
 
@@ -249,7 +250,7 @@ static void tmp421_write(TMP421State *s)
     }
 }
 
-static int tmp421_rx(I2CSlave *i2c)
+static uint8_t tmp421_rx(I2CSlave *i2c)
 {
     TMP421State *s = TMP421(i2c);
 

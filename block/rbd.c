@@ -16,11 +16,13 @@
 #include <rbd/librbd.h>
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "qemu/option.h"
 #include "block/block_int.h"
 #include "block/qdict.h"
 #include "crypto/secret.h"
 #include "qemu/cutils.h"
+#include "sysemu/replay.h"
 #include "qapi/qmp/qstring.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qjson.h"
@@ -102,6 +104,7 @@ typedef struct BDRVRBDState {
     rbd_image_t image;
     char *image_name;
     char *snap;
+    uint64_t image_size;
 } BDRVRBDState;
 
 static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
@@ -655,12 +658,61 @@ failed_opts:
     return r;
 }
 
+static int qemu_rbd_convert_options(QDict *options, BlockdevOptionsRbd **opts,
+                                    Error **errp)
+{
+    Visitor *v;
+    Error *local_err = NULL;
+
+    /* Convert the remaining options into a QAPI object */
+    v = qobject_input_visitor_new_flat_confused(options, errp);
+    if (!v) {
+        return -EINVAL;
+    }
+
+    visit_type_BlockdevOptionsRbd(v, NULL, opts, &local_err);
+    visit_free(v);
+
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+static int qemu_rbd_attempt_legacy_options(QDict *options,
+                                           BlockdevOptionsRbd **opts,
+                                           char **keypairs)
+{
+    char *filename;
+    int r;
+
+    filename = g_strdup(qdict_get_try_str(options, "filename"));
+    if (!filename) {
+        return -EINVAL;
+    }
+    qdict_del(options, "filename");
+
+    qemu_rbd_parse_filename(filename, options, NULL);
+
+    /* keypairs freed by caller */
+    *keypairs = g_strdup(qdict_get_try_str(options, "=keyvalue-pairs"));
+    if (*keypairs) {
+        qdict_del(options, "=keyvalue-pairs");
+    }
+
+    r = qemu_rbd_convert_options(options, opts, NULL);
+
+    g_free(filename);
+    return r;
+}
+
 static int qemu_rbd_open(BlockDriverState *bs, QDict *options, int flags,
                          Error **errp)
 {
     BDRVRBDState *s = bs->opaque;
     BlockdevOptionsRbd *opts = NULL;
-    Visitor *v;
     const QDictEntry *e;
     Error *local_err = NULL;
     char *keypairs, *secretid;
@@ -676,20 +728,33 @@ static int qemu_rbd_open(BlockDriverState *bs, QDict *options, int flags,
         qdict_del(options, "password-secret");
     }
 
-    /* Convert the remaining options into a QAPI object */
-    v = qobject_input_visitor_new_flat_confused(options, errp);
-    if (!v) {
-        r = -EINVAL;
-        goto out;
-    }
-
-    visit_type_BlockdevOptionsRbd(v, NULL, &opts, &local_err);
-    visit_free(v);
-
+    r = qemu_rbd_convert_options(options, &opts, &local_err);
     if (local_err) {
-        error_propagate(errp, local_err);
-        r = -EINVAL;
-        goto out;
+        /* If keypairs are present, that means some options are present in
+         * the modern option format.  Don't attempt to parse legacy option
+         * formats, as we won't support mixed usage. */
+        if (keypairs) {
+            error_propagate(errp, local_err);
+            goto out;
+        }
+
+        /* If the initial attempt to convert and process the options failed,
+         * we may be attempting to open an image file that has the rbd options
+         * specified in the older format consisting of all key/value pairs
+         * encoded in the filename.  Go ahead and attempt to parse the
+         * filename, and see if we can pull out the required options. */
+        r = qemu_rbd_attempt_legacy_options(options, &opts, &keypairs);
+        if (r < 0) {
+            /* Propagate the original error, not the legacy parsing fallback
+             * error, as the latter was just a best-effort attempt. */
+            error_propagate(errp, local_err);
+            goto out;
+        }
+        /* Take care whenever deciding to actually deprecate; once this ability
+         * is removed, we will not be able to open any images with legacy-styled
+         * backing image strings. */
+        warn_report("RBD options encoded in the filename as keyvalue pairs "
+                    "is deprecated");
     }
 
     /* Remove the processed options from the QDict (the visitor processes
@@ -715,19 +780,21 @@ static int qemu_rbd_open(BlockDriverState *bs, QDict *options, int flags,
         goto failed_open;
     }
 
+    r = rbd_get_size(s->image, &s->image_size);
+    if (r < 0) {
+        error_setg_errno(errp, -r, "error getting image size from %s",
+                         s->image_name);
+        rbd_close(s->image);
+        goto failed_open;
+    }
+
     /* If we are using an rbd snapshot, we must be r/o, otherwise
      * leave as-is */
     if (s->snap != NULL) {
-        if (!bdrv_is_read_only(bs)) {
-            error_report("Opening rbd snapshots without an explicit "
-                         "read-only=on option is deprecated. Future versions "
-                         "will refuse to open the image instead of "
-                         "automatically marking the image read-only.");
-            r = bdrv_set_read_only(bs, true, &local_err);
-            if (r < 0) {
-                error_propagate(errp, local_err);
-                goto failed_open;
-            }
+        r = bdrv_apply_auto_read_only(bs, "rbd snapshots are read-only", errp);
+        if (r < 0) {
+            rbd_close(s->image);
+            goto failed_open;
         }
     }
 
@@ -777,6 +844,22 @@ static void qemu_rbd_close(BlockDriverState *bs)
     rados_shutdown(s->cluster);
 }
 
+/* Resize the RBD image and update the 'image_size' with the current size */
+static int qemu_rbd_resize(BlockDriverState *bs, uint64_t size)
+{
+    BDRVRBDState *s = bs->opaque;
+    int r;
+
+    r = rbd_resize(s->image, size);
+    if (r < 0) {
+        return r;
+    }
+
+    s->image_size = size;
+
+    return 0;
+}
+
 static const AIOCBInfo rbd_aiocb_info = {
     .aiocb_size = sizeof(RBDAIOCB),
 };
@@ -802,8 +885,8 @@ static void rbd_finish_aiocb(rbd_completion_t c, RADOSCB *rcb)
     rcb->ret = rbd_aio_get_return_value(c);
     rbd_aio_release(c);
 
-    aio_bh_schedule_oneshot(bdrv_get_aio_context(acb->common.bs),
-                            rbd_finish_bh, rcb);
+    replay_bh_schedule_oneshot_event(bdrv_get_aio_context(acb->common.bs),
+                                     rbd_finish_bh, rcb);
 }
 
 static int rbd_aio_discard_wrapper(rbd_image_t image,
@@ -878,13 +961,25 @@ static BlockAIOCB *rbd_start_aio(BlockDriverState *bs,
     }
 
     switch (cmd) {
-    case RBD_AIO_WRITE:
+    case RBD_AIO_WRITE: {
+        /*
+         * RBD APIs don't allow us to write more than actual size, so in order
+         * to support growing images, we resize the image before write
+         * operations that exceed the current size.
+         */
+        if (off + size > s->image_size) {
+            r = qemu_rbd_resize(bs, off + size);
+            if (r < 0) {
+                goto failed_completion;
+            }
+        }
 #ifdef LIBRBD_SUPPORTS_IOVEC
             r = rbd_aio_writev(s->image, qiov->iov, qiov->niov, off, c);
 #else
             r = rbd_aio_write(s->image, off, size, rcb->buf, c);
 #endif
         break;
+    }
     case RBD_AIO_READ:
 #ifdef LIBRBD_SUPPORTS_IOVEC
             r = rbd_aio_readv(s->image, qiov->iov, qiov->niov, off, c);
@@ -992,10 +1087,10 @@ static int64_t qemu_rbd_getlength(BlockDriverState *bs)
 
 static int coroutine_fn qemu_rbd_co_truncate(BlockDriverState *bs,
                                              int64_t offset,
+                                             bool exact,
                                              PreallocMode prealloc,
                                              Error **errp)
 {
-    BDRVRBDState *s = bs->opaque;
     int r;
 
     if (prealloc != PREALLOC_MODE_OFF) {
@@ -1004,7 +1099,7 @@ static int coroutine_fn qemu_rbd_co_truncate(BlockDriverState *bs,
         return -ENOTSUP;
     }
 
-    r = rbd_resize(s->image, offset);
+    r = qemu_rbd_resize(bs, offset);
     if (r < 0) {
         error_setg_errno(errp, -r, "Failed to resize file");
         return r;
@@ -1172,6 +1267,18 @@ static QemuOptsList qemu_rbd_create_opts = {
     }
 };
 
+static const char *const qemu_rbd_strong_runtime_opts[] = {
+    "pool",
+    "image",
+    "conf",
+    "snapshot",
+    "user",
+    "server.",
+    "password-secret",
+
+    NULL
+};
+
 static BlockDriver bdrv_rbd = {
     .format_name            = "rbd",
     .instance_size          = sizeof(BDRVRBDState),
@@ -1183,6 +1290,7 @@ static BlockDriver bdrv_rbd = {
     .bdrv_co_create         = qemu_rbd_co_create,
     .bdrv_co_create_opts    = qemu_rbd_co_create_opts,
     .bdrv_has_zero_init     = bdrv_has_zero_init_1,
+    .bdrv_has_zero_init_truncate = bdrv_has_zero_init_1,
     .bdrv_get_info          = qemu_rbd_getinfo,
     .create_opts            = &qemu_rbd_create_opts,
     .bdrv_getlength         = qemu_rbd_getlength,
@@ -1209,6 +1317,8 @@ static BlockDriver bdrv_rbd = {
 #ifdef LIBRBD_SUPPORTS_INVALIDATE
     .bdrv_co_invalidate_cache = qemu_rbd_co_invalidate_cache,
 #endif
+
+    .strong_runtime_opts    = qemu_rbd_strong_runtime_opts,
 };
 
 static void bdrv_rbd_init(void)

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Create, read, write big image
 #
@@ -24,7 +24,6 @@ owner=famz@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -39,9 +38,9 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt qcow2 vmdk vhdx qed
 _supported_proto generic
-_supported_os Linux
 _unsupported_imgopts "subformat=twoGbMaxExtentFlat" \
-                     "subformat=twoGbMaxExtentSparse"
+                     "subformat=twoGbMaxExtentSparse" \
+                     "subformat=streamOptimized"
 
 echo
 echo "creating large image"

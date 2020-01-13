@@ -26,8 +26,7 @@
 #define HW_IPMI_H
 
 #include "exec/memory.h"
-#include "qemu-common.h"
-#include "hw/qdev.h"
+#include "hw/qdev-core.h"
 
 #define MAX_IPMI_MSG_SIZE 300
 
@@ -114,14 +113,17 @@ uint32_t ipmi_next_uuid(void);
 #define IPMI_INTERFACE_GET_CLASS(class) \
      OBJECT_GET_CLASS(IPMIInterfaceClass, (class), TYPE_IPMI_INTERFACE)
 
-typedef struct IPMIInterface {
-    Object parent;
-} IPMIInterface;
+typedef struct IPMIInterface IPMIInterface;
 
 typedef struct IPMIInterfaceClass {
     InterfaceClass parent;
 
-    void (*init)(struct IPMIInterface *s, Error **errp);
+    /*
+     * min_size is the requested I/O size and must be a power of 2.
+     * This is so PCI (or other busses) can request a bigger range.
+     * Use 0 for the default.
+     */
+    void (*init)(struct IPMIInterface *s, unsigned int min_size, Error **errp);
 
     /*
      * Perform various operations on the hardware.  If checkonly is

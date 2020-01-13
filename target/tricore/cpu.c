@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -20,7 +20,6 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "cpu.h"
-#include "qemu-common.h"
 #include "exec/exec-all.h"
 #include "qemu/error-report.h"
 
@@ -104,11 +103,9 @@ static void tricore_cpu_realizefn(DeviceState *dev, Error **errp)
 
 static void tricore_cpu_initfn(Object *obj)
 {
-    CPUState *cs = CPU(obj);
     TriCoreCPU *cpu = TRICORE_CPU(obj);
-    CPUTriCoreState *env = &cpu->env;
 
-    cs->env_ptr = env;
+    cpu_set_cpustate_pointers(cpu);
 }
 
 static ObjectClass *tricore_cpu_class_by_name(const char *cpu_model)
@@ -166,6 +163,7 @@ static void tricore_cpu_class_init(ObjectClass *c, void *data)
     cc->synchronize_from_tb = tricore_cpu_synchronize_from_tb;
     cc->get_phys_page_attrs_debug = tricore_cpu_get_phys_page_attrs_debug;
     cc->tcg_initialize = tricore_tcg_init;
+    cc->tlb_fill = tricore_cpu_tlb_fill;
 }
 
 #define DEFINE_TRICORE_CPU_TYPE(cpu_model, initfn) \

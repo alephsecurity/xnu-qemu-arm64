@@ -9,6 +9,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "hw/audio/wm8750.h"
 #include "audio/audio.h"
 
@@ -68,7 +70,7 @@ static inline void wm8750_in_load(WM8750State *s)
 {
     if (s->idx_in + s->req_in <= sizeof(s->data_in))
         return;
-    s->idx_in = audio_MAX(0, (int) sizeof(s->data_in) - s->req_in);
+    s->idx_in = MAX(0, (int) sizeof(s->data_in) - s->req_in);
     AUD_read(*s->in[0], s->data_in + s->idx_in,
              sizeof(s->data_in) - s->idx_in);
 }
@@ -99,7 +101,7 @@ static void wm8750_audio_out_cb(void *opaque, int free_b)
         wm8750_out_flush(s);
     } else
         s->req_out = free_b - s->idx_out;
- 
+
     s->data_req(s->opaque, s->req_out >> 2, s->req_in >> 2);
 }
 
@@ -201,7 +203,7 @@ static void wm8750_set_format(WM8750State *s)
     in_fmt.endianness = 0;
     in_fmt.nchannels = 2;
     in_fmt.freq = s->adc_hz;
-    in_fmt.fmt = AUD_FMT_S16;
+    in_fmt.fmt = AUDIO_FORMAT_S16;
 
     s->adc_voice[0] = AUD_open_in(&s->card, s->adc_voice[0],
                     CODEC ".input1", s, wm8750_audio_in_cb, &in_fmt);
@@ -214,7 +216,7 @@ static void wm8750_set_format(WM8750State *s)
     out_fmt.endianness = 0;
     out_fmt.nchannels = 2;
     out_fmt.freq = s->dac_hz;
-    out_fmt.fmt = AUD_FMT_S16;
+    out_fmt.fmt = AUDIO_FORMAT_S16;
 
     s->dac_voice[0] = AUD_open_out(&s->card, s->dac_voice[0],
                     CODEC ".speaker", s, wm8750_audio_out_cb, &out_fmt);
@@ -561,7 +563,7 @@ static int wm8750_tx(I2CSlave *i2c, uint8_t data)
     return 0;
 }
 
-static int wm8750_rx(I2CSlave *i2c)
+static uint8_t wm8750_rx(I2CSlave *i2c)
 {
     return 0x00;
 }
@@ -681,7 +683,7 @@ uint32_t wm8750_adc_dat(void *opaque)
     if (s->idx_in >= sizeof(s->data_in)) {
         wm8750_in_load(s);
         if (s->idx_in >= sizeof(s->data_in)) {
-            return 0x80008000; /* silence in AUD_FMT_S16 sample format */
+            return 0x80008000; /* silence in AUDIO_FORMAT_S16 sample format */
         }
     }
 
@@ -700,6 +702,11 @@ void wm8750_set_bclk_in(void *opaque, int new_hz)
     wm8750_clk_update(s, 1);
 }
 
+static Property wm8750_properties[] = {
+    DEFINE_AUDIO_PROPERTIES(WM8750State, card),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void wm8750_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -710,6 +717,7 @@ static void wm8750_class_init(ObjectClass *klass, void *data)
     sc->recv = wm8750_rx;
     sc->send = wm8750_tx;
     dc->vmsd = &vmstate_wm8750;
+    dc->props = wm8750_properties;
 }
 
 static const TypeInfo wm8750_info = {

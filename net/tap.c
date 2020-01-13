@@ -40,6 +40,7 @@
 #include "qemu-common.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
 #include "qemu/sockets.h"
 
 #include "net/tap.h"
@@ -498,9 +499,9 @@ static int net_bridge_run_helper(const char *helper, const char *bridge,
     }
     if (pid == 0) {
         int open_max = sysconf(_SC_OPEN_MAX), i;
-        char fd_buf[6+10];
-        char br_buf[6+IFNAMSIZ] = {0};
-        char helper_cmd[PATH_MAX + sizeof(fd_buf) + sizeof(br_buf) + 15];
+        char *fd_buf = NULL;
+        char *br_buf = NULL;
+        char *helper_cmd = NULL;
 
         for (i = 3; i < open_max; i++) {
             if (i != sv[1]) {
@@ -508,17 +509,17 @@ static int net_bridge_run_helper(const char *helper, const char *bridge,
             }
         }
 
-        snprintf(fd_buf, sizeof(fd_buf), "%s%d", "--fd=", sv[1]);
+        fd_buf = g_strdup_printf("%s%d", "--fd=", sv[1]);
 
         if (strrchr(helper, ' ') || strrchr(helper, '\t')) {
             /* assume helper is a command */
 
             if (strstr(helper, "--br=") == NULL) {
-                snprintf(br_buf, sizeof(br_buf), "%s%s", "--br=", bridge);
+                br_buf = g_strdup_printf("%s%s", "--br=", bridge);
             }
 
-            snprintf(helper_cmd, sizeof(helper_cmd), "%s %s %s %s",
-                     helper, "--use-vnet", fd_buf, br_buf);
+            helper_cmd = g_strdup_printf("%s %s %s %s", helper,
+                            "--use-vnet", fd_buf, br_buf ? br_buf : "");
 
             parg = args;
             *parg++ = (char *)"sh";
@@ -527,10 +528,11 @@ static int net_bridge_run_helper(const char *helper, const char *bridge,
             *parg++ = NULL;
 
             execv("/bin/sh", args);
+            g_free(helper_cmd);
         } else {
             /* assume helper is just the executable path name */
 
-            snprintf(br_buf, sizeof(br_buf), "%s%s", "--br=", bridge);
+            br_buf = g_strdup_printf("%s%s", "--br=", bridge);
 
             parg = args;
             *parg++ = (char *)helper;
@@ -541,6 +543,8 @@ static int net_bridge_run_helper(const char *helper, const char *bridge,
 
             execv(helper, args);
         }
+        g_free(fd_buf);
+        g_free(br_buf);
         _exit(1);
 
     } else {
@@ -592,7 +596,7 @@ int net_init_bridge(const Netdev *netdev, const char *name,
         return -1;
     }
 
-    fcntl(fd, F_SETFL, O_NONBLOCK);
+    qemu_set_nonblock(fd);
     vnet_hdr = tap_probe_vnet_hdr(fd);
     s = net_tap_fd_init(peer, "bridge", name, fd, vnet_hdr);
 
@@ -707,7 +711,7 @@ static void net_init_tap_one(const NetdevTapOptions *tap, NetClientState *peer,
                 }
                 return;
             }
-            fcntl(vhostfd, F_SETFL, O_NONBLOCK);
+            qemu_set_nonblock(vhostfd);
         }
         options.opaque = (void *)(uintptr_t)vhostfd;
 
@@ -791,7 +795,7 @@ int net_init_tap(const Netdev *netdev, const char *name,
             return -1;
         }
 
-        fcntl(fd, F_SETFL, O_NONBLOCK);
+        qemu_set_nonblock(fd);
 
         vnet_hdr = tap_probe_vnet_hdr(fd);
 
@@ -839,7 +843,7 @@ int net_init_tap(const Netdev *netdev, const char *name,
                 goto free_fail;
             }
 
-            fcntl(fd, F_SETFL, O_NONBLOCK);
+            qemu_set_nonblock(fd);
 
             if (i == 0) {
                 vnet_hdr = tap_probe_vnet_hdr(fd);
@@ -887,7 +891,7 @@ free_fail:
             return -1;
         }
 
-        fcntl(fd, F_SETFL, O_NONBLOCK);
+        qemu_set_nonblock(fd);
         vnet_hdr = tap_probe_vnet_hdr(fd);
 
         net_init_tap_one(tap, peer, "bridge", name, ifname,

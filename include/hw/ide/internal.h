@@ -6,10 +6,12 @@
  * only files in hw/ide/ are supposed to include this file.
  * non-internal declarations are in hw/ide.h
  */
+
+#include "qapi/qapi-types-run-state.h"
 #include "hw/ide.h"
+#include "hw/irq.h"
 #include "hw/isa/isa.h"
 #include "sysemu/dma.h"
-#include "sysemu/sysemu.h"
 #include "hw/block/block.h"
 #include "scsi/constants.h"
 
@@ -342,11 +344,10 @@ enum ide_dma_cmd {
 extern const char *IDE_DMA_CMD_lookup[IDE_DMA__COUNT];
 
 #define ide_cmd_is_read(s) \
-	((s)->dma_cmd == IDE_DMA_READ)
+        ((s)->dma_cmd == IDE_DMA_READ)
 
 typedef struct IDEBufferedRequest {
     QLIST_ENTRY(IDEBufferedRequest) list;
-    struct iovec iov;
     QEMUIOVector qiov;
     QEMUIOVector *original_qiov;
     BlockCompletionFunc *original_cb;
@@ -405,7 +406,6 @@ struct IDEState {
     int atapi_dma; /* true if dma is requested for the packet cmd */
     BlockAcctCookie acct;
     BlockAIOCB *pio_aiocb;
-    struct iovec iov;
     QEMUIOVector qiov;
     QLIST_HEAD(, IDEBufferedRequest) buffered_requests;
     /* ATA DMA state */
@@ -457,7 +457,6 @@ struct IDEDMAOps {
 
 struct IDEDMA {
     const struct IDEDMAOps *ops;
-    struct iovec iov;
     QEMUIOVector qiov;
     BlockAIOCB *aiocb;
 };

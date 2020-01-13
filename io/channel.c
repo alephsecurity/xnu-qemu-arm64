@@ -22,6 +22,7 @@
 #include "io/channel.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
+#include "qemu/module.h"
 #include "qemu/iov.h"
 
 bool qio_channel_has_feature(QIOChannel *ioc,
@@ -400,15 +401,14 @@ off_t qio_channel_io_seek(QIOChannel *ioc,
 }
 
 
-static void qio_channel_set_aio_fd_handlers(QIOChannel *ioc);
-
 static void qio_channel_restart_read(void *opaque)
 {
     QIOChannel *ioc = opaque;
     Coroutine *co = ioc->read_coroutine;
 
-    ioc->read_coroutine = NULL;
-    qio_channel_set_aio_fd_handlers(ioc);
+    /* Assert that aio_co_wake() reenters the coroutine directly */
+    assert(qemu_get_current_aio_context() ==
+           qemu_coroutine_get_aio_context(co));
     aio_co_wake(co);
 }
 
@@ -417,8 +417,9 @@ static void qio_channel_restart_write(void *opaque)
     QIOChannel *ioc = opaque;
     Coroutine *co = ioc->write_coroutine;
 
-    ioc->write_coroutine = NULL;
-    qio_channel_set_aio_fd_handlers(ioc);
+    /* Assert that aio_co_wake() reenters the coroutine directly */
+    assert(qemu_get_current_aio_context() ==
+           qemu_coroutine_get_aio_context(co));
     aio_co_wake(co);
 }
 
@@ -469,6 +470,16 @@ void coroutine_fn qio_channel_yield(QIOChannel *ioc,
     }
     qio_channel_set_aio_fd_handlers(ioc);
     qemu_coroutine_yield();
+
+    /* Allow interrupting the operation by reentering the coroutine other than
+     * through the aio_fd_handlers. */
+    if (condition == G_IO_IN && ioc->read_coroutine) {
+        ioc->read_coroutine = NULL;
+        qio_channel_set_aio_fd_handlers(ioc);
+    } else if (condition == G_IO_OUT && ioc->write_coroutine) {
+        ioc->write_coroutine = NULL;
+        qio_channel_set_aio_fd_handlers(ioc);
+    }
 }
 
 

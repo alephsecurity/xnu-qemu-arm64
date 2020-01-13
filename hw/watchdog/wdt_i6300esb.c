@@ -21,11 +21,11 @@
 
 #include "qemu/osdep.h"
 
-#include "qemu-common.h"
+#include "qemu/module.h"
 #include "qemu/timer.h"
 #include "sysemu/watchdog.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "migration/vmstate.h"
 
 /*#define I6300ESB_DEBUG 1*/
 
@@ -200,7 +200,7 @@ static void i6300esb_timer_expired(void *vp)
         if (d->reboot_enabled) {
             d->previous_reboot_flag = 1;
             watchdog_perform_action(); /* This reboots, exits, etc */
-            i6300esb_reset(&d->dev.qdev);
+            i6300esb_reset(DEVICE(d));
         }
 
         /* In "free running mode" we start stage 1 again. */
@@ -449,7 +449,6 @@ static void i6300esb_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&d->io_mem, OBJECT(d), &i6300esb_ops, d,
                           "i6300esb", 0x10);
     pci_register_bar(&d->dev, 0, 0, &d->io_mem);
-    /* qemu_register_coalesced_mmio (addr, 0x10); ? */
 }
 
 static void i6300esb_exit(PCIDevice *dev)

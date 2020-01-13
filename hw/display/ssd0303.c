@@ -10,8 +10,11 @@
 /* The controller can support a variety of different displays, but we only
    implement one.  Most of the commends relating to brightness and geometry
    setup are ignored. */
+
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "ui/console.h"
 
 //#define DEBUG_SSD0303 1
@@ -62,10 +65,10 @@ typedef struct {
     uint8_t framebuffer[132*8];
 } ssd0303_state;
 
-static int ssd0303_recv(I2CSlave *i2c)
+static uint8_t ssd0303_recv(I2CSlave *i2c)
 {
     BADF("Reads not implemented\n");
-    return -1;
+    return 0xff;
 }
 
 static int ssd0303_send(I2CSlave *i2c, uint8_t data)

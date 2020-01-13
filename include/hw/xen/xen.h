@@ -8,15 +8,12 @@
  *   /usr/include/xen, so it can be included unconditionally.
  */
 
-#include "qemu-common.h"
 #include "exec/cpu-common.h"
-#include "hw/irq.h"
 
 /* xen-machine.c */
 enum xen_mode {
     XEN_EMULATE = 0,  // xen emulation, using xenner (default)
-    XEN_CREATE,       // create xen domain
-    XEN_ATTACH        // attach to xen domain created by xend
+    XEN_ATTACH        // attach to xen domain created by libxl
 };
 
 extern uint32_t xen_domid;

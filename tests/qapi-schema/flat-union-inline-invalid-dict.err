@@ -1,0 +1,2 @@
+flat-union-inline-invalid-dict.json: In union 'TestUnion':
+flat-union-inline-invalid-dict.json:7: 'data' member 'value1' misses key 'type'

@@ -18,7 +18,6 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/arm/omap.h"
 
 struct omap_l4_s {
@@ -112,8 +111,8 @@ static const MemoryRegionOps omap_l4ta_ops = {
 
 struct omap_target_agent_s *omap_l4ta_get(struct omap_l4_s *bus,
         const struct omap_l4_region_s *regions,
-	const struct omap_l4_agent_info_s *agents,
-	int cs)
+        const struct omap_l4_agent_info_s *agents,
+        int cs)
 {
     int i;
     struct omap_target_agent_s *ta = NULL;

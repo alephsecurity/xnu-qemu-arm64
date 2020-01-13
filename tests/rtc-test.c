@@ -13,9 +13,10 @@
 
 #include "qemu/osdep.h"
 
-#include "libqtest.h"
+#include "libqtest-single.h"
 #include "qemu/timer.h"
-#include "hw/timer/mc146818rtc_regs.h"
+#include "hw/rtc/mc146818rtc.h"
+#include "hw/rtc/mc146818rtc_regs.h"
 
 #define UIP_HOLD_LENGTH           (8 * NANOSECONDS_PER_SECOND / 32768)
 
@@ -165,9 +166,9 @@ static void check_time(int wiggle)
         t = (long)mktime(datep);
         s = (long)mktime(&start);
         if (t < s) {
-            g_test_message("RTC is %ld second(s) behind wall-clock\n", (s - t));
+            g_test_message("RTC is %ld second(s) behind wall-clock", (s - t));
         } else {
-            g_test_message("RTC is %ld second(s) ahead of wall-clock\n", (t - s));
+            g_test_message("RTC is %ld second(s) ahead of wall-clock", (t - s));
         }
 
         g_assert_cmpint(ABS(t - s), <=, wiggle);

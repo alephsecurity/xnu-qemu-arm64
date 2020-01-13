@@ -1,15 +1,14 @@
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
-#include "hw/hw.h"
-#include "hw/boards.h"
 #include "sysemu/kvm.h"
 #include "helper_regs.h"
 #include "mmu-hash64.h"
 #include "migration/cpu.h"
 #include "qapi/error.h"
+#include "qemu/main-loop.h"
 #include "kvm_ppc.h"
+#include "exec/helper-proto.h"
 
 static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
 {
@@ -17,35 +16,39 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     CPUPPCState *env = &cpu->env;
     unsigned int i, j;
     target_ulong sdr1;
-    uint32_t fpscr;
+    uint32_t fpscr, vscr;
 #if defined(TARGET_PPC64)
     int32_t slb_nr;
 #endif
     target_ulong xer;
 
-    for (i = 0; i < 32; i++)
+    for (i = 0; i < 32; i++) {
         qemu_get_betls(f, &env->gpr[i]);
+    }
 #if !defined(TARGET_PPC64)
-    for (i = 0; i < 32; i++)
+    for (i = 0; i < 32; i++) {
         qemu_get_betls(f, &env->gprh[i]);
+    }
 #endif
     qemu_get_betls(f, &env->lr);
     qemu_get_betls(f, &env->ctr);
-    for (i = 0; i < 8; i++)
+    for (i = 0; i < 8; i++) {
         qemu_get_be32s(f, &env->crf[i]);
+    }
     qemu_get_betls(f, &xer);
     cpu_write_xer(env, xer);
     qemu_get_betls(f, &env->reserve_addr);
     qemu_get_betls(f, &env->msr);
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 4; i++) {
         qemu_get_betls(f, &env->tgpr[i]);
+    }
     for (i = 0; i < 32; i++) {
         union {
             float64 d;
             uint64_t l;
         } u;
         u.l = qemu_get_be64(f);
-        env->fpr[i] = u.d;
+        *cpu_fpr_ptr(env, i) = u.d;
     }
     qemu_get_be32s(f, &fpscr);
     env->fpscr = fpscr;
@@ -55,14 +58,19 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     qemu_get_sbe32s(f, &slb_nr);
 #endif
     qemu_get_betls(f, &sdr1);
-    for (i = 0; i < 32; i++)
+    for (i = 0; i < 32; i++) {
         qemu_get_betls(f, &env->sr[i]);
-    for (i = 0; i < 2; i++)
-        for (j = 0; j < 8; j++)
+    }
+    for (i = 0; i < 2; i++) {
+        for (j = 0; j < 8; j++) {
             qemu_get_betls(f, &env->DBAT[i][j]);
-    for (i = 0; i < 2; i++)
-        for (j = 0; j < 8; j++)
+        }
+    }
+    for (i = 0; i < 2; i++) {
+        for (j = 0; j < 8; j++) {
             qemu_get_betls(f, &env->IBAT[i][j]);
+        }
+    }
     qemu_get_sbe32s(f, &env->nb_tlb);
     qemu_get_sbe32s(f, &env->tlb_per_way);
     qemu_get_sbe32s(f, &env->nb_ways);
@@ -70,21 +78,24 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     qemu_get_sbe32s(f, &env->id_tlbs);
     qemu_get_sbe32s(f, &env->nb_pids);
     if (env->tlb.tlb6) {
-        // XXX assumes 6xx
+        /* XXX assumes 6xx */
         for (i = 0; i < env->nb_tlb; i++) {
             qemu_get_betls(f, &env->tlb.tlb6[i].pte0);
             qemu_get_betls(f, &env->tlb.tlb6[i].pte1);
             qemu_get_betls(f, &env->tlb.tlb6[i].EPN);
         }
     }
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 4; i++) {
         qemu_get_betls(f, &env->pb[i]);
-    for (i = 0; i < 1024; i++)
+    }
+    for (i = 0; i < 1024; i++) {
         qemu_get_betls(f, &env->spr[i]);
+    }
     if (!cpu->vhyp) {
         ppc_store_sdr1(env, sdr1);
     }
-    qemu_get_be32s(f, &env->vscr);
+    qemu_get_be32s(f, &vscr);
+    helper_mtvscr(env, vscr);
     qemu_get_be64s(f, &env->spe_acc);
     qemu_get_be32s(f, &env->spe_fscr);
     qemu_get_betls(f, &env->msr_mask);
@@ -92,8 +103,9 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     qemu_get_sbe32s(f, &env->error_code);
     qemu_get_be32s(f, &env->pending_interrupts);
     qemu_get_be32s(f, &env->irq_input_state);
-    for (i = 0; i < POWERPC_EXCP_NB; i++)
+    for (i = 0; i < POWERPC_EXCP_NB; i++) {
         qemu_get_betls(f, &env->excp_vectors[i]);
+    }
     qemu_get_betls(f, &env->excp_prefix);
     qemu_get_betls(f, &env->ivor_mask);
     qemu_get_betls(f, &env->ivpr_mask);
@@ -110,7 +122,8 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     return 0;
 }
 
-static int get_avr(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_avr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field)
 {
     ppc_avr_t *v = pv;
 
@@ -120,8 +133,8 @@ static int get_avr(QEMUFile *f, void *pv, size_t size, VMStateField *field)
     return 0;
 }
 
-static int put_avr(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                   QJSON *vmdesc)
+static int put_avr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field, QJSON *vmdesc)
 {
     ppc_avr_t *v = pv;
 
@@ -137,10 +150,72 @@ static const VMStateInfo vmstate_info_avr = {
 };
 
 #define VMSTATE_AVR_ARRAY_V(_f, _s, _n, _v)                       \
-    VMSTATE_ARRAY(_f, _s, _n, _v, vmstate_info_avr, ppc_avr_t)
+    VMSTATE_SUB_ARRAY(_f, _s, 32, _n, _v, vmstate_info_avr, ppc_avr_t)
 
 #define VMSTATE_AVR_ARRAY(_f, _s, _n)                             \
     VMSTATE_AVR_ARRAY_V(_f, _s, _n, 0)
+
+static int get_fpr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field)
+{
+    ppc_vsr_t *v = pv;
+
+    v->VsrD(0) = qemu_get_be64(f);
+
+    return 0;
+}
+
+static int put_fpr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field, QJSON *vmdesc)
+{
+    ppc_vsr_t *v = pv;
+
+    qemu_put_be64(f, v->VsrD(0));
+    return 0;
+}
+
+static const VMStateInfo vmstate_info_fpr = {
+    .name = "fpr",
+    .get  = get_fpr,
+    .put  = put_fpr,
+};
+
+#define VMSTATE_FPR_ARRAY_V(_f, _s, _n, _v)                       \
+    VMSTATE_SUB_ARRAY(_f, _s, 0, _n, _v, vmstate_info_fpr, ppc_vsr_t)
+
+#define VMSTATE_FPR_ARRAY(_f, _s, _n)                             \
+    VMSTATE_FPR_ARRAY_V(_f, _s, _n, 0)
+
+static int get_vsr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field)
+{
+    ppc_vsr_t *v = pv;
+
+    v->VsrD(1) = qemu_get_be64(f);
+
+    return 0;
+}
+
+static int put_vsr(QEMUFile *f, void *pv, size_t size,
+                   const VMStateField *field, QJSON *vmdesc)
+{
+    ppc_vsr_t *v = pv;
+
+    qemu_put_be64(f, v->VsrD(1));
+    return 0;
+}
+
+static const VMStateInfo vmstate_info_vsr = {
+    .name = "vsr",
+    .get  = get_vsr,
+    .put  = put_vsr,
+};
+
+#define VMSTATE_VSR_ARRAY_V(_f, _s, _n, _v)                       \
+    VMSTATE_SUB_ARRAY(_f, _s, 0, _n, _v, vmstate_info_vsr, ppc_vsr_t)
+
+#define VMSTATE_VSR_ARRAY(_f, _s, _n)                             \
+    VMSTATE_VSR_ARRAY_V(_f, _s, _n, 0)
 
 static bool cpu_pre_2_8_migration(void *opaque, int version_id)
 {
@@ -188,22 +263,24 @@ static int cpu_pre_save(void *opaque)
     env->spr[SPR_BOOKE_SPEFSCR] = env->spe_fscr;
 
     for (i = 0; (i < 4) && (i < env->nb_BATs); i++) {
-        env->spr[SPR_DBAT0U + 2*i] = env->DBAT[0][i];
-        env->spr[SPR_DBAT0U + 2*i + 1] = env->DBAT[1][i];
-        env->spr[SPR_IBAT0U + 2*i] = env->IBAT[0][i];
-        env->spr[SPR_IBAT0U + 2*i + 1] = env->IBAT[1][i];
+        env->spr[SPR_DBAT0U + 2 * i] = env->DBAT[0][i];
+        env->spr[SPR_DBAT0U + 2 * i + 1] = env->DBAT[1][i];
+        env->spr[SPR_IBAT0U + 2 * i] = env->IBAT[0][i];
+        env->spr[SPR_IBAT0U + 2 * i + 1] = env->IBAT[1][i];
     }
-    for (i = 0; (i < 4) && ((i+4) < env->nb_BATs); i++) {
-        env->spr[SPR_DBAT4U + 2*i] = env->DBAT[0][i+4];
-        env->spr[SPR_DBAT4U + 2*i + 1] = env->DBAT[1][i+4];
-        env->spr[SPR_IBAT4U + 2*i] = env->IBAT[0][i+4];
-        env->spr[SPR_IBAT4U + 2*i + 1] = env->IBAT[1][i+4];
+    for (i = 0; (i < 4) && ((i + 4) < env->nb_BATs); i++) {
+        env->spr[SPR_DBAT4U + 2 * i] = env->DBAT[0][i + 4];
+        env->spr[SPR_DBAT4U + 2 * i + 1] = env->DBAT[1][i + 4];
+        env->spr[SPR_IBAT4U + 2 * i] = env->IBAT[0][i + 4];
+        env->spr[SPR_IBAT4U + 2 * i + 1] = env->IBAT[1][i + 4];
     }
 
     /* Hacks for migration compatibility between 2.6, 2.7 & 2.8 */
     if (cpu->pre_2_8_migration) {
-        /* Mask out bits that got added to msr_mask since the versions
-         * which stupidly included it in the migration stream. */
+        /*
+         * Mask out bits that got added to msr_mask since the versions
+         * which stupidly included it in the migration stream.
+         */
         target_ulong metamask = 0
 #if defined(TARGET_PPC64)
             | (1ULL << MSR_TS0)
@@ -212,9 +289,10 @@ static int cpu_pre_save(void *opaque)
             ;
         cpu->mig_msr_mask = env->msr_mask & ~metamask;
         cpu->mig_insns_flags = env->insns_flags & insns_compat_mask;
-        /* CPU models supported by old machines all have PPC_MEM_TLBIE,
-         * so we set it unconditionally to allow backward migration from
-         * a POWER9 host to a POWER8 host.
+        /*
+         * CPU models supported by old machines all have
+         * PPC_MEM_TLBIE, so we set it unconditionally to allow
+         * backward migration from a POWER9 host to a POWER8 host.
          */
         cpu->mig_insns_flags |= PPC_MEM_TLBIE;
         cpu->mig_insns_flags2 = env->insns_flags2 & insns_compat_mask2;
@@ -299,11 +377,9 @@ static int cpu_post_load(void *opaque, int version_id)
      * receive the PVR it expects as a workaround.
      *
      */
-#if defined(CONFIG_KVM)
     if (kvmppc_pvr_workaround_required(cpu)) {
         env->spr[SPR_PVR] = env->spr_cb[SPR_PVR].default_value;
     }
-#endif
 
     env->lr = env->spr[SPR_LR];
     env->ctr = env->spr[SPR_CTR];
@@ -314,23 +390,26 @@ static int cpu_post_load(void *opaque, int version_id)
     env->spe_fscr = env->spr[SPR_BOOKE_SPEFSCR];
 
     for (i = 0; (i < 4) && (i < env->nb_BATs); i++) {
-        env->DBAT[0][i] = env->spr[SPR_DBAT0U + 2*i];
-        env->DBAT[1][i] = env->spr[SPR_DBAT0U + 2*i + 1];
-        env->IBAT[0][i] = env->spr[SPR_IBAT0U + 2*i];
-        env->IBAT[1][i] = env->spr[SPR_IBAT0U + 2*i + 1];
+        env->DBAT[0][i] = env->spr[SPR_DBAT0U + 2 * i];
+        env->DBAT[1][i] = env->spr[SPR_DBAT0U + 2 * i + 1];
+        env->IBAT[0][i] = env->spr[SPR_IBAT0U + 2 * i];
+        env->IBAT[1][i] = env->spr[SPR_IBAT0U + 2 * i + 1];
     }
-    for (i = 0; (i < 4) && ((i+4) < env->nb_BATs); i++) {
-        env->DBAT[0][i+4] = env->spr[SPR_DBAT4U + 2*i];
-        env->DBAT[1][i+4] = env->spr[SPR_DBAT4U + 2*i + 1];
-        env->IBAT[0][i+4] = env->spr[SPR_IBAT4U + 2*i];
-        env->IBAT[1][i+4] = env->spr[SPR_IBAT4U + 2*i + 1];
+    for (i = 0; (i < 4) && ((i + 4) < env->nb_BATs); i++) {
+        env->DBAT[0][i + 4] = env->spr[SPR_DBAT4U + 2 * i];
+        env->DBAT[1][i + 4] = env->spr[SPR_DBAT4U + 2 * i + 1];
+        env->IBAT[0][i + 4] = env->spr[SPR_IBAT4U + 2 * i];
+        env->IBAT[1][i + 4] = env->spr[SPR_IBAT4U + 2 * i + 1];
     }
 
     if (!cpu->vhyp) {
         ppc_store_sdr1(env, env->spr[SPR_SDR1]);
     }
 
-    /* Invalidate all supported msr bits except MSR_TGPR/MSR_HVB before restoring */
+    /*
+     * Invalidate all supported msr bits except MSR_TGPR/MSR_HVB
+     * before restoring
+     */
     msr = env->msr;
     env->msr ^= env->msr_mask & ~((1ULL << MSR_TGPR) | MSR_HVB);
     ppc_store_msr(env, msr);
@@ -344,7 +423,7 @@ static bool fpu_needed(void *opaque)
 {
     PowerPCCPU *cpu = opaque;
 
-    return (cpu->env.insns_flags & PPC_FLOAT);
+    return cpu->env.insns_flags & PPC_FLOAT;
 }
 
 static const VMStateDescription vmstate_fpu = {
@@ -353,7 +432,7 @@ static const VMStateDescription vmstate_fpu = {
     .minimum_version_id = 1,
     .needed = fpu_needed,
     .fields = (VMStateField[]) {
-        VMSTATE_FLOAT64_ARRAY(env.fpr, PowerPCCPU, 32),
+        VMSTATE_FPR_ARRAY(env.vsr, PowerPCCPU, 32),
         VMSTATE_UINTTL(env.fpscr, PowerPCCPU),
         VMSTATE_END_OF_LIST()
     },
@@ -363,8 +442,30 @@ static bool altivec_needed(void *opaque)
 {
     PowerPCCPU *cpu = opaque;
 
-    return (cpu->env.insns_flags & PPC_ALTIVEC);
+    return cpu->env.insns_flags & PPC_ALTIVEC;
 }
+
+static int get_vscr(QEMUFile *f, void *opaque, size_t size,
+                    const VMStateField *field)
+{
+    PowerPCCPU *cpu = opaque;
+    helper_mtvscr(&cpu->env, qemu_get_be32(f));
+    return 0;
+}
+
+static int put_vscr(QEMUFile *f, void *opaque, size_t size,
+                    const VMStateField *field, QJSON *vmdesc)
+{
+    PowerPCCPU *cpu = opaque;
+    qemu_put_be32(f, helper_mfvscr(&cpu->env));
+    return 0;
+}
+
+static const VMStateInfo vmstate_vscr = {
+    .name = "cpu/altivec/vscr",
+    .get = get_vscr,
+    .put = put_vscr,
+};
 
 static const VMStateDescription vmstate_altivec = {
     .name = "cpu/altivec",
@@ -372,8 +473,22 @@ static const VMStateDescription vmstate_altivec = {
     .minimum_version_id = 1,
     .needed = altivec_needed,
     .fields = (VMStateField[]) {
-        VMSTATE_AVR_ARRAY(env.avr, PowerPCCPU, 32),
-        VMSTATE_UINT32(env.vscr, PowerPCCPU),
+        VMSTATE_AVR_ARRAY(env.vsr, PowerPCCPU, 32),
+        /*
+         * Save the architecture value of the vscr, not the internally
+         * expanded version.  Since this architecture value does not
+         * exist in memory to be stored, this requires a but of hoop
+         * jumping.  We want OFFSET=0 so that we effectively pass CPU
+         * to the helper functions.
+         */
+        {
+            .name = "vscr",
+            .version_id = 0,
+            .size = sizeof(uint32_t),
+            .info = &vmstate_vscr,
+            .flags = VMS_SINGLE,
+            .offset = 0
+        },
         VMSTATE_END_OF_LIST()
     },
 };
@@ -382,7 +497,7 @@ static bool vsx_needed(void *opaque)
 {
     PowerPCCPU *cpu = opaque;
 
-    return (cpu->env.insns_flags2 & PPC2_VSX);
+    return cpu->env.insns_flags2 & PPC2_VSX;
 }
 
 static const VMStateDescription vmstate_vsx = {
@@ -391,7 +506,7 @@ static const VMStateDescription vmstate_vsx = {
     .minimum_version_id = 1,
     .needed = vsx_needed,
     .fields = (VMStateField[]) {
-        VMSTATE_UINT64_ARRAY(env.vsr, PowerPCCPU, 32),
+        VMSTATE_VSR_ARRAY(env.vsr, PowerPCCPU, 32),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -452,7 +567,8 @@ static const VMStateDescription vmstate_sr = {
 };
 
 #ifdef TARGET_PPC64
-static int get_slbe(QEMUFile *f, void *pv, size_t size, VMStateField *field)
+static int get_slbe(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field)
 {
     ppc_slb_t *v = pv;
 
@@ -462,8 +578,8 @@ static int get_slbe(QEMUFile *f, void *pv, size_t size, VMStateField *field)
     return 0;
 }
 
-static int put_slbe(QEMUFile *f, void *pv, size_t size, VMStateField *field,
-                    QJSON *vmdesc)
+static int put_slbe(QEMUFile *f, void *pv, size_t size,
+                    const VMStateField *field, QJSON *vmdesc)
 {
     ppc_slb_t *v = pv;
 
@@ -489,7 +605,7 @@ static bool slb_needed(void *opaque)
     PowerPCCPU *cpu = opaque;
 
     /* We don't support any of the old segment table based 64-bit CPUs */
-    return (cpu->env.mmu_model & POWERPC_MMU_64);
+    return cpu->env.mmu_model & POWERPC_MMU_64;
 }
 
 static int slb_post_load(void *opaque, int version_id)
@@ -498,8 +614,10 @@ static int slb_post_load(void *opaque, int version_id)
     CPUPPCState *env = &cpu->env;
     int i;
 
-    /* We've pulled in the raw esid and vsid values from the migration
-     * stream, but we need to recompute the page size pointers */
+    /*
+     * We've pulled in the raw esid and vsid values from the migration
+     * stream, but we need to recompute the page size pointers
+     */
     for (i = 0; i < cpu->hash64_opts->slb_size; i++) {
         if (ppc_store_slb(cpu, i, env->slb[i].esid, env->slb[i].vsid) < 0) {
             /* Migration source had bad values in its SLB */

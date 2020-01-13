@@ -23,8 +23,12 @@
 #define QEMU_NORETURN __attribute__ ((__noreturn__))
 #define QEMU_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
 #define QEMU_SENTINEL __attribute__((sentinel))
-#define QEMU_ARTIFICIAL __attribute__((always_inline, artificial))
-#define QEMU_PACKED __attribute__((gcc_struct, packed))
+
+#if defined(_WIN32) && (defined(__x86_64__) || defined(__i386__))
+# define QEMU_PACKED __attribute__((gcc_struct, packed))
+#else
+# define QEMU_PACKED __attribute__((packed))
+#endif
 
 #define cat(x,y) x ## y
 #define cat2(x,y) cat(x,y)
@@ -93,29 +97,19 @@ struct {                                                                \
 /*
  * Tail queue definitions.
  */
-#define Q_TAILQ_HEAD(name, type, qual)                                  \
-struct name {                                                           \
-        qual type *tqh_first;           /* first element */             \
-        qual type *qual *tqh_last;      /* addr of last next element */ \
-}
 #define QTAILQ_HEAD(name, type)                                         \
-struct name {                                                           \
-        type *tqh_first;      /* first element */                       \
-        type **tqh_last;      /* addr of last next element */           \
+union name {                                                            \
+        struct type *tqh_first;       /* first element */               \
+        QTailQLink tqh_circ;          /* link for last element */       \
 }
 
 #define QTAILQ_HEAD_INITIALIZER(head)                                   \
-        { NULL, &(head).tqh_first }
+        { .tqh_circ = { NULL, &(head).tqh_circ } }
 
-#define Q_TAILQ_ENTRY(type, qual)                                       \
-struct {                                                                \
-        qual type *tqe_next;            /* next element */              \
-        qual type *qual *tqe_prev;      /* address of previous next element */\
-}
 #define QTAILQ_ENTRY(type)                                              \
-struct {                                                                \
-        type *tqe_next;       /* next element */                        \
-        type **tqe_prev;      /* address of previous next element */    \
+union {                                                                 \
+        struct type *tqe_next;        /* next element */                \
+        QTailQLink tqe_circ;          /* link for prev element */       \
 }
 
 /* From glib */

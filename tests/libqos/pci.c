@@ -15,6 +15,7 @@
 
 #include "hw/pci/pci_regs.h"
 #include "qemu/host-utils.h"
+#include "libqos/qgraph.h"
 
 void qpci_device_foreach(QPCIBus *bus, int vendor_id, int device_id,
                          void (*func)(QPCIDevice *dev, int devfn, void *data),
@@ -50,13 +51,34 @@ void qpci_device_foreach(QPCIBus *bus, int vendor_id, int device_id,
     }
 }
 
+bool qpci_has_buggy_msi(QPCIDevice *dev)
+{
+    return dev->bus->has_buggy_msi;
+}
+
+bool qpci_check_buggy_msi(QPCIDevice *dev)
+{
+    if (qpci_has_buggy_msi(dev)) {
+        g_test_skip("Skipping due to incomplete support for MSI");
+        return true;
+    }
+    return false;
+}
+
+static void qpci_device_set(QPCIDevice *dev, QPCIBus *bus, int devfn)
+{
+    g_assert(dev);
+
+    dev->bus = bus;
+    dev->devfn = devfn;
+}
+
 QPCIDevice *qpci_device_find(QPCIBus *bus, int devfn)
 {
     QPCIDevice *dev;
 
     dev = g_malloc0(sizeof(*dev));
-    dev->bus = bus;
-    dev->devfn = devfn;
+    qpci_device_set(dev, bus, devfn);
 
     if (qpci_config_readw(dev, PCI_VENDOR_ID) == 0xFFFF) {
         g_free(dev);
@@ -64,6 +86,17 @@ QPCIDevice *qpci_device_find(QPCIBus *bus, int devfn)
     }
 
     return dev;
+}
+
+void qpci_device_init(QPCIDevice *dev, QPCIBus *bus, QPCIAddress *addr)
+{
+    uint16_t vendor_id, device_id;
+
+    qpci_device_set(dev, bus, addr->devfn);
+    vendor_id = qpci_config_readw(dev, PCI_VENDOR_ID);
+    device_id = qpci_config_readw(dev, PCI_DEVICE_ID);
+    g_assert(!addr->vendor_id || vendor_id == addr->vendor_id);
+    g_assert(!addr->device_id || device_id == addr->device_id);
 }
 
 void qpci_device_enable(QPCIDevice *dev)
@@ -82,10 +115,28 @@ void qpci_device_enable(QPCIDevice *dev)
     g_assert_cmphex(cmd & PCI_COMMAND_MASTER, ==, PCI_COMMAND_MASTER);
 }
 
-uint8_t qpci_find_capability(QPCIDevice *dev, uint8_t id)
+/**
+ * qpci_find_capability:
+ * @dev: the PCI device
+ * @id: the PCI Capability ID (PCI_CAP_ID_*)
+ * @start_addr: 0 to begin iteration or the last return value to continue
+ *              iteration
+ *
+ * Iterate over the PCI Capabilities List.
+ *
+ * Returns: PCI Configuration Space offset of the capabililty structure or
+ *          0 if no further matching capability is found
+ */
+uint8_t qpci_find_capability(QPCIDevice *dev, uint8_t id, uint8_t start_addr)
 {
     uint8_t cap;
-    uint8_t addr = qpci_config_readb(dev, PCI_CAPABILITY_LIST);
+    uint8_t addr;
+
+    if (start_addr) {
+        addr = qpci_config_readb(dev, start_addr + PCI_CAP_LIST_NEXT);
+    } else {
+        addr = qpci_config_readb(dev, PCI_CAPABILITY_LIST);
+    }
 
     do {
         cap = qpci_config_readb(dev, addr);
@@ -105,7 +156,7 @@ void qpci_msix_enable(QPCIDevice *dev)
     uint8_t bir_table;
     uint8_t bir_pba;
 
-    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX);
+    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX, 0);
     g_assert_cmphex(addr, !=, 0);
 
     val = qpci_config_readw(dev, addr + PCI_MSIX_FLAGS);
@@ -134,7 +185,7 @@ void qpci_msix_disable(QPCIDevice *dev)
     uint16_t val;
 
     g_assert(dev->msix_enabled);
-    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX);
+    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX, 0);
     g_assert_cmphex(addr, !=, 0);
     val = qpci_config_readw(dev, addr + PCI_MSIX_FLAGS);
     qpci_config_writew(dev, addr + PCI_MSIX_FLAGS,
@@ -170,7 +221,7 @@ bool qpci_msix_masked(QPCIDevice *dev, uint16_t entry)
     uint64_t vector_off = dev->msix_table_off + entry * PCI_MSIX_ENTRY_SIZE;
 
     g_assert(dev->msix_enabled);
-    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX);
+    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX, 0);
     g_assert_cmphex(addr, !=, 0);
     val = qpci_config_readw(dev, addr + PCI_MSIX_FLAGS);
 
@@ -188,7 +239,7 @@ uint16_t qpci_msix_table_size(QPCIDevice *dev)
     uint8_t addr;
     uint16_t control;
 
-    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX);
+    addr = qpci_find_capability(dev, PCI_CAP_ID_MSIX, 0);
     g_assert_cmphex(addr, !=, 0);
 
     control = qpci_config_readw(dev, addr + PCI_MSIX_FLAGS);
@@ -396,9 +447,11 @@ QPCIBar qpci_legacy_iomap(QPCIDevice *dev, uint16_t addr)
     return bar;
 }
 
-void qpci_plug_device_test(const char *driver, const char *id,
-                           uint8_t slot, const char *opts)
+void add_qpci_address(QOSGraphEdgeOptions *opts, QPCIAddress *addr)
 {
-    qtest_qmp_device_add(driver, id, "'addr': '%d'%s%s", slot,
-                         opts ? ", " : "", opts ? opts : "");
+    g_assert(addr);
+    g_assert(opts);
+
+    opts->arg = addr;
+    opts->size_arg = sizeof(QPCIAddress);
 }

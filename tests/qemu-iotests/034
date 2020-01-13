@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test bdrv_pwrite_zeroes with backing files (see also 154)
 #
@@ -24,7 +24,6 @@ owner=kwolf@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -42,7 +41,8 @@ _supported_proto file
 _supported_os Linux
 _unsupported_imgopts "subformat=monolithicFlat" \
                      "subformat=twoGbMaxExtentFlat" \
-                     "subformat=twoGbMaxExtentSparse"
+                     "subformat=twoGbMaxExtentSparse" \
+                     "subformat=streamOptimized"
 
 CLUSTER_SIZE=4k
 size=128M
