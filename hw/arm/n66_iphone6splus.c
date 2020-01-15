@@ -29,6 +29,7 @@
 #include "exec/address-spaces.h"
 #include "hw/misc/unimp.h"
 #include "sysemu/sysemu.h"
+#include "sysemu/reset.h"
 #include "qemu/error-report.h"
 #include "hw/platform-bus.h"
 
