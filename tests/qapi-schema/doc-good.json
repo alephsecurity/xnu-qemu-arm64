@@ -55,7 +55,9 @@
 #
 # @two is undocumented
 ##
-{ 'enum': 'Enum', 'data': [ 'one', 'two' ], 'if': 'defined(IFCOND)' }
+{ 'enum': 'Enum', 'data':
+  [ { 'name': 'one', 'if': 'defined(IFONE)' }, 'two' ],
+  'if': 'defined(IFCOND)' }
 
 ##
 # @Base:
@@ -69,8 +71,13 @@
 # A paragraph
 #
 # Another paragraph (but no @var: line)
+#
+# Features:
+# @variant1-feat: a feature
 ##
-{ 'struct': 'Variant1', 'data': { 'var1': 'str' } }
+{ 'struct': 'Variant1',
+  'features': [ 'variant1-feat' ],
+  'data': { 'var1': { 'type': 'str', 'if': 'defined(IFSTR)' } } }
 
 ##
 # @Variant2:
@@ -83,13 +90,21 @@
 { 'union': 'Object',
   'base': 'Base',
   'discriminator': 'base1',
-  'data': { 'one': 'Variant1', 'two': 'Variant2' } }
+  'data': { 'one': 'Variant1', 'two': { 'type': 'Variant2', 'if': 'IFTWO' } } }
 
 ##
 # @SugaredUnion:
 ##
 { 'union': 'SugaredUnion',
-  'data': { 'one': 'Variant1', 'two': 'Variant2' } }
+  'data': { 'one': 'Variant1', 'two': { 'type': 'Variant2', 'if': 'IFTWO' } } }
+
+##
+# @Alternate:
+# @i: an integer
+# @b is undocumented
+##
+{ 'alternate': 'Alternate',
+  'data': { 'i': 'int', 'b': 'bool' } }
 
 ##
 # == Another subsection
@@ -101,6 +116,10 @@
 #
 # @arg2: the second
 # argument
+#
+# Features:
+# @cmd-feat1: a feature
+# @cmd-feat2: another feature
 # Note: @arg3 is undocumented
 # Returns: @Object
 # TODO: frobnicate
@@ -120,11 +139,15 @@
 ##
 { 'command': 'cmd',
   'data': { 'arg1': 'int', '*arg2': 'str', 'arg3': 'bool' },
-  'returns': 'Object' }
+  'returns': 'Object',
+  'features': [ 'cmd-feat1', 'cmd-feat2' ] }
 
 ##
 # @cmd-boxed:
 # If you're bored enough to read this, go see a video of boxed cats
+# Features:
+# @cmd-feat1: a feature
+# @cmd-feat2: another feature
 # Example:
 #
 # -> in
@@ -132,4 +155,11 @@
 # <- out
 ##
 { 'command': 'cmd-boxed', 'boxed': true,
+  'data': 'Object',
+  'features': [ 'cmd-feat1', 'cmd-feat2' ] }
+
+##
+# @EVT-BOXED:
+##
+{ 'event': 'EVT-BOXED',  'boxed': true,
   'data': 'Object' }

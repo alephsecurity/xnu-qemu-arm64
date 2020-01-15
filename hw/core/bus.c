@@ -18,26 +18,20 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "hw/qdev.h"
+#include "hw/qdev-properties.h"
+#include "qemu/ctype.h"
+#include "qemu/module.h"
 #include "qapi/error.h"
 
-static void qbus_set_hotplug_handler_internal(BusState *bus, Object *handler,
-                                              Error **errp)
+void qbus_set_hotplug_handler(BusState *bus, Object *handler, Error **errp)
 {
-
     object_property_set_link(OBJECT(bus), OBJECT(handler),
                              QDEV_HOTPLUG_HANDLER_PROPERTY, errp);
 }
 
-void qbus_set_hotplug_handler(BusState *bus, DeviceState *handler, Error **errp)
-{
-    qbus_set_hotplug_handler_internal(bus, OBJECT(handler), errp);
-}
-
 void qbus_set_bus_hotplug_handler(BusState *bus, Error **errp)
 {
-    qbus_set_hotplug_handler_internal(bus, OBJECT(bus), errp);
+    qbus_set_hotplug_handler(bus, OBJECT(bus), errp);
 }
 
 int qbus_walk_children(BusState *bus,
@@ -103,10 +97,9 @@ static void qbus_realize(BusState *bus, DeviceState *parent, const char *name)
         bus->parent->num_child_bus++;
         object_property_add_child(OBJECT(bus->parent), bus->name, OBJECT(bus), NULL);
         object_unref(OBJECT(bus));
-    } else if (bus != sysbus_get_default()) {
-        /* TODO: once all bus devices are qdevified,
-           only reset handler for main_system_bus should be registered here. */
-        qemu_register_reset(qbus_reset_all_fn, bus);
+    } else {
+        /* The only bus without a parent is the main system bus */
+        assert(bus == sysbus_get_default());
     }
 }
 
@@ -115,18 +108,16 @@ static void bus_unparent(Object *obj)
     BusState *bus = BUS(obj);
     BusChild *kid;
 
+    /* Only the main system bus has no parent, and that bus is never freed */
+    assert(bus->parent);
+
     while ((kid = QTAILQ_FIRST(&bus->children)) != NULL) {
         DeviceState *dev = kid->child;
         object_unparent(OBJECT(dev));
     }
-    if (bus->parent) {
-        QLIST_REMOVE(bus, sibling);
-        bus->parent->num_child_bus--;
-        bus->parent = NULL;
-    } else {
-        assert(bus != sysbus_get_default()); /* main_system_bus is never freed */
-        qemu_unregister_reset(qbus_reset_all_fn, bus);
-    }
+    QLIST_REMOVE(bus, sibling);
+    bus->parent->num_child_bus--;
+    bus->parent = NULL;
 }
 
 void qbus_create_inplace(void *bus, size_t size, const char *typename,

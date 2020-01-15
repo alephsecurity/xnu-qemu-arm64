@@ -4,7 +4,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "ui/console.h"
 #include "standard-headers/drm/drm_fourcc.h"
 
@@ -36,7 +35,7 @@ PixelFormat qemu_pixelformat_from_pixman(pixman_format_code_t format)
         pf.rshift = 0;
         break;
     case PIXMAN_TYPE_BGRA:
-	pf.bshift = bpp - pf.bbits;
+        pf.bshift = bpp - pf.bbits;
         pf.gshift = bpp - (pf.bbits + pf.gbits);
         pf.rshift = bpp - (pf.bbits + pf.gbits + pf.rbits);
         pf.ashift = 0;

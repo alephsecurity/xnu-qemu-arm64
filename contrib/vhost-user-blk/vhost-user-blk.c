@@ -20,7 +20,14 @@
 #include "contrib/libvhost-user/libvhost-user-glib.h"
 #include "contrib/libvhost-user/libvhost-user.h"
 
-#include <glib.h>
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
+
+enum {
+    VHOST_USER_BLK_MAX_QUEUES = 8,
+};
 
 struct virtio_blk_inhdr {
     unsigned char status;
@@ -55,6 +62,20 @@ static size_t vub_iov_size(const struct iovec *iov,
 
     len = 0;
     for (i = 0; i < iov_cnt; i++) {
+        len += iov[i].iov_len;
+    }
+    return len;
+}
+
+static size_t vub_iov_to_buf(const struct iovec *iov,
+                             const unsigned int iov_cnt, void *buf)
+{
+    size_t len;
+    unsigned int i;
+
+    len = 0;
+    for (i = 0; i < iov_cnt; i++) {
+        memcpy(buf + len,  iov[i].iov_base, iov[i].iov_len);
         len += iov[i].iov_len;
     }
     return len;
@@ -158,6 +179,44 @@ vub_writev(VubReq *req, struct iovec *iov, uint32_t iovcnt)
     return rc;
 }
 
+static int
+vub_discard_write_zeroes(VubReq *req, struct iovec *iov, uint32_t iovcnt,
+                         uint32_t type)
+{
+    struct virtio_blk_discard_write_zeroes *desc;
+    ssize_t size;
+    void *buf;
+
+    size = vub_iov_size(iov, iovcnt);
+    if (size != sizeof(*desc)) {
+        fprintf(stderr, "Invalid size %ld, expect %ld\n", size, sizeof(*desc));
+        return -1;
+    }
+    buf = g_new0(char, size);
+    vub_iov_to_buf(iov, iovcnt, buf);
+
+    #if defined(__linux__) && defined(BLKDISCARD) && defined(BLKZEROOUT)
+    VubDev *vdev_blk = req->vdev_blk;
+    desc = (struct virtio_blk_discard_write_zeroes *)buf;
+    uint64_t range[2] = { le64toh(desc->sector) << 9,
+                          le32toh(desc->num_sectors) << 9 };
+    if (type == VIRTIO_BLK_T_DISCARD) {
+        if (ioctl(vdev_blk->blk_fd, BLKDISCARD, range) == 0) {
+            g_free(buf);
+            return 0;
+        }
+    } else if (type == VIRTIO_BLK_T_WRITE_ZEROES) {
+        if (ioctl(vdev_blk->blk_fd, BLKZEROOUT, range) == 0) {
+            g_free(buf);
+            return 0;
+        }
+    }
+    #endif
+
+    g_free(buf);
+    return -1;
+}
+
 static void
 vub_flush(VubReq *req)
 {
@@ -213,44 +272,55 @@ static int vub_virtio_process_req(VubDev *vdev_blk,
     in_num--;
 
     type = le32toh(req->out->type);
-    switch (type & ~(VIRTIO_BLK_T_OUT | VIRTIO_BLK_T_BARRIER)) {
-        case VIRTIO_BLK_T_IN: {
-            ssize_t ret = 0;
-            bool is_write = type & VIRTIO_BLK_T_OUT;
-            req->sector_num = le64toh(req->out->sector);
-            if (is_write) {
-                ret  = vub_writev(req, &elem->out_sg[1], out_num);
-            } else {
-                ret = vub_readv(req, &elem->in_sg[0], in_num);
-            }
-            if (ret >= 0) {
-                req->in->status = VIRTIO_BLK_S_OK;
-            } else {
-                req->in->status = VIRTIO_BLK_S_IOERR;
-            }
-            vub_req_complete(req);
-            break;
+    switch (type & ~VIRTIO_BLK_T_BARRIER) {
+    case VIRTIO_BLK_T_IN:
+    case VIRTIO_BLK_T_OUT: {
+        ssize_t ret = 0;
+        bool is_write = type & VIRTIO_BLK_T_OUT;
+        req->sector_num = le64toh(req->out->sector);
+        if (is_write) {
+            ret  = vub_writev(req, &elem->out_sg[1], out_num);
+        } else {
+            ret = vub_readv(req, &elem->in_sg[0], in_num);
         }
-        case VIRTIO_BLK_T_FLUSH: {
-            vub_flush(req);
+        if (ret >= 0) {
             req->in->status = VIRTIO_BLK_S_OK;
-            vub_req_complete(req);
-            break;
+        } else {
+            req->in->status = VIRTIO_BLK_S_IOERR;
         }
-        case VIRTIO_BLK_T_GET_ID: {
-            size_t size = MIN(vub_iov_size(&elem->in_sg[0], in_num),
-                              VIRTIO_BLK_ID_BYTES);
-            snprintf(elem->in_sg[0].iov_base, size, "%s", "vhost_user_blk");
+        vub_req_complete(req);
+        break;
+    }
+    case VIRTIO_BLK_T_FLUSH:
+        vub_flush(req);
+        req->in->status = VIRTIO_BLK_S_OK;
+        vub_req_complete(req);
+        break;
+    case VIRTIO_BLK_T_GET_ID: {
+        size_t size = MIN(vub_iov_size(&elem->in_sg[0], in_num),
+                          VIRTIO_BLK_ID_BYTES);
+        snprintf(elem->in_sg[0].iov_base, size, "%s", "vhost_user_blk");
+        req->in->status = VIRTIO_BLK_S_OK;
+        req->size = elem->in_sg[0].iov_len;
+        vub_req_complete(req);
+        break;
+    }
+    case VIRTIO_BLK_T_DISCARD:
+    case VIRTIO_BLK_T_WRITE_ZEROES: {
+        int rc;
+        rc = vub_discard_write_zeroes(req, &elem->out_sg[1], out_num, type);
+        if (rc == 0) {
             req->in->status = VIRTIO_BLK_S_OK;
-            req->size = elem->in_sg[0].iov_len;
-            vub_req_complete(req);
-            break;
+        } else {
+            req->in->status = VIRTIO_BLK_S_IOERR;
         }
-        default: {
-            req->in->status = VIRTIO_BLK_S_UNSUPP;
-            vub_req_complete(req);
-            break;
-        }
+        vub_req_complete(req);
+        break;
+    }
+    default:
+        req->in->status = VIRTIO_BLK_S_UNSUPP;
+        vub_req_complete(req);
+        break;
     }
 
     return 0;
@@ -267,12 +337,6 @@ static void vub_process_vq(VuDev *vu_dev, int idx)
     VubDev *vdev_blk;
     VuVirtq *vq;
     int ret;
-
-    if ((idx < 0) || (idx >= VHOST_MAX_NR_VIRTQUEUE)) {
-        fprintf(stderr, "VQ Index out of range: %d\n", idx);
-        vub_panic_cb(vu_dev, NULL);
-        return;
-    }
 
     gdev = container_of(vu_dev, VugDev, parent);
     vdev_blk = container_of(gdev, VubDev, parent);
@@ -314,6 +378,10 @@ vub_get_features(VuDev *dev)
                1ull << VIRTIO_BLK_F_TOPOLOGY |
                1ull << VIRTIO_BLK_F_BLK_SIZE |
                1ull << VIRTIO_BLK_F_FLUSH |
+               #if defined(__linux__) && defined(BLKDISCARD) && defined(BLKZEROOUT)
+               1ull << VIRTIO_BLK_F_DISCARD |
+               1ull << VIRTIO_BLK_F_WRITE_ZEROES |
+               #endif
                1ull << VIRTIO_BLK_F_CONFIG_WCE |
                1ull << VIRTIO_F_VERSION_1 |
                1ull << VHOST_USER_F_PROTOCOL_FEATURES;
@@ -328,7 +396,8 @@ vub_get_features(VuDev *dev)
 static uint64_t
 vub_get_protocol_features(VuDev *dev)
 {
-    return 1ull << VHOST_USER_PROTOCOL_F_CONFIG;
+    return 1ull << VHOST_USER_PROTOCOL_F_CONFIG |
+           1ull << VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD;
 }
 
 static int
@@ -455,7 +524,7 @@ vub_get_blocksize(int fd)
 
 #if defined(__linux__) && defined(BLKSSZGET)
     if (ioctl(fd, BLKSSZGET, &blocksize) == 0) {
-        return blocklen;
+        return blocksize;
     }
 #endif
 
@@ -475,6 +544,13 @@ vub_initialize_config(int fd, struct virtio_blk_config *config)
     config->min_io_size = 1;
     config->opt_io_size = 1;
     config->num_queues = 1;
+    #if defined(__linux__) && defined(BLKDISCARD) && defined(BLKZEROOUT)
+    config->max_discard_sectors = 32768;
+    config->max_discard_seg = 1;
+    config->discard_sector_alignment = config->blk_size >> 9;
+    config->max_write_zeroes_sectors = 32768;
+    config->max_write_zeroes_seg = 1;
+    #endif
 }
 
 static VubDev *
@@ -553,7 +629,11 @@ int main(int argc, char **argv)
         vdev_blk->enable_ro = true;
     }
 
-    vug_init(&vdev_blk->parent, csock, vub_panic_cb, &vub_iface);
+    if (!vug_init(&vdev_blk->parent, VHOST_USER_BLK_MAX_QUEUES, csock,
+                  vub_panic_cb, &vub_iface)) {
+        fprintf(stderr, "Failed to initialized libvhost-user-glib\n");
+        goto err;
+    }
 
     g_main_loop_run(vdev_blk->loop);
 

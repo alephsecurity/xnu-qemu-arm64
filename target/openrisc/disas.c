@@ -18,8 +18,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "disas/bfd.h"
+#include "disas/dis-asm.h"
 #include "qemu/bitops.h"
 #include "cpu.h"
 
@@ -51,12 +50,11 @@ int print_insn_or1k(bfd_vma addr, disassemble_info *info)
     return 4;
 }
 
-#define INSN(opcode, format, ...) \
-static bool trans_l_##opcode(disassemble_info *info,    \
-    arg_l_##opcode *a, uint32_t insn)                   \
-{                                                       \
-    output("l." #opcode, format, ##__VA_ARGS__);        \
-    return true;                                        \
+#define INSN(opcode, format, ...)                                       \
+static bool trans_l_##opcode(disassemble_info *info, arg_l_##opcode *a) \
+{                                                                       \
+    output("l." #opcode, format, ##__VA_ARGS__);                        \
+    return true;                                                        \
 }
 
 INSN(add,    "r%d, r%d, r%d", a->d, a->a, a->b)
@@ -100,6 +98,7 @@ INSN(sw,     "%d(r%d), r%d", a->i, a->a, a->b)
 INSN(sb,     "%d(r%d), r%d", a->i, a->a, a->b)
 INSN(sh,     "%d(r%d), r%d", a->i, a->a, a->b)
 INSN(nop,    "")
+INSN(adrp,   "r%d, %d", a->d, a->i)
 INSN(addi,   "r%d, r%d, %d", a->d, a->a, a->i)
 INSN(addic,  "r%d, r%d, %d", a->d, a->a, a->i)
 INSN(muli,   "r%d, r%d, %d", a->d, a->a, a->i)
@@ -146,12 +145,12 @@ INSN(psync,  "")
 INSN(csync,  "")
 INSN(rfe,    "")
 
-#define FP_INSN(opcode, suffix, format, ...) \
-static bool trans_lf_##opcode##_##suffix(disassemble_info *info, \
-    arg_lf_##opcode##_##suffix *a, uint32_t insn)                \
-{                                                                \
-    output("lf." #opcode "." #suffix, format, ##__VA_ARGS__);    \
-    return true;                                                 \
+#define FP_INSN(opcode, suffix, format, ...)                            \
+static bool trans_lf_##opcode##_##suffix(disassemble_info *info,        \
+                                         arg_lf_##opcode##_##suffix *a) \
+{                                                                       \
+    output("lf." #opcode "." #suffix, format, ##__VA_ARGS__);           \
+    return true;                                                        \
 }
 
 FP_INSN(add, s,  "r%d, r%d, r%d", a->d, a->a, a->b)
@@ -168,3 +167,83 @@ FP_INSN(sfgt, s, "r%d, r%d", a->a, a->b)
 FP_INSN(sfge, s, "r%d, r%d", a->a, a->b)
 FP_INSN(sflt, s, "r%d, r%d", a->a, a->b)
 FP_INSN(sfle, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfun, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfueq, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfuge, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfugt, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfule, s, "r%d, r%d", a->a, a->b)
+FP_INSN(sfult, s, "r%d, r%d", a->a, a->b)
+
+FP_INSN(add, d,  "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sub, d,  "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(mul, d,  "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(div, d,  "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(rem, d,  "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(madd, d, "r%d,r%d, r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+
+FP_INSN(itof, d, "r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1)
+FP_INSN(ftoi, d, "r%d,r%d, r%d,r%d",
+        a->d, a->d + a->dp + 1,
+        a->a, a->a + a->ap + 1)
+
+FP_INSN(stod, d, "r%d,r%d, r%d",
+        a->d, a->d + a->dp + 1, a->a)
+FP_INSN(dtos, d, "r%d r%d,r%d",
+        a->d, a->a, a->a + a->ap + 1)
+
+FP_INSN(sfeq, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfne, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfgt, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfge, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sflt, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfle, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfun, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfueq, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfuge, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfugt, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfule, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)
+FP_INSN(sfult, d, "r%d,r%d, r%d,r%d",
+        a->a, a->a + a->ap + 1,
+        a->b, a->b + a->bp + 1)

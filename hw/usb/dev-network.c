@@ -25,8 +25,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
+#include "hw/qdev-properties.h"
 #include "hw/usb.h"
+#include "migration/vmstate.h"
 #include "desc.h"
 #include "net/net.h"
 #include "qemu/error-report.h"
@@ -34,6 +35,7 @@
 #include "qemu/config-file.h"
 #include "sysemu/sysemu.h"
 #include "qemu/iov.h"
+#include "qemu/module.h"
 #include "qemu/cutils.h"
 
 /*#define TRAFFIC_DEBUG*/
@@ -648,7 +650,7 @@ typedef struct USBNetState {
     char usbstring_mac[13];
     NICState *nic;
     NICConf conf;
-    QTAILQ_HEAD(rndis_resp_head, rndis_response) rndis_resp;
+    QTAILQ_HEAD(, rndis_response) rndis_resp;
 } USBNetState;
 
 #define TYPE_USB_NET "usb-net"

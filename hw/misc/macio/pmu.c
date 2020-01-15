@@ -29,16 +29,20 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "qemu-common.h"
 #include "hw/ppc/mac.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/input/adb.h"
+#include "hw/irq.h"
 #include "hw/misc/mos6522.h"
 #include "hw/misc/macio/gpio.h"
 #include "hw/misc/macio/pmu.h"
 #include "qemu/timer.h"
-#include "sysemu/sysemu.h"
+#include "sysemu/runstate.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 
@@ -686,6 +690,7 @@ static const VMStateDescription vmstate_pmu_adb = {
         VMSTATE_TIMER_PTR(adb_poll_timer, PMUState),
         VMSTATE_UINT8(adb_reply_size, PMUState),
         VMSTATE_BUFFER(adb_reply, PMUState),
+        VMSTATE_END_OF_LIST()
     }
 };
 
@@ -770,9 +775,8 @@ static void pmu_init(Object *obj)
                              qdev_prop_allow_set_link_before_realize,
                              0, NULL);
 
-    object_initialize(&s->mos6522_pmu, sizeof(s->mos6522_pmu),
-                      TYPE_MOS6522_PMU);
-    qdev_set_parent_bus(DEVICE(&s->mos6522_pmu), sysbus_get_default());
+    sysbus_init_child_obj(obj, "mos6522-pmu", &s->mos6522_pmu,
+                          sizeof(s->mos6522_pmu), TYPE_MOS6522_PMU);
 
     memory_region_init_io(&s->mem, obj, &mos6522_pmu_ops, s, "via-pmu",
                           0x2000);

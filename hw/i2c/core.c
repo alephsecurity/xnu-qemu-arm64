@@ -9,6 +9,9 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 #define I2C_BROADCAST 0x00
@@ -191,23 +194,17 @@ int i2c_send_recv(I2CBus *bus, uint8_t *data, bool send)
         }
         return ret ? -1 : 0;
     } else {
-        if ((QLIST_EMPTY(&bus->current_devs)) || (bus->broadcast)) {
-            return -1;
-        }
-
-        sc = I2C_SLAVE_GET_CLASS(QLIST_FIRST(&bus->current_devs)->elt);
-        if (sc->recv) {
-            s = QLIST_FIRST(&bus->current_devs)->elt;
-            ret = sc->recv(s);
-            trace_i2c_recv(s->address, ret);
-            if (ret < 0) {
-                return ret;
-            } else {
-                *data = ret;
-                return 0;
+        ret = 0xff;
+        if (!QLIST_EMPTY(&bus->current_devs) && !bus->broadcast) {
+            sc = I2C_SLAVE_GET_CLASS(QLIST_FIRST(&bus->current_devs)->elt);
+            if (sc->recv) {
+                s = QLIST_FIRST(&bus->current_devs)->elt;
+                ret = sc->recv(s);
+                trace_i2c_recv(s->address, ret);
             }
         }
-        return -1;
+        *data = ret;
+        return 0;
     }
 }
 
@@ -216,12 +213,12 @@ int i2c_send(I2CBus *bus, uint8_t data)
     return i2c_send_recv(bus, &data, true);
 }
 
-int i2c_recv(I2CBus *bus)
+uint8_t i2c_recv(I2CBus *bus)
 {
-    uint8_t data;
-    int ret = i2c_send_recv(bus, &data, false);
+    uint8_t data = 0xff;
 
-    return ret < 0 ? ret : data;
+    i2c_send_recv(bus, &data, false);
+    return data;
 }
 
 void i2c_nack(I2CBus *bus)

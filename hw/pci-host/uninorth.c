@@ -21,9 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/ppc/mac.h"
+#include "hw/qdev-properties.h"
+#include "qemu/module.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/uninorth.h"
@@ -116,6 +119,13 @@ static void pci_unin_init_irqs(UNINHostState *s)
     for (i = 0; i < ARRAY_SIZE(s->irqs); i++) {
         s->irqs[i] = qdev_get_gpio_in(DEVICE(s->pic), unin_irq_line[i]);
     }
+}
+
+static char *pci_unin_main_ofw_unit_address(const SysBusDevice *dev)
+{
+    UNINHostState *s = UNI_NORTH_PCI_HOST_BRIDGE(dev);
+
+    return g_strdup_printf("%x", s->ofw_addr);
 }
 
 static void pci_unin_main_realize(DeviceState *dev, Error **errp)
@@ -455,12 +465,21 @@ static const TypeInfo unin_internal_pci_host_info = {
     },
 };
 
+static Property pci_unin_main_pci_host_props[] = {
+    DEFINE_PROP_UINT32("ofw-addr", UNINHostState, ofw_addr, -1),
+    DEFINE_PROP_END_OF_LIST()
+};
+
 static void pci_unin_main_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    SysBusDeviceClass *sbc = SYS_BUS_DEVICE_CLASS(klass);
 
     dc->realize = pci_unin_main_realize;
+    dc->props = pci_unin_main_pci_host_props;
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
+    dc->fw_name = "pci";
+    sbc->explicit_ofw_unit_address = pci_unin_main_ofw_unit_address;
 }
 
 static const TypeInfo pci_unin_main_info = {

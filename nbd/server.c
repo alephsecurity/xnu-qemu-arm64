@@ -19,17 +19,21 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/queue.h"
 #include "trace.h"
 #include "nbd-internal.h"
+#include "qemu/units.h"
 
 #define NBD_META_ID_BASE_ALLOCATION 0
 #define NBD_META_ID_DIRTY_BITMAP 1
 
-/* NBD_MAX_BITMAP_EXTENTS: 1 mb of extents data. An empirical
+/*
+ * NBD_MAX_BLOCK_STATUS_EXTENTS: 1 MiB of extents data. An empirical
  * constant. If an increase is needed, note that the NBD protocol
  * recommends no larger than 32 mb, so that the client won't consider
- * the reply as a denial of service attack. */
-#define NBD_MAX_BITMAP_EXTENTS (0x100000 / 8)
+ * the reply as a denial of service attack.
+ */
+#define NBD_MAX_BLOCK_STATUS_EXTENTS (1 * MiB / 8)
 
 static int system_errno_to_nbd_errno(int err)
 {
@@ -51,6 +55,11 @@ static int system_errno_to_nbd_errno(int err)
         return NBD_ENOSPC;
     case EOVERFLOW:
         return NBD_EOVERFLOW;
+    case ENOTSUP:
+#if ENOTSUP != EOPNOTSUPP
+    case EOPNOTSUPP:
+#endif
+        return NBD_ENOTSUP;
     case ESHUTDOWN:
         return NBD_ESHUTDOWN;
     case EINVAL:
@@ -77,8 +86,8 @@ struct NBDExport {
     BlockBackend *blk;
     char *name;
     char *description;
-    off_t dev_offset;
-    off_t size;
+    uint64_t dev_offset;
+    uint64_t size;
     uint16_t nbdflags;
     QTAILQ_HEAD(, NBDClient) clients;
     QTAILQ_ENTRY(NBDExport) next;
@@ -111,7 +120,7 @@ struct NBDClient {
 
     NBDExport *exp;
     QCryptoTLSCreds *tlscreds;
-    char *tlsaclname;
+    char *tlsauthz;
     QIOChannelSocket *sioc; /* The underlying data channel */
     QIOChannel *ioc; /* The current I/O channel which may differ (eg TLS) */
 
@@ -123,6 +132,8 @@ struct NBDClient {
     QTAILQ_ENTRY(NBDClient) next;
     int nb_requests;
     bool closing;
+
+    uint32_t check_align; /* If non-zero, check for aligned client requests */
 
     bool structured_reply;
     NBDExportMetaContexts export_meta;
@@ -200,7 +211,7 @@ static int GCC_FMT_ATTR(4, 0)
 nbd_negotiate_send_rep_verr(NBDClient *client, uint32_t type,
                             Error **errp, const char *fmt, va_list va)
 {
-    char *msg;
+    g_autofree char *msg = NULL;
     int ret;
     size_t len;
 
@@ -210,18 +221,14 @@ nbd_negotiate_send_rep_verr(NBDClient *client, uint32_t type,
     trace_nbd_negotiate_send_rep_err(msg);
     ret = nbd_negotiate_send_rep_len(client, type, len, errp);
     if (ret < 0) {
-        goto out;
+        return ret;
     }
     if (nbd_write(client->ioc, msg, len, errp) < 0) {
         error_prepend(errp, "write failed (error message): ");
-        ret = -EIO;
-    } else {
-        ret = 0;
+        return -EIO;
     }
 
-out:
-    g_free(msg);
-    return ret;
+    return 0;
 }
 
 /* Send an error reply.
@@ -314,41 +321,45 @@ static int nbd_opt_skip(NBDClient *client, size_t size, Error **errp)
 /* nbd_opt_read_name
  *
  * Read a string with the format:
- *   uint32_t len     (<= NBD_MAX_NAME_SIZE)
+ *   uint32_t len     (<= NBD_MAX_STRING_SIZE)
  *   len bytes string (not 0-terminated)
  *
- * @name should be enough to store NBD_MAX_NAME_SIZE+1.
+ * On success, @name will be allocated.
  * If @length is non-null, it will be set to the actual string length.
  *
  * Return -errno on I/O error, 0 if option was completely handled by
  * sending a reply about inconsistent lengths, or 1 on success.
  */
-static int nbd_opt_read_name(NBDClient *client, char *name, uint32_t *length,
+static int nbd_opt_read_name(NBDClient *client, char **name, uint32_t *length,
                              Error **errp)
 {
     int ret;
     uint32_t len;
+    g_autofree char *local_name = NULL;
 
+    *name = NULL;
     ret = nbd_opt_read(client, &len, sizeof(len), errp);
     if (ret <= 0) {
         return ret;
     }
-    cpu_to_be32s(&len);
+    len = cpu_to_be32(len);
 
-    if (len > NBD_MAX_NAME_SIZE) {
+    if (len > NBD_MAX_STRING_SIZE) {
         return nbd_opt_invalid(client, errp,
                                "Invalid name length: %" PRIu32, len);
     }
 
-    ret = nbd_opt_read(client, name, len, errp);
+    local_name = g_malloc(len + 1);
+    ret = nbd_opt_read(client, local_name, len, errp);
     if (ret <= 0) {
         return ret;
     }
-    name[len] = '\0';
+    local_name[len] = '\0';
 
     if (length) {
         *length = len;
     }
+    *name = g_steal_pointer(&local_name);
 
     return 1;
 }
@@ -368,6 +379,7 @@ static int nbd_negotiate_send_rep_list(NBDClient *client, NBDExport *exp,
     trace_nbd_negotiate_send_rep_list(name, desc);
     name_len = strlen(name);
     desc_len = strlen(desc);
+    assert(name_len <= NBD_MAX_STRING_SIZE && desc_len <= NBD_MAX_STRING_SIZE);
     len = name_len + desc_len + sizeof(len);
     ret = nbd_negotiate_send_rep_len(client, NBD_REP_SERVER, len, errp);
     if (ret < 0) {
@@ -417,14 +429,14 @@ static void nbd_check_meta_export(NBDClient *client)
 
 /* Send a reply to NBD_OPT_EXPORT_NAME.
  * Return -errno on error, 0 on success. */
-static int nbd_negotiate_handle_export_name(NBDClient *client,
-                                            uint16_t myflags, bool no_zeroes,
+static int nbd_negotiate_handle_export_name(NBDClient *client, bool no_zeroes,
                                             Error **errp)
 {
-    char name[NBD_MAX_NAME_SIZE + 1];
+    g_autofree char *name = NULL;
     char buf[NBD_REPLY_EXPORT_NAME_SIZE] = "";
     size_t len;
     int ret;
+    uint16_t myflags;
 
     /* Client sends:
         [20 ..  xx]   export name (length bytes)
@@ -434,12 +446,12 @@ static int nbd_negotiate_handle_export_name(NBDClient *client,
         [10 .. 133]   reserved     (0) [unless no_zeroes]
      */
     trace_nbd_negotiate_handle_export_name();
-    if (client->optlen >= sizeof(name)) {
+    if (client->optlen > NBD_MAX_STRING_SIZE) {
         error_setg(errp, "Bad length received");
         return -EINVAL;
     }
-    if (nbd_read(client->ioc, name, client->optlen, errp) < 0) {
-        error_prepend(errp, "read failed: ");
+    name = g_malloc(client->optlen + 1);
+    if (nbd_read(client->ioc, name, client->optlen, "export name", errp) < 0) {
         return -EIO;
     }
     name[client->optlen] = '\0';
@@ -453,10 +465,13 @@ static int nbd_negotiate_handle_export_name(NBDClient *client,
         return -EINVAL;
     }
 
-    trace_nbd_negotiate_new_style_size_flags(client->exp->size,
-                                             client->exp->nbdflags | myflags);
+    myflags = client->exp->nbdflags;
+    if (client->structured_reply) {
+        myflags |= NBD_FLAG_SEND_DF;
+    }
+    trace_nbd_negotiate_new_style_size_flags(client->exp->size, myflags);
     stq_be_p(buf, client->exp->size);
-    stw_be_p(buf + 8, client->exp->nbdflags | myflags);
+    stw_be_p(buf + 8, myflags);
     len = no_zeroes ? 10 : sizeof(buf);
     ret = nbd_write(client->ioc, buf, len, errp);
     if (ret < 0) {
@@ -486,7 +501,7 @@ static int nbd_negotiate_send_info(NBDClient *client,
     if (rc < 0) {
         return rc;
     }
-    cpu_to_be16s(&info);
+    info = cpu_to_be16(info);
     if (nbd_write(client->ioc, &info, sizeof(info), errp) < 0) {
         return -EIO;
     }
@@ -521,11 +536,10 @@ static int nbd_reject_length(NBDClient *client, bool fatal, Error **errp)
 /* Handle NBD_OPT_INFO and NBD_OPT_GO.
  * Return -errno on error, 0 if ready for next option, and 1 to move
  * into transmission phase.  */
-static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
-                                     Error **errp)
+static int nbd_negotiate_handle_info(NBDClient *client, Error **errp)
 {
     int rc;
-    char name[NBD_MAX_NAME_SIZE + 1];
+    g_autofree char *name = NULL;
     NBDExport *exp;
     uint16_t requests;
     uint16_t request;
@@ -534,6 +548,8 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
     bool blocksize = false;
     uint32_t sizes[3];
     char buf[sizeof(uint64_t) + sizeof(uint16_t)];
+    uint32_t check_align = 0;
+    uint16_t myflags;
 
     /* Client sends:
         4 bytes: L, name length (can be 0)
@@ -541,7 +557,7 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
         2 bytes: N, number of requests (can be 0)
         N * 2 bytes: N requests
     */
-    rc = nbd_opt_read_name(client, name, &namelen, errp);
+    rc = nbd_opt_read_name(client, &name, &namelen, errp);
     if (rc <= 0) {
         return rc;
     }
@@ -551,14 +567,14 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
     if (rc <= 0) {
         return rc;
     }
-    be16_to_cpus(&requests);
+    requests = be16_to_cpu(requests);
     trace_nbd_negotiate_handle_info_requests(requests);
     while (requests--) {
         rc = nbd_opt_read(client, &request, sizeof(request), errp);
         if (rc <= 0) {
             return rc;
         }
-        be16_to_cpus(&request);
+        request = be16_to_cpu(request);
         trace_nbd_negotiate_handle_info_request(request,
                                                 nbd_info_lookup(request));
         /* We care about NBD_INFO_NAME and NBD_INFO_BLOCK_SIZE;
@@ -598,6 +614,7 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
     if (exp->description) {
         size_t len = strlen(exp->description);
 
+        assert(len <= NBD_MAX_STRING_SIZE);
         rc = nbd_negotiate_send_info(client, NBD_INFO_DESCRIPTION,
                                      len, exp->description, errp);
         if (rc < 0) {
@@ -608,19 +625,22 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
     /* Send NBD_INFO_BLOCK_SIZE always, but tweak the minimum size
      * according to whether the client requested it, and according to
      * whether this is OPT_INFO or OPT_GO. */
-    /* minimum - 1 for back-compat, or 512 if client is new enough.
-     * TODO: consult blk_bs(blk)->bl.request_alignment? */
-    sizes[0] =
-            (client->opt == NBD_OPT_INFO || blocksize) ? BDRV_SECTOR_SIZE : 1;
+    /* minimum - 1 for back-compat, or actual if client will obey it. */
+    if (client->opt == NBD_OPT_INFO || blocksize) {
+        check_align = sizes[0] = blk_get_request_alignment(exp->blk);
+    } else {
+        sizes[0] = 1;
+    }
+    assert(sizes[0] <= NBD_MAX_BUFFER_SIZE);
     /* preferred - Hard-code to 4096 for now.
      * TODO: is blk_bs(blk)->bl.opt_transfer appropriate? */
-    sizes[1] = 4096;
+    sizes[1] = MAX(4096, sizes[0]);
     /* maximum - At most 32M, but smaller as appropriate. */
     sizes[2] = MIN(blk_get_max_transfer(exp->blk), NBD_MAX_BUFFER_SIZE);
     trace_nbd_negotiate_handle_info_block_size(sizes[0], sizes[1], sizes[2]);
-    cpu_to_be32s(&sizes[0]);
-    cpu_to_be32s(&sizes[1]);
-    cpu_to_be32s(&sizes[2]);
+    sizes[0] = cpu_to_be32(sizes[0]);
+    sizes[1] = cpu_to_be32(sizes[1]);
+    sizes[2] = cpu_to_be32(sizes[2]);
     rc = nbd_negotiate_send_info(client, NBD_INFO_BLOCK_SIZE,
                                  sizeof(sizes), sizes, errp);
     if (rc < 0) {
@@ -628,21 +648,27 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
     }
 
     /* Send NBD_INFO_EXPORT always */
-    trace_nbd_negotiate_new_style_size_flags(exp->size,
-                                             exp->nbdflags | myflags);
+    myflags = exp->nbdflags;
+    if (client->structured_reply) {
+        myflags |= NBD_FLAG_SEND_DF;
+    }
+    trace_nbd_negotiate_new_style_size_flags(exp->size, myflags);
     stq_be_p(buf, exp->size);
-    stw_be_p(buf + 8, exp->nbdflags | myflags);
+    stw_be_p(buf + 8, myflags);
     rc = nbd_negotiate_send_info(client, NBD_INFO_EXPORT,
                                  sizeof(buf), buf, errp);
     if (rc < 0) {
         return rc;
     }
 
-    /* If the client is just asking for NBD_OPT_INFO, but forgot to
-     * request block sizes, return an error.
-     * TODO: consult blk_bs(blk)->request_align, and only error if it
-     * is not 1? */
-    if (client->opt == NBD_OPT_INFO && !blocksize) {
+    /*
+     * If the client is just asking for NBD_OPT_INFO, but forgot to
+     * request block sizes in a situation that would impact
+     * performance, then return an error. But for NBD_OPT_GO, we
+     * tolerate all clients, regardless of alignments.
+     */
+    if (client->opt == NBD_OPT_INFO && !blocksize &&
+        blk_get_request_alignment(exp->blk) > 1) {
         return nbd_negotiate_send_rep_err(client,
                                           NBD_REP_ERR_BLOCK_SIZE_REQD,
                                           errp,
@@ -658,6 +684,7 @@ static int nbd_negotiate_handle_info(NBDClient *client, uint16_t myflags,
 
     if (client->opt == NBD_OPT_GO) {
         client->exp = exp;
+        client->check_align = check_align;
         QTAILQ_INSERT_TAIL(&client->exp->clients, client, next);
         nbd_export_get(client->exp);
         nbd_check_meta_export(client);
@@ -687,7 +714,7 @@ static QIOChannel *nbd_negotiate_handle_starttls(NBDClient *client,
 
     tioc = qio_channel_tls_new_server(ioc,
                                       client->tlscreds,
-                                      client->tlsaclname,
+                                      client->tlsauthz,
                                       errp);
     if (!tioc) {
         return NULL;
@@ -732,6 +759,7 @@ static int nbd_negotiate_send_meta_context(NBDClient *client,
         {.iov_base = (void *)context, .iov_len = strlen(context)}
     };
 
+    assert(iov[1].iov_len <= NBD_MAX_STRING_SIZE);
     if (client->opt == NBD_OPT_LIST_META_CONTEXT) {
         context_id = 0;
     }
@@ -880,7 +908,7 @@ static int nbd_meta_qemu_query(NBDClient *client, NBDExportMetaContexts *meta,
  * Parse namespace name and call corresponding function to parse body of the
  * query.
  *
- * The only supported namespace now is 'base'.
+ * The only supported namespaces are 'base' and 'qemu'.
  *
  * The function aims not wasting time and memory to read long unknown namespace
  * names.
@@ -904,8 +932,12 @@ static int nbd_negotiate_meta_query(NBDClient *client,
     if (ret <= 0) {
         return ret;
     }
-    cpu_to_be32s(&len);
+    len = cpu_to_be32(len);
 
+    if (len > NBD_MAX_STRING_SIZE) {
+        trace_nbd_negotiate_meta_query_skip("length too long");
+        return nbd_opt_skip(client, len, errp);
+    }
     if (len < ns_len) {
         trace_nbd_negotiate_meta_query_skip("length too short");
         return nbd_opt_skip(client, len, errp);
@@ -937,7 +969,7 @@ static int nbd_negotiate_meta_queries(NBDClient *client,
                                       NBDExportMetaContexts *meta, Error **errp)
 {
     int ret;
-    char export_name[NBD_MAX_NAME_SIZE + 1];
+    g_autofree char *export_name = NULL;
     NBDExportMetaContexts local_meta;
     uint32_t nb_queries;
     int i;
@@ -956,7 +988,7 @@ static int nbd_negotiate_meta_queries(NBDClient *client,
 
     memset(meta, 0, sizeof(*meta));
 
-    ret = nbd_opt_read_name(client, export_name, NULL, errp);
+    ret = nbd_opt_read_name(client, &export_name, NULL, errp);
     if (ret <= 0) {
         return ret;
     }
@@ -971,13 +1003,14 @@ static int nbd_negotiate_meta_queries(NBDClient *client,
     if (ret <= 0) {
         return ret;
     }
-    cpu_to_be32s(&nb_queries);
+    nb_queries = cpu_to_be32(nb_queries);
     trace_nbd_negotiate_meta_context(nbd_opt_lookup(client->opt),
                                      export_name, nb_queries);
 
     if (client->opt == NBD_OPT_LIST_META_CONTEXT && !nb_queries) {
         /* enable all known contexts */
         meta->base_allocation = true;
+        meta->bitmap = !!meta->exp->export_bitmap;
     } else {
         for (i = 0; i < nb_queries; ++i) {
             ret = nbd_negotiate_meta_query(client, meta, errp);
@@ -1023,8 +1056,7 @@ static int nbd_negotiate_meta_queries(NBDClient *client,
  * 1       if client sent NBD_OPT_ABORT, i.e. on valid disconnect,
  *         errp is not set
  */
-static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
-                                 Error **errp)
+static int nbd_negotiate_options(NBDClient *client, Error **errp)
 {
     uint32_t flags;
     bool fixedNewstyle = false;
@@ -1045,11 +1077,9 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
         ...           Rest of request
     */
 
-    if (nbd_read(client->ioc, &flags, sizeof(flags), errp) < 0) {
-        error_prepend(errp, "read failed: ");
+    if (nbd_read32(client->ioc, &flags, "flags", errp) < 0) {
         return -EIO;
     }
-    be32_to_cpus(&flags);
     trace_nbd_negotiate_options_flags(flags);
     if (flags & NBD_FLAG_C_FIXED_NEWSTYLE) {
         fixedNewstyle = true;
@@ -1069,30 +1099,23 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
         uint32_t option, length;
         uint64_t magic;
 
-        if (nbd_read(client->ioc, &magic, sizeof(magic), errp) < 0) {
-            error_prepend(errp, "read failed: ");
+        if (nbd_read64(client->ioc, &magic, "opts magic", errp) < 0) {
             return -EINVAL;
         }
-        magic = be64_to_cpu(magic);
         trace_nbd_negotiate_options_check_magic(magic);
         if (magic != NBD_OPTS_MAGIC) {
             error_setg(errp, "Bad magic received");
             return -EINVAL;
         }
 
-        if (nbd_read(client->ioc, &option,
-                     sizeof(option), errp) < 0) {
-            error_prepend(errp, "read failed: ");
+        if (nbd_read32(client->ioc, &option, "option", errp) < 0) {
             return -EINVAL;
         }
-        option = be32_to_cpu(option);
         client->opt = option;
 
-        if (nbd_read(client->ioc, &length, sizeof(length), errp) < 0) {
-            error_prepend(errp, "read failed: ");
+        if (nbd_read32(client->ioc, &length, "option length", errp) < 0) {
             return -EINVAL;
         }
-        length = be32_to_cpu(length);
         assert(!client->optlen);
         client->optlen = length;
 
@@ -1134,12 +1157,16 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
                 return -EINVAL;
 
             default:
-                ret = nbd_opt_drop(client, NBD_REP_ERR_TLS_REQD, errp,
-                                   "Option 0x%" PRIx32
-                                   "not permitted before TLS", option);
                 /* Let the client keep trying, unless they asked to
-                 * quit. In this mode, we've already sent an error, so
-                 * we can't ack the abort.  */
+                 * quit. Always try to give an error back to the
+                 * client; but when replying to OPT_ABORT, be aware
+                 * that the client may hang up before receiving the
+                 * error, in which case we are fine ignoring the
+                 * resulting EPIPE. */
+                ret = nbd_opt_drop(client, NBD_REP_ERR_TLS_REQD,
+                                   option == NBD_OPT_ABORT ? NULL : errp,
+                                   "Option 0x%" PRIx32
+                                   " not permitted before TLS", option);
                 if (option == NBD_OPT_ABORT) {
                     return 1;
                 }
@@ -1163,13 +1190,12 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
                 return 1;
 
             case NBD_OPT_EXPORT_NAME:
-                return nbd_negotiate_handle_export_name(client,
-                                                        myflags, no_zeroes,
+                return nbd_negotiate_handle_export_name(client, no_zeroes,
                                                         errp);
 
             case NBD_OPT_INFO:
             case NBD_OPT_GO:
-                ret = nbd_negotiate_handle_info(client, myflags, errp);
+                ret = nbd_negotiate_handle_info(client, errp);
                 if (ret == 1) {
                     assert(option == NBD_OPT_GO);
                     return 0;
@@ -1200,7 +1226,6 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
                 } else {
                     ret = nbd_negotiate_send_rep(client, NBD_REP_ACK, errp);
                     client->structured_reply = true;
-                    myflags |= NBD_FLAG_SEND_DF;
                 }
                 break;
 
@@ -1223,8 +1248,7 @@ static int nbd_negotiate_options(NBDClient *client, uint16_t myflags,
              */
             switch (option) {
             case NBD_OPT_EXPORT_NAME:
-                return nbd_negotiate_handle_export_name(client,
-                                                        myflags, no_zeroes,
+                return nbd_negotiate_handle_export_name(client, no_zeroes,
                                                         errp);
 
             default:
@@ -1250,10 +1274,6 @@ static coroutine_fn int nbd_negotiate(NBDClient *client, Error **errp)
 {
     char buf[NBD_OLDSTYLE_NEGOTIATE_SIZE] = "";
     int ret;
-    const uint16_t myflags = (NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_TRIM |
-                              NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_FUA |
-                              NBD_FLAG_SEND_WRITE_ZEROES | NBD_FLAG_SEND_CACHE);
-    bool oldStyle;
 
     /* Old style negotiation header, no room for options
         [ 0 ..   7]   passwd       ("NBDMAGIC")
@@ -1274,33 +1294,24 @@ static coroutine_fn int nbd_negotiate(NBDClient *client, Error **errp)
     trace_nbd_negotiate_begin();
     memcpy(buf, "NBDMAGIC", 8);
 
-    oldStyle = client->exp != NULL && !client->tlscreds;
-    if (oldStyle) {
-        trace_nbd_negotiate_old_style(client->exp->size,
-                                      client->exp->nbdflags | myflags);
-        stq_be_p(buf + 8, NBD_CLIENT_MAGIC);
-        stq_be_p(buf + 16, client->exp->size);
-        stl_be_p(buf + 24, client->exp->nbdflags | myflags);
+    stq_be_p(buf + 8, NBD_OPTS_MAGIC);
+    stw_be_p(buf + 16, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
 
-        if (nbd_write(client->ioc, buf, sizeof(buf), errp) < 0) {
-            error_prepend(errp, "write failed: ");
-            return -EINVAL;
+    if (nbd_write(client->ioc, buf, 18, errp) < 0) {
+        error_prepend(errp, "write failed: ");
+        return -EINVAL;
+    }
+    ret = nbd_negotiate_options(client, errp);
+    if (ret != 0) {
+        if (ret < 0) {
+            error_prepend(errp, "option negotiation failed: ");
         }
-    } else {
-        stq_be_p(buf + 8, NBD_OPTS_MAGIC);
-        stw_be_p(buf + 16, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
+        return ret;
+    }
 
-        if (nbd_write(client->ioc, buf, 18, errp) < 0) {
-            error_prepend(errp, "write failed: ");
-            return -EINVAL;
-        }
-        ret = nbd_negotiate_options(client, myflags, errp);
-        if (ret != 0) {
-            if (ret < 0) {
-                error_prepend(errp, "option negotiation failed: ");
-            }
-            return ret;
-        }
+    /* Attach the channel to the same AioContext as the export */
+    if (client->exp && client->exp->ctx) {
+        qio_channel_attach_aio_context(client->ioc, client->exp->ctx);
     }
 
     assert(!client->optlen);
@@ -1316,7 +1327,7 @@ static int nbd_receive_request(QIOChannel *ioc, NBDRequest *request,
     uint32_t magic;
     int ret;
 
-    ret = nbd_read(ioc, buf, sizeof(buf), errp);
+    ret = nbd_read(ioc, buf, sizeof(buf), "request", errp);
     if (ret < 0) {
         return ret;
     }
@@ -1368,7 +1379,7 @@ void nbd_client_put(NBDClient *client)
         if (client->tlscreds) {
             object_unref(OBJECT(client->tlscreds));
         }
-        g_free(client->tlsaclname);
+        g_free(client->tlsauthz);
         if (client->exp) {
             QTAILQ_REMOVE(&client->exp->clients, client, next);
             nbd_export_put(client->exp);
@@ -1462,13 +1473,19 @@ static void blk_aio_detach(void *opaque)
 static void nbd_eject_notifier(Notifier *n, void *data)
 {
     NBDExport *exp = container_of(n, NBDExport, eject_notifier);
+    AioContext *aio_context;
+
+    aio_context = exp->ctx;
+    aio_context_acquire(aio_context);
     nbd_export_close(exp);
+    aio_context_release(aio_context);
 }
 
-NBDExport *nbd_export_new(BlockDriverState *bs, off_t dev_offset, off_t size,
-                          uint16_t nbdflags, void (*close)(NBDExport *),
-                          bool writethrough, BlockBackend *on_eject_blk,
-                          Error **errp)
+NBDExport *nbd_export_new(BlockDriverState *bs, uint64_t dev_offset,
+                          uint64_t size, const char *name, const char *desc,
+                          const char *bitmap, bool readonly, bool shared,
+                          void (*close)(NBDExport *), bool writethrough,
+                          BlockBackend *on_eject_blk, Error **errp)
 {
     AioContext *ctx;
     BlockBackend *blk;
@@ -1480,41 +1497,89 @@ NBDExport *nbd_export_new(BlockDriverState *bs, off_t dev_offset, off_t size,
      * NBD exports are used for non-shared storage migration.  Make sure
      * that BDRV_O_INACTIVE is cleared and the image is ready for write
      * access since the export could be available before migration handover.
+     * ctx was acquired in the caller.
      */
+    assert(name && strlen(name) <= NBD_MAX_STRING_SIZE);
     ctx = bdrv_get_aio_context(bs);
-    aio_context_acquire(ctx);
     bdrv_invalidate_cache(bs, NULL);
-    aio_context_release(ctx);
 
     /* Don't allow resize while the NBD server is running, otherwise we don't
      * care what happens with the node. */
     perm = BLK_PERM_CONSISTENT_READ;
-    if ((nbdflags & NBD_FLAG_READ_ONLY) == 0) {
+    if (!readonly) {
         perm |= BLK_PERM_WRITE;
     }
-    blk = blk_new(perm, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE_UNCHANGED |
-                        BLK_PERM_WRITE | BLK_PERM_GRAPH_MOD);
+    blk = blk_new(ctx, perm,
+                  BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE_UNCHANGED |
+                  BLK_PERM_WRITE | BLK_PERM_GRAPH_MOD);
     ret = blk_insert_bs(blk, bs, errp);
     if (ret < 0) {
         goto fail;
     }
     blk_set_enable_write_cache(blk, !writethrough);
+    blk_set_allow_aio_context_change(blk, true);
 
     exp->refcount = 1;
     QTAILQ_INIT(&exp->clients);
     exp->blk = blk;
+    assert(dev_offset <= INT64_MAX);
     exp->dev_offset = dev_offset;
-    exp->nbdflags = nbdflags;
-    exp->size = size < 0 ? blk_getlength(blk) : size;
-    if (exp->size < 0) {
-        error_setg_errno(errp, -exp->size,
-                         "Failed to determine the NBD export's length");
-        goto fail;
+    exp->name = g_strdup(name);
+    assert(!desc || strlen(desc) <= NBD_MAX_STRING_SIZE);
+    exp->description = g_strdup(desc);
+    exp->nbdflags = (NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH |
+                     NBD_FLAG_SEND_FUA | NBD_FLAG_SEND_CACHE);
+    if (readonly) {
+        exp->nbdflags |= NBD_FLAG_READ_ONLY;
+        if (shared) {
+            exp->nbdflags |= NBD_FLAG_CAN_MULTI_CONN;
+        }
+    } else {
+        exp->nbdflags |= (NBD_FLAG_SEND_TRIM | NBD_FLAG_SEND_WRITE_ZEROES |
+                          NBD_FLAG_SEND_FAST_ZERO);
     }
-    exp->size -= exp->size % BDRV_SECTOR_SIZE;
+    assert(size <= INT64_MAX - dev_offset);
+    exp->size = QEMU_ALIGN_DOWN(size, BDRV_SECTOR_SIZE);
+
+    if (bitmap) {
+        BdrvDirtyBitmap *bm = NULL;
+
+        while (true) {
+            bm = bdrv_find_dirty_bitmap(bs, bitmap);
+            if (bm != NULL || bs->backing == NULL) {
+                break;
+            }
+
+            bs = bs->backing->bs;
+        }
+
+        if (bm == NULL) {
+            error_setg(errp, "Bitmap '%s' is not found", bitmap);
+            goto fail;
+        }
+
+        if (bdrv_dirty_bitmap_check(bm, BDRV_BITMAP_ALLOW_RO, errp)) {
+            goto fail;
+        }
+
+        if (readonly && bdrv_is_writable(bs) &&
+            bdrv_dirty_bitmap_enabled(bm)) {
+            error_setg(errp,
+                       "Enabled bitmap '%s' incompatible with readonly export",
+                       bitmap);
+            goto fail;
+        }
+
+        bdrv_dirty_bitmap_set_busy(bm, true);
+        exp->export_bitmap = bm;
+        assert(strlen(bitmap) <= BDRV_BITMAP_MAX_NAME_SIZE);
+        exp->export_bitmap_context = g_strdup_printf("qemu:dirty-bitmap:%s",
+                                                     bitmap);
+        assert(strlen(exp->export_bitmap_context) < NBD_MAX_STRING_SIZE);
+    }
 
     exp->close = close;
-    exp->ctx = blk_get_aio_context(blk);
+    exp->ctx = ctx;
     blk_add_aio_context_notifier(blk, blk_aio_attached, blk_aio_detach, exp);
 
     if (on_eject_blk) {
@@ -1523,10 +1588,14 @@ NBDExport *nbd_export_new(BlockDriverState *bs, off_t dev_offset, off_t size,
         exp->eject_notifier.notify = nbd_eject_notifier;
         blk_add_remove_bs_notifier(on_eject_blk, &exp->eject_notifier);
     }
+    QTAILQ_INSERT_TAIL(&exports, exp, next);
+    nbd_export_get(exp);
     return exp;
 
 fail:
     blk_unref(blk);
+    g_free(exp->name);
+    g_free(exp->description);
     g_free(exp);
     return NULL;
 }
@@ -1543,31 +1612,10 @@ NBDExport *nbd_export_find(const char *name)
     return NULL;
 }
 
-void nbd_export_set_name(NBDExport *exp, const char *name)
+AioContext *
+nbd_export_aio_context(NBDExport *exp)
 {
-    if (exp->name == name) {
-        return;
-    }
-
-    nbd_export_get(exp);
-    if (exp->name != NULL) {
-        g_free(exp->name);
-        exp->name = NULL;
-        QTAILQ_REMOVE(&exports, exp, next);
-        nbd_export_put(exp);
-    }
-    if (name != NULL) {
-        nbd_export_get(exp);
-        exp->name = g_strdup(name);
-        QTAILQ_INSERT_TAIL(&exports, exp, next);
-    }
-    nbd_export_put(exp);
-}
-
-void nbd_export_set_description(NBDExport *exp, const char *description)
-{
-    g_free(exp->description);
-    exp->description = g_strdup(description);
+    return exp->ctx;
 }
 
 void nbd_export_close(NBDExport *exp)
@@ -1575,11 +1623,24 @@ void nbd_export_close(NBDExport *exp)
     NBDClient *client, *next;
 
     nbd_export_get(exp);
+    /*
+     * TODO: Should we expand QMP NbdServerRemoveNode enum to allow a
+     * close mode that stops advertising the export to new clients but
+     * still permits existing clients to run to completion? Because of
+     * that possibility, nbd_export_close() can be called more than
+     * once on an export.
+     */
     QTAILQ_FOREACH_SAFE(client, &exp->clients, next, next) {
         client_close(client, true);
     }
-    nbd_export_set_name(exp, NULL);
-    nbd_export_set_description(exp, NULL);
+    if (exp->name) {
+        nbd_export_put(exp);
+        g_free(exp->name);
+        exp->name = NULL;
+        QTAILQ_REMOVE(&exports, exp, next);
+    }
+    g_free(exp->description);
+    exp->description = NULL;
     nbd_export_put(exp);
 }
 
@@ -1635,7 +1696,7 @@ void nbd_export_put(NBDExport *exp)
         }
 
         if (exp->export_bitmap) {
-            bdrv_dirty_bitmap_set_qmp_locked(exp->export_bitmap, false);
+            bdrv_dirty_bitmap_set_busy(exp->export_bitmap, false);
             g_free(exp->export_bitmap_context);
         }
 
@@ -1651,9 +1712,13 @@ BlockBackend *nbd_export_get_blockdev(NBDExport *exp)
 void nbd_export_close_all(void)
 {
     NBDExport *exp, *next;
+    AioContext *aio_context;
 
     QTAILQ_FOREACH_SAFE(exp, &exports, next, next) {
+        aio_context = exp->ctx;
+        aio_context_acquire(aio_context);
         nbd_export_close(exp);
+        aio_context_release(aio_context);
     }
 }
 
@@ -1844,16 +1909,28 @@ static int coroutine_fn nbd_co_send_sparse_read(NBDClient *client,
     return ret;
 }
 
-static int blockstatus_to_extent_be(BlockDriverState *bs, uint64_t offset,
-                                    uint64_t bytes, NBDExtent *extent)
+/*
+ * Populate @extents from block status. Update @bytes to be the actual
+ * length encoded (which may be smaller than the original), and update
+ * @nb_extents to the number of extents used.
+ *
+ * Returns zero on success and -errno on bdrv_block_status_above failure.
+ */
+static int blockstatus_to_extents(BlockDriverState *bs, uint64_t offset,
+                                  uint64_t *bytes, NBDExtent *extents,
+                                  unsigned int *nb_extents)
 {
-    uint64_t remaining_bytes = bytes;
+    uint64_t remaining_bytes = *bytes;
+    NBDExtent *extent = extents, *extents_end = extents + *nb_extents;
+    bool first_extent = true;
 
+    assert(*nb_extents);
     while (remaining_bytes) {
         uint32_t flags;
         int64_t num;
         int ret = bdrv_block_status_above(bs, NULL, offset, remaining_bytes,
                                           &num, NULL, NULL);
+
         if (ret < 0) {
             return ret;
         }
@@ -1861,20 +1938,36 @@ static int blockstatus_to_extent_be(BlockDriverState *bs, uint64_t offset,
         flags = (ret & BDRV_BLOCK_ALLOCATED ? 0 : NBD_STATE_HOLE) |
                 (ret & BDRV_BLOCK_ZERO      ? NBD_STATE_ZERO : 0);
 
-        if (remaining_bytes == bytes) {
+        if (first_extent) {
             extent->flags = flags;
-        }
+            extent->length = num;
+            first_extent = false;
+        } else if (flags == extent->flags) {
+            /* extend current extent */
+            extent->length += num;
+        } else {
+            if (extent + 1 == extents_end) {
+                break;
+            }
 
-        if (flags != extent->flags) {
-            break;
+            /* start new extent */
+            extent++;
+            extent->flags = flags;
+            extent->length = num;
         }
-
         offset += num;
         remaining_bytes -= num;
     }
 
-    cpu_to_be32s(&extent->flags);
-    extent->length = cpu_to_be32(bytes - remaining_bytes);
+    extents_end = extent + 1;
+
+    for (extent = extents; extent < extents_end; extent++) {
+        extent->flags = cpu_to_be32(extent->flags);
+        extent->length = cpu_to_be32(extent->length);
+    }
+
+    *bytes -= remaining_bytes;
+    *nb_extents = extents_end - extents;
 
     return 0;
 }
@@ -1910,21 +2003,29 @@ static int nbd_co_send_extents(NBDClient *client, uint64_t handle,
 /* Get block status from the exported device and send it to the client */
 static int nbd_co_send_block_status(NBDClient *client, uint64_t handle,
                                     BlockDriverState *bs, uint64_t offset,
-                                    uint32_t length, bool last,
-                                    uint32_t context_id, Error **errp)
+                                    uint32_t length, bool dont_fragment,
+                                    bool last, uint32_t context_id,
+                                    Error **errp)
 {
     int ret;
-    NBDExtent extent;
+    unsigned int nb_extents = dont_fragment ? 1 : NBD_MAX_BLOCK_STATUS_EXTENTS;
+    NBDExtent *extents = g_new(NBDExtent, nb_extents);
+    uint64_t final_length = length;
 
-    ret = blockstatus_to_extent_be(bs, offset, length, &extent);
+    ret = blockstatus_to_extents(bs, offset, &final_length, extents,
+                                 &nb_extents);
     if (ret < 0) {
+        g_free(extents);
         return nbd_co_send_structured_error(
                 client, handle, -ret, "can't get block status", errp);
     }
 
-    return nbd_co_send_extents(client, handle, &extent, 1,
-                               be32_to_cpu(extent.length), last,
-                               context_id, errp);
+    ret = nbd_co_send_extents(client, handle, extents, nb_extents,
+                              final_length, last, context_id, errp);
+
+    g_free(extents);
+
+    return ret;
 }
 
 /*
@@ -1947,12 +2048,14 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
     bdrv_dirty_bitmap_lock(bitmap);
 
     it = bdrv_dirty_iter_new(bitmap);
-    dirty = bdrv_get_dirty_locked(NULL, bitmap, offset);
+    dirty = bdrv_dirty_bitmap_get_locked(bitmap, offset);
 
     assert(begin < overall_end && nb_extents);
     while (begin < overall_end && i < nb_extents) {
+        bool next_dirty = !dirty;
+
         if (dirty) {
-            end = bdrv_dirty_bitmap_next_zero(bitmap, begin);
+            end = bdrv_dirty_bitmap_next_zero(bitmap, begin, UINT64_MAX);
         } else {
             bdrv_set_dirty_iter(it, begin);
             end = bdrv_dirty_iter_next(it);
@@ -1962,6 +2065,7 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
             end = MIN(bdrv_dirty_bitmap_size(bitmap),
                       begin + UINT32_MAX + 1 -
                       bdrv_dirty_bitmap_granularity(bitmap));
+            next_dirty = dirty;
         }
         if (dont_fragment && end > overall_end) {
             end = overall_end;
@@ -1971,7 +2075,7 @@ static unsigned int bitmap_to_extents(BdrvDirtyBitmap *bitmap, uint64_t offset,
         extents[i].flags = cpu_to_be32(dirty ? NBD_STATE_DIRTY : 0);
         i++;
         begin = end;
-        dirty = !dirty;
+        dirty = next_dirty;
     }
 
     bdrv_dirty_iter_free(it);
@@ -1989,7 +2093,7 @@ static int nbd_co_send_bitmap(NBDClient *client, uint64_t handle,
                               uint32_t context_id, Error **errp)
 {
     int ret;
-    unsigned int nb_extents = dont_fragment ? 1 : NBD_MAX_BITMAP_EXTENTS;
+    unsigned int nb_extents = dont_fragment ? 1 : NBD_MAX_BLOCK_STATUS_EXTENTS;
     NBDExtent *extents = g_new(NBDExtent, nb_extents);
     uint64_t final_length = length;
 
@@ -2045,15 +2149,19 @@ static int nbd_co_receive_request(NBDRequestData *req, NBDRequest *request,
             return -EINVAL;
         }
 
-        req->data = blk_try_blockalign(client->exp->blk, request->len);
-        if (req->data == NULL) {
-            error_setg(errp, "No memory");
-            return -ENOMEM;
+        if (request->type != NBD_CMD_CACHE) {
+            req->data = blk_try_blockalign(client->exp->blk, request->len);
+            if (req->data == NULL) {
+                error_setg(errp, "No memory");
+                return -ENOMEM;
+            }
         }
     }
+
     if (request->type == NBD_CMD_WRITE) {
-        if (nbd_read(client->ioc, req->data, request->len, errp) < 0) {
-            error_prepend(errp, "reading from socket failed: ");
+        if (nbd_read(client->ioc, req->data, request->len, "CMD_WRITE data",
+                     errp) < 0)
+        {
             return -EIO;
         }
         req->complete = true;
@@ -2071,18 +2179,29 @@ static int nbd_co_receive_request(NBDRequestData *req, NBDRequest *request,
         return -EROFS;
     }
     if (request->from > client->exp->size ||
-        request->from + request->len > client->exp->size) {
+        request->len > client->exp->size - request->from) {
         error_setg(errp, "operation past EOF; From: %" PRIu64 ", Len: %" PRIu32
                    ", Size: %" PRIu64, request->from, request->len,
-                   (uint64_t)client->exp->size);
+                   client->exp->size);
         return (request->type == NBD_CMD_WRITE ||
                 request->type == NBD_CMD_WRITE_ZEROES) ? -ENOSPC : -EINVAL;
+    }
+    if (client->check_align && !QEMU_IS_ALIGNED(request->from | request->len,
+                                                client->check_align)) {
+        /*
+         * The block layer gracefully handles unaligned requests, but
+         * it's still worth tracing client non-compliance
+         */
+        trace_nbd_co_receive_align_compliance(nbd_cmd_lookup(request->type),
+                                              request->from,
+                                              request->len,
+                                              client->check_align);
     }
     valid_flags = NBD_CMD_FLAG_FUA;
     if (request->type == NBD_CMD_READ && client->structured_reply) {
         valid_flags |= NBD_CMD_FLAG_DF;
     } else if (request->type == NBD_CMD_WRITE_ZEROES) {
-        valid_flags |= NBD_CMD_FLAG_NO_HOLE;
+        valid_flags |= NBD_CMD_FLAG_NO_HOLE | NBD_CMD_FLAG_FAST_ZERO;
     } else if (request->type == NBD_CMD_BLOCK_STATUS) {
         valid_flags |= NBD_CMD_FLAG_REQ_ONE;
     }
@@ -2123,7 +2242,7 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     int ret;
     NBDExport *exp = client->exp;
 
-    assert(request->type == NBD_CMD_READ || request->type == NBD_CMD_CACHE);
+    assert(request->type == NBD_CMD_READ);
 
     /* XXX: NBD Protocol only documents use of FUA with WRITE */
     if (request->flags & NBD_CMD_FLAG_FUA) {
@@ -2135,14 +2254,15 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     }
 
     if (client->structured_reply && !(request->flags & NBD_CMD_FLAG_DF) &&
-        request->len) {
+        request->len)
+    {
         return nbd_co_send_sparse_read(client, request->handle, request->from,
                                        data, request->len, errp);
     }
 
     ret = blk_pread(exp->blk, request->from + exp->dev_offset, data,
                     request->len);
-    if (ret < 0 || request->type == NBD_CMD_CACHE) {
+    if (ret < 0) {
         return nbd_send_generic_reply(client, request->handle, ret,
                                       "reading from file failed", errp);
     }
@@ -2161,6 +2281,28 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     }
 }
 
+/*
+ * nbd_do_cmd_cache
+ *
+ * Handle NBD_CMD_CACHE request.
+ * Return -errno if sending fails. Other errors are reported directly to the
+ * client as an error reply.
+ */
+static coroutine_fn int nbd_do_cmd_cache(NBDClient *client, NBDRequest *request,
+                                         Error **errp)
+{
+    int ret;
+    NBDExport *exp = client->exp;
+
+    assert(request->type == NBD_CMD_CACHE);
+
+    ret = blk_co_preadv(exp->blk, request->from + exp->dev_offset, request->len,
+                        NULL, BDRV_REQ_COPY_ON_READ | BDRV_REQ_PREFETCH);
+
+    return nbd_send_generic_reply(client, request->handle, ret,
+                                  "caching data failed", errp);
+}
+
 /* Handle NBD request.
  * Return -errno if sending fails. Other errors are reported directly to the
  * client as an error reply. */
@@ -2174,8 +2316,10 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
     char *msg;
 
     switch (request->type) {
-    case NBD_CMD_READ:
     case NBD_CMD_CACHE:
+        return nbd_do_cmd_cache(client, request, errp);
+
+    case NBD_CMD_READ:
         return nbd_do_cmd_read(client, request, data, errp);
 
     case NBD_CMD_WRITE:
@@ -2195,6 +2339,9 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
         }
         if (!(request->flags & NBD_CMD_FLAG_NO_HOLE)) {
             flags |= BDRV_REQ_MAY_UNMAP;
+        }
+        if (request->flags & NBD_CMD_FLAG_FAST_ZERO) {
+            flags |= BDRV_REQ_NO_FALLBACK;
         }
         ret = blk_pwrite_zeroes(exp->blk, request->from + exp->dev_offset,
                                 request->len, flags);
@@ -2228,10 +2375,12 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
             (client->export_meta.base_allocation ||
              client->export_meta.bitmap))
         {
+            bool dont_fragment = request->flags & NBD_CMD_FLAG_REQ_ONE;
+
             if (client->export_meta.base_allocation) {
                 ret = nbd_co_send_block_status(client, request->handle,
                                                blk_bs(exp->blk), request->from,
-                                               request->len,
+                                               request->len, dont_fragment,
                                                !client->export_meta.bitmap,
                                                NBD_META_ID_BASE_ALLOCATION,
                                                errp);
@@ -2244,7 +2393,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
                 ret = nbd_co_send_bitmap(client, request->handle,
                                          client->exp->export_bitmap,
                                          request->from, request->len,
-                                         request->flags & NBD_CMD_FLAG_REQ_ONE,
+                                         dont_fragment,
                                          true, NBD_META_ID_DIRTY_BITMAP, errp);
                 if (ret < 0) {
                     return ret;
@@ -2351,13 +2500,8 @@ static void nbd_client_receive_next_request(NBDClient *client)
 static coroutine_fn void nbd_co_client_start(void *opaque)
 {
     NBDClient *client = opaque;
-    NBDExport *exp = client->exp;
     Error *local_err = NULL;
 
-    if (exp) {
-        nbd_export_get(exp);
-        QTAILQ_INSERT_TAIL(&exp->clients, client, next);
-    }
     qemu_co_mutex_init(&client->send_lock);
 
     if (nbd_negotiate(client, &local_err)) {
@@ -2372,15 +2516,13 @@ static coroutine_fn void nbd_co_client_start(void *opaque)
 }
 
 /*
- * Create a new client listener on the given export @exp, using the
- * given channel @sioc.  Begin servicing it in a coroutine.  When the
- * connection closes, call @close_fn with an indication of whether the
- * client completed negotiation.
+ * Create a new client listener using the given channel @sioc.
+ * Begin servicing it in a coroutine.  When the connection closes, call
+ * @close_fn with an indication of whether the client completed negotiation.
  */
-void nbd_client_new(NBDExport *exp,
-                    QIOChannelSocket *sioc,
+void nbd_client_new(QIOChannelSocket *sioc,
                     QCryptoTLSCreds *tlscreds,
-                    const char *tlsaclname,
+                    const char *tlsauthz,
                     void (*close_fn)(NBDClient *, bool))
 {
     NBDClient *client;
@@ -2388,12 +2530,11 @@ void nbd_client_new(NBDExport *exp,
 
     client = g_new0(NBDClient, 1);
     client->refcount = 1;
-    client->exp = exp;
     client->tlscreds = tlscreds;
     if (tlscreds) {
         object_ref(OBJECT(client->tlscreds));
     }
-    client->tlsaclname = g_strdup(tlsaclname);
+    client->tlsauthz = g_strdup(tlsauthz);
     client->sioc = sioc;
     object_ref(OBJECT(client->sioc));
     client->ioc = QIO_CHANNEL(sioc);
@@ -2402,45 +2543,4 @@ void nbd_client_new(NBDExport *exp,
 
     co = qemu_coroutine_create(nbd_co_client_start, client);
     qemu_coroutine_enter(co);
-}
-
-void nbd_export_bitmap(NBDExport *exp, const char *bitmap,
-                       const char *bitmap_export_name, Error **errp)
-{
-    BdrvDirtyBitmap *bm = NULL;
-    BlockDriverState *bs = blk_bs(exp->blk);
-
-    if (exp->export_bitmap) {
-        error_setg(errp, "Export bitmap is already set");
-        return;
-    }
-
-    while (true) {
-        bm = bdrv_find_dirty_bitmap(bs, bitmap);
-        if (bm != NULL || bs->backing == NULL) {
-            break;
-        }
-
-        bs = bs->backing->bs;
-    }
-
-    if (bm == NULL) {
-        error_setg(errp, "Bitmap '%s' is not found", bitmap);
-        return;
-    }
-
-    if (bdrv_dirty_bitmap_enabled(bm)) {
-        error_setg(errp, "Bitmap '%s' is enabled", bitmap);
-        return;
-    }
-
-    if (bdrv_dirty_bitmap_qmp_locked(bm)) {
-        error_setg(errp, "Bitmap '%s' is locked", bitmap);
-        return;
-    }
-
-    bdrv_dirty_bitmap_set_qmp_locked(bm, true);
-    exp->export_bitmap = bm;
-    exp->export_bitmap_context =
-            g_strdup_printf("qemu:dirty-bitmap:%s", bitmap_export_name);
 }

@@ -19,9 +19,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "hw/usb.h"
+#include "migration/vmstate.h"
 #include "desc.h"
 #include "sysemu/bt.h"
 #include "hw/bt.h"
@@ -46,7 +47,7 @@ struct USBBtState {
 
     struct usb_hci_out_fifo_s {
         uint8_t data[4096];
-	int len;
+        int len;
     } outcmd, outacl, outsco;
 };
 

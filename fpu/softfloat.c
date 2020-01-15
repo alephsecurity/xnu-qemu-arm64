@@ -83,6 +83,7 @@ this code that are retained.
  * target-dependent and needs the TARGET_* macros.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/bitops.h"
 #include "fpu/softfloat.h"
 
@@ -95,22 +96,322 @@ this code that are retained.
 *----------------------------------------------------------------------------*/
 #include "fpu/softfloat-macros.h"
 
-/*----------------------------------------------------------------------------
-| Returns the fraction bits of the half-precision floating-point value `a'.
-*----------------------------------------------------------------------------*/
+/*
+ * Hardfloat
+ *
+ * Fast emulation of guest FP instructions is challenging for two reasons.
+ * First, FP instruction semantics are similar but not identical, particularly
+ * when handling NaNs. Second, emulating at reasonable speed the guest FP
+ * exception flags is not trivial: reading the host's flags register with a
+ * feclearexcept & fetestexcept pair is slow [slightly slower than soft-fp],
+ * and trapping on every FP exception is not fast nor pleasant to work with.
+ *
+ * We address these challenges by leveraging the host FPU for a subset of the
+ * operations. To do this we expand on the idea presented in this paper:
+ *
+ * Guo, Yu-Chuan, et al. "Translating the ARM Neon and VFP instructions in a
+ * binary translator." Software: Practice and Experience 46.12 (2016):1591-1615.
+ *
+ * The idea is thus to leverage the host FPU to (1) compute FP operations
+ * and (2) identify whether FP exceptions occurred while avoiding
+ * expensive exception flag register accesses.
+ *
+ * An important optimization shown in the paper is that given that exception
+ * flags are rarely cleared by the guest, we can avoid recomputing some flags.
+ * This is particularly useful for the inexact flag, which is very frequently
+ * raised in floating-point workloads.
+ *
+ * We optimize the code further by deferring to soft-fp whenever FP exception
+ * detection might get hairy. Two examples: (1) when at least one operand is
+ * denormal/inf/NaN; (2) when operands are not guaranteed to lead to a 0 result
+ * and the result is < the minimum normal.
+ */
+#define GEN_INPUT_FLUSH__NOCHECK(name, soft_t)                          \
+    static inline void name(soft_t *a, float_status *s)                 \
+    {                                                                   \
+        if (unlikely(soft_t ## _is_denormal(*a))) {                     \
+            *a = soft_t ## _set_sign(soft_t ## _zero,                   \
+                                     soft_t ## _is_neg(*a));            \
+            s->float_exception_flags |= float_flag_input_denormal;      \
+        }                                                               \
+    }
 
-static inline uint32_t extractFloat16Frac(float16 a)
+GEN_INPUT_FLUSH__NOCHECK(float32_input_flush__nocheck, float32)
+GEN_INPUT_FLUSH__NOCHECK(float64_input_flush__nocheck, float64)
+#undef GEN_INPUT_FLUSH__NOCHECK
+
+#define GEN_INPUT_FLUSH1(name, soft_t)                  \
+    static inline void name(soft_t *a, float_status *s) \
+    {                                                   \
+        if (likely(!s->flush_inputs_to_zero)) {         \
+            return;                                     \
+        }                                               \
+        soft_t ## _input_flush__nocheck(a, s);          \
+    }
+
+GEN_INPUT_FLUSH1(float32_input_flush1, float32)
+GEN_INPUT_FLUSH1(float64_input_flush1, float64)
+#undef GEN_INPUT_FLUSH1
+
+#define GEN_INPUT_FLUSH2(name, soft_t)                                  \
+    static inline void name(soft_t *a, soft_t *b, float_status *s)      \
+    {                                                                   \
+        if (likely(!s->flush_inputs_to_zero)) {                         \
+            return;                                                     \
+        }                                                               \
+        soft_t ## _input_flush__nocheck(a, s);                          \
+        soft_t ## _input_flush__nocheck(b, s);                          \
+    }
+
+GEN_INPUT_FLUSH2(float32_input_flush2, float32)
+GEN_INPUT_FLUSH2(float64_input_flush2, float64)
+#undef GEN_INPUT_FLUSH2
+
+#define GEN_INPUT_FLUSH3(name, soft_t)                                  \
+    static inline void name(soft_t *a, soft_t *b, soft_t *c, float_status *s) \
+    {                                                                   \
+        if (likely(!s->flush_inputs_to_zero)) {                         \
+            return;                                                     \
+        }                                                               \
+        soft_t ## _input_flush__nocheck(a, s);                          \
+        soft_t ## _input_flush__nocheck(b, s);                          \
+        soft_t ## _input_flush__nocheck(c, s);                          \
+    }
+
+GEN_INPUT_FLUSH3(float32_input_flush3, float32)
+GEN_INPUT_FLUSH3(float64_input_flush3, float64)
+#undef GEN_INPUT_FLUSH3
+
+/*
+ * Choose whether to use fpclassify or float32/64_* primitives in the generated
+ * hardfloat functions. Each combination of number of inputs and float size
+ * gets its own value.
+ */
+#if defined(__x86_64__)
+# define QEMU_HARDFLOAT_1F32_USE_FP 0
+# define QEMU_HARDFLOAT_1F64_USE_FP 1
+# define QEMU_HARDFLOAT_2F32_USE_FP 0
+# define QEMU_HARDFLOAT_2F64_USE_FP 1
+# define QEMU_HARDFLOAT_3F32_USE_FP 0
+# define QEMU_HARDFLOAT_3F64_USE_FP 1
+#else
+# define QEMU_HARDFLOAT_1F32_USE_FP 0
+# define QEMU_HARDFLOAT_1F64_USE_FP 0
+# define QEMU_HARDFLOAT_2F32_USE_FP 0
+# define QEMU_HARDFLOAT_2F64_USE_FP 0
+# define QEMU_HARDFLOAT_3F32_USE_FP 0
+# define QEMU_HARDFLOAT_3F64_USE_FP 0
+#endif
+
+/*
+ * QEMU_HARDFLOAT_USE_ISINF chooses whether to use isinf() over
+ * float{32,64}_is_infinity when !USE_FP.
+ * On x86_64/aarch64, using the former over the latter can yield a ~6% speedup.
+ * On power64 however, using isinf() reduces fp-bench performance by up to 50%.
+ */
+#if defined(__x86_64__) || defined(__aarch64__)
+# define QEMU_HARDFLOAT_USE_ISINF   1
+#else
+# define QEMU_HARDFLOAT_USE_ISINF   0
+#endif
+
+/*
+ * Some targets clear the FP flags before most FP operations. This prevents
+ * the use of hardfloat, since hardfloat relies on the inexact flag being
+ * already set.
+ */
+#if defined(TARGET_PPC) || defined(__FAST_MATH__)
+# if defined(__FAST_MATH__)
+#  warning disabling hardfloat due to -ffast-math: hardfloat requires an exact \
+    IEEE implementation
+# endif
+# define QEMU_NO_HARDFLOAT 1
+# define QEMU_SOFTFLOAT_ATTR QEMU_FLATTEN
+#else
+# define QEMU_NO_HARDFLOAT 0
+# define QEMU_SOFTFLOAT_ATTR QEMU_FLATTEN __attribute__((noinline))
+#endif
+
+static inline bool can_use_fpu(const float_status *s)
 {
-    return float16_val(a) & 0x3ff;
+    if (QEMU_NO_HARDFLOAT) {
+        return false;
+    }
+    return likely(s->float_exception_flags & float_flag_inexact &&
+                  s->float_rounding_mode == float_round_nearest_even);
 }
 
-/*----------------------------------------------------------------------------
-| Returns the exponent bits of the half-precision floating-point value `a'.
-*----------------------------------------------------------------------------*/
+/*
+ * Hardfloat generation functions. Each operation can have two flavors:
+ * either using softfloat primitives (e.g. float32_is_zero_or_normal) for
+ * most condition checks, or native ones (e.g. fpclassify).
+ *
+ * The flavor is chosen by the callers. Instead of using macros, we rely on the
+ * compiler to propagate constants and inline everything into the callers.
+ *
+ * We only generate functions for operations with two inputs, since only
+ * these are common enough to justify consolidating them into common code.
+ */
 
-static inline int extractFloat16Exp(float16 a)
+typedef union {
+    float32 s;
+    float h;
+} union_float32;
+
+typedef union {
+    float64 s;
+    double h;
+} union_float64;
+
+typedef bool (*f32_check_fn)(union_float32 a, union_float32 b);
+typedef bool (*f64_check_fn)(union_float64 a, union_float64 b);
+
+typedef float32 (*soft_f32_op2_fn)(float32 a, float32 b, float_status *s);
+typedef float64 (*soft_f64_op2_fn)(float64 a, float64 b, float_status *s);
+typedef float   (*hard_f32_op2_fn)(float a, float b);
+typedef double  (*hard_f64_op2_fn)(double a, double b);
+
+/* 2-input is-zero-or-normal */
+static inline bool f32_is_zon2(union_float32 a, union_float32 b)
 {
-    return (float16_val(a) >> 10) & 0x1f;
+    if (QEMU_HARDFLOAT_2F32_USE_FP) {
+        /*
+         * Not using a temp variable for consecutive fpclassify calls ends up
+         * generating faster code.
+         */
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               (fpclassify(b.h) == FP_NORMAL || fpclassify(b.h) == FP_ZERO);
+    }
+    return float32_is_zero_or_normal(a.s) &&
+           float32_is_zero_or_normal(b.s);
+}
+
+static inline bool f64_is_zon2(union_float64 a, union_float64 b)
+{
+    if (QEMU_HARDFLOAT_2F64_USE_FP) {
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               (fpclassify(b.h) == FP_NORMAL || fpclassify(b.h) == FP_ZERO);
+    }
+    return float64_is_zero_or_normal(a.s) &&
+           float64_is_zero_or_normal(b.s);
+}
+
+/* 3-input is-zero-or-normal */
+static inline
+bool f32_is_zon3(union_float32 a, union_float32 b, union_float32 c)
+{
+    if (QEMU_HARDFLOAT_3F32_USE_FP) {
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               (fpclassify(b.h) == FP_NORMAL || fpclassify(b.h) == FP_ZERO) &&
+               (fpclassify(c.h) == FP_NORMAL || fpclassify(c.h) == FP_ZERO);
+    }
+    return float32_is_zero_or_normal(a.s) &&
+           float32_is_zero_or_normal(b.s) &&
+           float32_is_zero_or_normal(c.s);
+}
+
+static inline
+bool f64_is_zon3(union_float64 a, union_float64 b, union_float64 c)
+{
+    if (QEMU_HARDFLOAT_3F64_USE_FP) {
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               (fpclassify(b.h) == FP_NORMAL || fpclassify(b.h) == FP_ZERO) &&
+               (fpclassify(c.h) == FP_NORMAL || fpclassify(c.h) == FP_ZERO);
+    }
+    return float64_is_zero_or_normal(a.s) &&
+           float64_is_zero_or_normal(b.s) &&
+           float64_is_zero_or_normal(c.s);
+}
+
+static inline bool f32_is_inf(union_float32 a)
+{
+    if (QEMU_HARDFLOAT_USE_ISINF) {
+        return isinf(a.h);
+    }
+    return float32_is_infinity(a.s);
+}
+
+static inline bool f64_is_inf(union_float64 a)
+{
+    if (QEMU_HARDFLOAT_USE_ISINF) {
+        return isinf(a.h);
+    }
+    return float64_is_infinity(a.s);
+}
+
+/* Note: @fast_test and @post can be NULL */
+static inline float32
+float32_gen2(float32 xa, float32 xb, float_status *s,
+             hard_f32_op2_fn hard, soft_f32_op2_fn soft,
+             f32_check_fn pre, f32_check_fn post,
+             f32_check_fn fast_test, soft_f32_op2_fn fast_op)
+{
+    union_float32 ua, ub, ur;
+
+    ua.s = xa;
+    ub.s = xb;
+
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+
+    float32_input_flush2(&ua.s, &ub.s, s);
+    if (unlikely(!pre(ua, ub))) {
+        goto soft;
+    }
+    if (fast_test && fast_test(ua, ub)) {
+        return fast_op(ua.s, ub.s, s);
+    }
+
+    ur.h = hard(ua.h, ub.h);
+    if (unlikely(f32_is_inf(ur))) {
+        s->float_exception_flags |= float_flag_overflow;
+    } else if (unlikely(fabsf(ur.h) <= FLT_MIN)) {
+        if (post == NULL || post(ua, ub)) {
+            goto soft;
+        }
+    }
+    return ur.s;
+
+ soft:
+    return soft(ua.s, ub.s, s);
+}
+
+static inline float64
+float64_gen2(float64 xa, float64 xb, float_status *s,
+             hard_f64_op2_fn hard, soft_f64_op2_fn soft,
+             f64_check_fn pre, f64_check_fn post,
+             f64_check_fn fast_test, soft_f64_op2_fn fast_op)
+{
+    union_float64 ua, ub, ur;
+
+    ua.s = xa;
+    ub.s = xb;
+
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+
+    float64_input_flush2(&ua.s, &ub.s, s);
+    if (unlikely(!pre(ua, ub))) {
+        goto soft;
+    }
+    if (fast_test && fast_test(ua, ub)) {
+        return fast_op(ua.s, ub.s, s);
+    }
+
+    ur.h = hard(ua.h, ub.h);
+    if (unlikely(f64_is_inf(ur))) {
+        s->float_exception_flags |= float_flag_overflow;
+    } else if (unlikely(fabs(ur.h) <= DBL_MIN)) {
+        if (post == NULL || post(ua, ub)) {
+            goto soft;
+        }
+    }
+    return ur.s;
+
+ soft:
+    return soft(ua.s, ub.s, s);
 }
 
 /*----------------------------------------------------------------------------
@@ -146,7 +447,7 @@ static inline flag extractFloat32Sign(float32 a)
 
 static inline uint64_t extractFloat64Frac(float64 a)
 {
-    return float64_val(a) & LIT64(0x000FFFFFFFFFFFFF);
+    return float64_val(a) & UINT64_C(0x000FFFFFFFFFFFFF);
 }
 
 /*----------------------------------------------------------------------------
@@ -333,11 +634,11 @@ static inline float64 float64_pack_raw(FloatParts p)
 | are propagated from function inputs to output.  These details are target-
 | specific.
 *----------------------------------------------------------------------------*/
-#include "softfloat-specialize.h"
+#include "softfloat-specialize.inc.c"
 
 /* Canonicalize EXP and FRAC, setting CLS.  */
-static FloatParts canonicalize(FloatParts part, const FloatFmt *parm,
-                               float_status *status)
+static FloatParts sf_canonicalize(FloatParts part, const FloatFmt *parm,
+                                  float_status *status)
 {
     if (part.exp == parm->exp_max && !parm->arm_althp) {
         if (part.frac == 0) {
@@ -377,6 +678,7 @@ static FloatParts canonicalize(FloatParts part, const FloatFmt *parm,
 static FloatParts round_canonical(FloatParts p, float_status *s,
                                   const FloatFmt *parm)
 {
+    const uint64_t frac_lsb = parm->frac_lsb;
     const uint64_t frac_lsbm1 = parm->frac_lsbm1;
     const uint64_t round_mask = parm->round_mask;
     const uint64_t roundeven_mask = parm->roundeven_mask;
@@ -411,6 +713,10 @@ static FloatParts round_canonical(FloatParts p, float_status *s,
         case float_round_down:
             inc = p.sign ? round_mask : 0;
             overflow_norm = !p.sign;
+            break;
+        case float_round_to_odd:
+            overflow_norm = true;
+            inc = frac & frac_lsb ? 0 : round_mask;
             break;
         default:
             g_assert_not_reached();
@@ -459,9 +765,14 @@ static FloatParts round_canonical(FloatParts p, float_status *s,
             shift64RightJamming(frac, 1 - exp, &frac);
             if (frac & round_mask) {
                 /* Need to recompute round-to-even.  */
-                if (s->float_rounding_mode == float_round_nearest_even) {
+                switch (s->float_rounding_mode) {
+                case float_round_nearest_even:
                     inc = ((frac & roundeven_mask) != frac_lsbm1
                            ? frac_lsbm1 : 0);
+                    break;
+                case float_round_to_odd:
+                    inc = frac & frac_lsb ? 0 : round_mask;
+                    break;
                 }
                 flags |= float_flag_inexact;
                 frac += inc;
@@ -513,7 +824,7 @@ static FloatParts round_canonical(FloatParts p, float_status *s,
 static FloatParts float16a_unpack_canonical(float16 f, float_status *s,
                                             const FloatFmt *params)
 {
-    return canonicalize(float16_unpack_raw(f), params, s);
+    return sf_canonicalize(float16_unpack_raw(f), params, s);
 }
 
 static FloatParts float16_unpack_canonical(float16 f, float_status *s)
@@ -534,7 +845,7 @@ static float16 float16_round_pack_canonical(FloatParts p, float_status *s)
 
 static FloatParts float32_unpack_canonical(float32 f, float_status *s)
 {
-    return canonicalize(float32_unpack_raw(f), &float32_params, s);
+    return sf_canonicalize(float32_unpack_raw(f), &float32_params, s);
 }
 
 static float32 float32_round_pack_canonical(FloatParts p, float_status *s)
@@ -544,7 +855,7 @@ static float32 float32_round_pack_canonical(FloatParts p, float_status *s)
 
 static FloatParts float64_unpack_canonical(float64 f, float_status *s)
 {
-    return canonicalize(float64_unpack_raw(f), &float64_params, s);
+    return sf_canonicalize(float64_unpack_raw(f), &float64_params, s);
 }
 
 static float64 float64_round_pack_canonical(FloatParts p, float_status *s)
@@ -701,7 +1012,7 @@ static FloatParts addsub_floats(FloatParts a, FloatParts b, bool subtract,
             }
             a.frac += b.frac;
             if (a.frac & DECOMPOSED_OVERFLOW_BIT) {
-                a.frac >>= 1;
+                shift64RightJamming(a.frac, 1, &a.frac);
                 a.exp += 1;
             }
             return a;
@@ -726,8 +1037,7 @@ static FloatParts addsub_floats(FloatParts a, FloatParts b, bool subtract,
  * IEC/IEEE Standard for Binary Floating-Point Arithmetic.
  */
 
-float16  __attribute__((flatten)) float16_add(float16 a, float16 b,
-                                              float_status *status)
+float16 QEMU_FLATTEN float16_add(float16 a, float16 b, float_status *status)
 {
     FloatParts pa = float16_unpack_canonical(a, status);
     FloatParts pb = float16_unpack_canonical(b, status);
@@ -736,28 +1046,7 @@ float16  __attribute__((flatten)) float16_add(float16 a, float16 b,
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 __attribute__((flatten)) float32_add(float32 a, float32 b,
-                                             float_status *status)
-{
-    FloatParts pa = float32_unpack_canonical(a, status);
-    FloatParts pb = float32_unpack_canonical(b, status);
-    FloatParts pr = addsub_floats(pa, pb, false, status);
-
-    return float32_round_pack_canonical(pr, status);
-}
-
-float64 __attribute__((flatten)) float64_add(float64 a, float64 b,
-                                             float_status *status)
-{
-    FloatParts pa = float64_unpack_canonical(a, status);
-    FloatParts pb = float64_unpack_canonical(b, status);
-    FloatParts pr = addsub_floats(pa, pb, false, status);
-
-    return float64_round_pack_canonical(pr, status);
-}
-
-float16 __attribute__((flatten)) float16_sub(float16 a, float16 b,
-                                             float_status *status)
+float16 QEMU_FLATTEN float16_sub(float16 a, float16 b, float_status *status)
 {
     FloatParts pa = float16_unpack_canonical(a, status);
     FloatParts pb = float16_unpack_canonical(b, status);
@@ -766,24 +1055,119 @@ float16 __attribute__((flatten)) float16_sub(float16 a, float16 b,
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 __attribute__((flatten)) float32_sub(float32 a, float32 b,
-                                             float_status *status)
+static float32 QEMU_SOFTFLOAT_ATTR
+soft_f32_addsub(float32 a, float32 b, bool subtract, float_status *status)
 {
     FloatParts pa = float32_unpack_canonical(a, status);
     FloatParts pb = float32_unpack_canonical(b, status);
-    FloatParts pr = addsub_floats(pa, pb, true, status);
+    FloatParts pr = addsub_floats(pa, pb, subtract, status);
 
     return float32_round_pack_canonical(pr, status);
 }
 
-float64 __attribute__((flatten)) float64_sub(float64 a, float64 b,
-                                             float_status *status)
+static inline float32 soft_f32_add(float32 a, float32 b, float_status *status)
+{
+    return soft_f32_addsub(a, b, false, status);
+}
+
+static inline float32 soft_f32_sub(float32 a, float32 b, float_status *status)
+{
+    return soft_f32_addsub(a, b, true, status);
+}
+
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_f64_addsub(float64 a, float64 b, bool subtract, float_status *status)
 {
     FloatParts pa = float64_unpack_canonical(a, status);
     FloatParts pb = float64_unpack_canonical(b, status);
-    FloatParts pr = addsub_floats(pa, pb, true, status);
+    FloatParts pr = addsub_floats(pa, pb, subtract, status);
 
     return float64_round_pack_canonical(pr, status);
+}
+
+static inline float64 soft_f64_add(float64 a, float64 b, float_status *status)
+{
+    return soft_f64_addsub(a, b, false, status);
+}
+
+static inline float64 soft_f64_sub(float64 a, float64 b, float_status *status)
+{
+    return soft_f64_addsub(a, b, true, status);
+}
+
+static float hard_f32_add(float a, float b)
+{
+    return a + b;
+}
+
+static float hard_f32_sub(float a, float b)
+{
+    return a - b;
+}
+
+static double hard_f64_add(double a, double b)
+{
+    return a + b;
+}
+
+static double hard_f64_sub(double a, double b)
+{
+    return a - b;
+}
+
+static bool f32_addsub_post(union_float32 a, union_float32 b)
+{
+    if (QEMU_HARDFLOAT_2F32_USE_FP) {
+        return !(fpclassify(a.h) == FP_ZERO && fpclassify(b.h) == FP_ZERO);
+    }
+    return !(float32_is_zero(a.s) && float32_is_zero(b.s));
+}
+
+static bool f64_addsub_post(union_float64 a, union_float64 b)
+{
+    if (QEMU_HARDFLOAT_2F64_USE_FP) {
+        return !(fpclassify(a.h) == FP_ZERO && fpclassify(b.h) == FP_ZERO);
+    } else {
+        return !(float64_is_zero(a.s) && float64_is_zero(b.s));
+    }
+}
+
+static float32 float32_addsub(float32 a, float32 b, float_status *s,
+                              hard_f32_op2_fn hard, soft_f32_op2_fn soft)
+{
+    return float32_gen2(a, b, s, hard, soft,
+                        f32_is_zon2, f32_addsub_post, NULL, NULL);
+}
+
+static float64 float64_addsub(float64 a, float64 b, float_status *s,
+                              hard_f64_op2_fn hard, soft_f64_op2_fn soft)
+{
+    return float64_gen2(a, b, s, hard, soft,
+                        f64_is_zon2, f64_addsub_post, NULL, NULL);
+}
+
+float32 QEMU_FLATTEN
+float32_add(float32 a, float32 b, float_status *s)
+{
+    return float32_addsub(a, b, s, hard_f32_add, soft_f32_add);
+}
+
+float32 QEMU_FLATTEN
+float32_sub(float32 a, float32 b, float_status *s)
+{
+    return float32_addsub(a, b, s, hard_f32_sub, soft_f32_sub);
+}
+
+float64 QEMU_FLATTEN
+float64_add(float64 a, float64 b, float_status *s)
+{
+    return float64_addsub(a, b, s, hard_f64_add, soft_f64_add);
+}
+
+float64 QEMU_FLATTEN
+float64_sub(float64 a, float64 b, float_status *s)
+{
+    return float64_addsub(a, b, s, hard_f64_sub, soft_f64_sub);
 }
 
 /*
@@ -835,8 +1219,7 @@ static FloatParts mul_floats(FloatParts a, FloatParts b, float_status *s)
     g_assert_not_reached();
 }
 
-float16 __attribute__((flatten)) float16_mul(float16 a, float16 b,
-                                             float_status *status)
+float16 QEMU_FLATTEN float16_mul(float16 a, float16 b, float_status *status)
 {
     FloatParts pa = float16_unpack_canonical(a, status);
     FloatParts pb = float16_unpack_canonical(b, status);
@@ -845,8 +1228,8 @@ float16 __attribute__((flatten)) float16_mul(float16 a, float16 b,
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 __attribute__((flatten)) float32_mul(float32 a, float32 b,
-                                             float_status *status)
+static float32 QEMU_SOFTFLOAT_ATTR
+soft_f32_mul(float32 a, float32 b, float_status *status)
 {
     FloatParts pa = float32_unpack_canonical(a, status);
     FloatParts pb = float32_unpack_canonical(b, status);
@@ -855,14 +1238,62 @@ float32 __attribute__((flatten)) float32_mul(float32 a, float32 b,
     return float32_round_pack_canonical(pr, status);
 }
 
-float64 __attribute__((flatten)) float64_mul(float64 a, float64 b,
-                                             float_status *status)
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_f64_mul(float64 a, float64 b, float_status *status)
 {
     FloatParts pa = float64_unpack_canonical(a, status);
     FloatParts pb = float64_unpack_canonical(b, status);
     FloatParts pr = mul_floats(pa, pb, status);
 
     return float64_round_pack_canonical(pr, status);
+}
+
+static float hard_f32_mul(float a, float b)
+{
+    return a * b;
+}
+
+static double hard_f64_mul(double a, double b)
+{
+    return a * b;
+}
+
+static bool f32_mul_fast_test(union_float32 a, union_float32 b)
+{
+    return float32_is_zero(a.s) || float32_is_zero(b.s);
+}
+
+static bool f64_mul_fast_test(union_float64 a, union_float64 b)
+{
+    return float64_is_zero(a.s) || float64_is_zero(b.s);
+}
+
+static float32 f32_mul_fast_op(float32 a, float32 b, float_status *s)
+{
+    bool signbit = float32_is_neg(a) ^ float32_is_neg(b);
+
+    return float32_set_sign(float32_zero, signbit);
+}
+
+static float64 f64_mul_fast_op(float64 a, float64 b, float_status *s)
+{
+    bool signbit = float64_is_neg(a) ^ float64_is_neg(b);
+
+    return float64_set_sign(float64_zero, signbit);
+}
+
+float32 QEMU_FLATTEN
+float32_mul(float32 a, float32 b, float_status *s)
+{
+    return float32_gen2(a, b, s, hard_f32_mul, soft_f32_mul,
+                        f32_is_zon2, NULL, f32_mul_fast_test, f32_mul_fast_op);
+}
+
+float64 QEMU_FLATTEN
+float64_mul(float64 a, float64 b, float_status *s)
+{
+    return float64_gen2(a, b, s, hard_f64_mul, soft_f64_mul,
+                        f64_is_zon2, NULL, f64_mul_fast_test, f64_mul_fast_op);
 }
 
 /*
@@ -1068,7 +1499,7 @@ static FloatParts muladd_floats(FloatParts a, FloatParts b, FloatParts c,
     return a;
 }
 
-float16 __attribute__((flatten)) float16_muladd(float16 a, float16 b, float16 c,
+float16 QEMU_FLATTEN float16_muladd(float16 a, float16 b, float16 c,
                                                 int flags, float_status *status)
 {
     FloatParts pa = float16_unpack_canonical(a, status);
@@ -1079,8 +1510,9 @@ float16 __attribute__((flatten)) float16_muladd(float16 a, float16 b, float16 c,
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 __attribute__((flatten)) float32_muladd(float32 a, float32 b, float32 c,
-                                                int flags, float_status *status)
+static float32 QEMU_SOFTFLOAT_ATTR
+soft_f32_muladd(float32 a, float32 b, float32 c, int flags,
+                float_status *status)
 {
     FloatParts pa = float32_unpack_canonical(a, status);
     FloatParts pb = float32_unpack_canonical(b, status);
@@ -1090,8 +1522,9 @@ float32 __attribute__((flatten)) float32_muladd(float32 a, float32 b, float32 c,
     return float32_round_pack_canonical(pr, status);
 }
 
-float64 __attribute__((flatten)) float64_muladd(float64 a, float64 b, float64 c,
-                                                int flags, float_status *status)
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_f64_muladd(float64 a, float64 b, float64 c, int flags,
+                float_status *status)
 {
     FloatParts pa = float64_unpack_canonical(a, status);
     FloatParts pb = float64_unpack_canonical(b, status);
@@ -1099,6 +1532,150 @@ float64 __attribute__((flatten)) float64_muladd(float64 a, float64 b, float64 c,
     FloatParts pr = muladd_floats(pa, pb, pc, flags, status);
 
     return float64_round_pack_canonical(pr, status);
+}
+
+static bool force_soft_fma;
+
+float32 QEMU_FLATTEN
+float32_muladd(float32 xa, float32 xb, float32 xc, int flags, float_status *s)
+{
+    union_float32 ua, ub, uc, ur;
+
+    ua.s = xa;
+    ub.s = xb;
+    uc.s = xc;
+
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+    if (unlikely(flags & float_muladd_halve_result)) {
+        goto soft;
+    }
+
+    float32_input_flush3(&ua.s, &ub.s, &uc.s, s);
+    if (unlikely(!f32_is_zon3(ua, ub, uc))) {
+        goto soft;
+    }
+
+    if (unlikely(force_soft_fma)) {
+        goto soft;
+    }
+
+    /*
+     * When (a || b) == 0, there's no need to check for under/over flow,
+     * since we know the addend is (normal || 0) and the product is 0.
+     */
+    if (float32_is_zero(ua.s) || float32_is_zero(ub.s)) {
+        union_float32 up;
+        bool prod_sign;
+
+        prod_sign = float32_is_neg(ua.s) ^ float32_is_neg(ub.s);
+        prod_sign ^= !!(flags & float_muladd_negate_product);
+        up.s = float32_set_sign(float32_zero, prod_sign);
+
+        if (flags & float_muladd_negate_c) {
+            uc.h = -uc.h;
+        }
+        ur.h = up.h + uc.h;
+    } else {
+        union_float32 ua_orig = ua;
+        union_float32 uc_orig = uc;
+
+        if (flags & float_muladd_negate_product) {
+            ua.h = -ua.h;
+        }
+        if (flags & float_muladd_negate_c) {
+            uc.h = -uc.h;
+        }
+
+        ur.h = fmaf(ua.h, ub.h, uc.h);
+
+        if (unlikely(f32_is_inf(ur))) {
+            s->float_exception_flags |= float_flag_overflow;
+        } else if (unlikely(fabsf(ur.h) <= FLT_MIN)) {
+            ua = ua_orig;
+            uc = uc_orig;
+            goto soft;
+        }
+    }
+    if (flags & float_muladd_negate_result) {
+        return float32_chs(ur.s);
+    }
+    return ur.s;
+
+ soft:
+    return soft_f32_muladd(ua.s, ub.s, uc.s, flags, s);
+}
+
+float64 QEMU_FLATTEN
+float64_muladd(float64 xa, float64 xb, float64 xc, int flags, float_status *s)
+{
+    union_float64 ua, ub, uc, ur;
+
+    ua.s = xa;
+    ub.s = xb;
+    uc.s = xc;
+
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+    if (unlikely(flags & float_muladd_halve_result)) {
+        goto soft;
+    }
+
+    float64_input_flush3(&ua.s, &ub.s, &uc.s, s);
+    if (unlikely(!f64_is_zon3(ua, ub, uc))) {
+        goto soft;
+    }
+
+    if (unlikely(force_soft_fma)) {
+        goto soft;
+    }
+
+    /*
+     * When (a || b) == 0, there's no need to check for under/over flow,
+     * since we know the addend is (normal || 0) and the product is 0.
+     */
+    if (float64_is_zero(ua.s) || float64_is_zero(ub.s)) {
+        union_float64 up;
+        bool prod_sign;
+
+        prod_sign = float64_is_neg(ua.s) ^ float64_is_neg(ub.s);
+        prod_sign ^= !!(flags & float_muladd_negate_product);
+        up.s = float64_set_sign(float64_zero, prod_sign);
+
+        if (flags & float_muladd_negate_c) {
+            uc.h = -uc.h;
+        }
+        ur.h = up.h + uc.h;
+    } else {
+        union_float64 ua_orig = ua;
+        union_float64 uc_orig = uc;
+
+        if (flags & float_muladd_negate_product) {
+            ua.h = -ua.h;
+        }
+        if (flags & float_muladd_negate_c) {
+            uc.h = -uc.h;
+        }
+
+        ur.h = fma(ua.h, ub.h, uc.h);
+
+        if (unlikely(f64_is_inf(ur))) {
+            s->float_exception_flags |= float_flag_overflow;
+        } else if (unlikely(fabs(ur.h) <= FLT_MIN)) {
+            ua = ua_orig;
+            uc = uc_orig;
+            goto soft;
+        }
+    }
+    if (flags & float_muladd_negate_result) {
+        return float64_chs(ur.s);
+    }
+    return ur.s;
+
+ soft:
+    return soft_f64_muladd(ua.s, ub.s, uc.s, flags, s);
 }
 
 /*
@@ -1112,19 +1689,38 @@ static FloatParts div_floats(FloatParts a, FloatParts b, float_status *s)
     bool sign = a.sign ^ b.sign;
 
     if (a.cls == float_class_normal && b.cls == float_class_normal) {
-        uint64_t temp_lo, temp_hi;
+        uint64_t n0, n1, q, r;
         int exp = a.exp - b.exp;
+
+        /*
+         * We want a 2*N / N-bit division to produce exactly an N-bit
+         * result, so that we do not lose any precision and so that we
+         * do not have to renormalize afterward.  If A.frac < B.frac,
+         * then division would produce an (N-1)-bit result; shift A left
+         * by one to produce the an N-bit result, and decrement the
+         * exponent to match.
+         *
+         * The udiv_qrnnd algorithm that we're using requires normalization,
+         * i.e. the msb of the denominator must be set.  Since we know that
+         * DECOMPOSED_BINARY_POINT is msb-1, the inputs must be shifted left
+         * by one (more), and the remainder must be shifted right by one.
+         */
         if (a.frac < b.frac) {
             exp -= 1;
-            shortShift128Left(0, a.frac, DECOMPOSED_BINARY_POINT + 1,
-                              &temp_hi, &temp_lo);
+            shift128Left(0, a.frac, DECOMPOSED_BINARY_POINT + 2, &n1, &n0);
         } else {
-            shortShift128Left(0, a.frac, DECOMPOSED_BINARY_POINT,
-                              &temp_hi, &temp_lo);
+            shift128Left(0, a.frac, DECOMPOSED_BINARY_POINT + 1, &n1, &n0);
         }
-        /* LSB of quot is set if inexact which roundandpack will use
-         * to set flags. Yet again we re-use a for the result */
-        a.frac = div128To64(temp_lo, temp_hi, b.frac);
+        q = udiv_qrnnd(&r, n1, n0, b.frac << 1);
+
+        /*
+         * Set lsb if there is a remainder, to set inexact.
+         * As mentioned above, to find the actual value of the remainder we
+         * would need to shift right, but (1) we are only concerned about
+         * non-zero-ness, and (2) the remainder will always be even because
+         * both inputs to the division primitive are even.
+         */
+        a.frac = q | (r != 0);
         a.sign = sign;
         a.exp = exp;
         return a;
@@ -1170,7 +1766,8 @@ float16 float16_div(float16 a, float16 b, float_status *status)
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 float32_div(float32 a, float32 b, float_status *status)
+static float32 QEMU_SOFTFLOAT_ATTR
+soft_f32_div(float32 a, float32 b, float_status *status)
 {
     FloatParts pa = float32_unpack_canonical(a, status);
     FloatParts pb = float32_unpack_canonical(b, status);
@@ -1179,13 +1776,72 @@ float32 float32_div(float32 a, float32 b, float_status *status)
     return float32_round_pack_canonical(pr, status);
 }
 
-float64 float64_div(float64 a, float64 b, float_status *status)
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_f64_div(float64 a, float64 b, float_status *status)
 {
     FloatParts pa = float64_unpack_canonical(a, status);
     FloatParts pb = float64_unpack_canonical(b, status);
     FloatParts pr = div_floats(pa, pb, status);
 
     return float64_round_pack_canonical(pr, status);
+}
+
+static float hard_f32_div(float a, float b)
+{
+    return a / b;
+}
+
+static double hard_f64_div(double a, double b)
+{
+    return a / b;
+}
+
+static bool f32_div_pre(union_float32 a, union_float32 b)
+{
+    if (QEMU_HARDFLOAT_2F32_USE_FP) {
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               fpclassify(b.h) == FP_NORMAL;
+    }
+    return float32_is_zero_or_normal(a.s) && float32_is_normal(b.s);
+}
+
+static bool f64_div_pre(union_float64 a, union_float64 b)
+{
+    if (QEMU_HARDFLOAT_2F64_USE_FP) {
+        return (fpclassify(a.h) == FP_NORMAL || fpclassify(a.h) == FP_ZERO) &&
+               fpclassify(b.h) == FP_NORMAL;
+    }
+    return float64_is_zero_or_normal(a.s) && float64_is_normal(b.s);
+}
+
+static bool f32_div_post(union_float32 a, union_float32 b)
+{
+    if (QEMU_HARDFLOAT_2F32_USE_FP) {
+        return fpclassify(a.h) != FP_ZERO;
+    }
+    return !float32_is_zero(a.s);
+}
+
+static bool f64_div_post(union_float64 a, union_float64 b)
+{
+    if (QEMU_HARDFLOAT_2F64_USE_FP) {
+        return fpclassify(a.h) != FP_ZERO;
+    }
+    return !float64_is_zero(a.s);
+}
+
+float32 QEMU_FLATTEN
+float32_div(float32 a, float32 b, float_status *s)
+{
+    return float32_gen2(a, b, s, hard_f32_div, soft_f32_div,
+                        f32_div_pre, f32_div_post, NULL, NULL);
+}
+
+float64 QEMU_FLATTEN
+float64_div(float64 a, float64 b, float_status *s)
+{
+    return float64_gen2(a, b, s, hard_f64_div, soft_f64_div,
+                        f64_div_pre, f64_div_post, NULL, NULL);
 }
 
 /*
@@ -1264,11 +1920,28 @@ float16 float32_to_float16(float32 a, bool ieee, float_status *s)
     return float16a_round_pack_canonical(pr, s, fmt16);
 }
 
-float64 float32_to_float64(float32 a, float_status *s)
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_float32_to_float64(float32 a, float_status *s)
 {
     FloatParts p = float32_unpack_canonical(a, s);
     FloatParts pr = float_to_float(p, &float64_params, s);
     return float64_round_pack_canonical(pr, s);
+}
+
+float64 float32_to_float64(float32 a, float_status *s)
+{
+    if (likely(float32_is_normal(a))) {
+        /* Widening conversion can never produce inexact results.  */
+        union_float32 uf;
+        union_float64 ud;
+        uf.s = a;
+        ud.h = uf.h;
+        return ud.s;
+    } else if (float32_is_zero(a)) {
+        return float64_set_sign(float64_zero, float32_is_neg(a));
+    } else {
+        return soft_float32_to_float64(a, s);
+    }
 }
 
 float16 float64_to_float16(float64 a, bool ieee, float_status *s)
@@ -1293,19 +1966,23 @@ float32 float64_to_float32(float64 a, float_status *s)
  * Arithmetic.
  */
 
-static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
+static FloatParts round_to_int(FloatParts a, int rmode,
+                               int scale, float_status *s)
 {
-    if (is_nan(a.cls)) {
-        return return_nan(a, s);
-    }
-
     switch (a.cls) {
+    case float_class_qnan:
+    case float_class_snan:
+        return return_nan(a, s);
+
     case float_class_zero:
     case float_class_inf:
-    case float_class_qnan:
         /* already "integral" */
         break;
+
     case float_class_normal:
+        scale = MIN(MAX(scale, -0x10000), 0x10000);
+        a.exp += scale;
+
         if (a.exp >= DECOMPOSED_BINARY_POINT) {
             /* already integral */
             break;
@@ -1314,7 +1991,7 @@ static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
             bool one;
             /* all fractional */
             s->float_exception_flags |= float_flag_inexact;
-            switch (rounding_mode) {
+            switch (rmode) {
             case float_round_nearest_even:
                 one = a.exp == -1 && a.frac > DECOMPOSED_IMPLICIT_BIT;
                 break;
@@ -1329,6 +2006,9 @@ static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
                 break;
             case float_round_down:
                 one = a.sign;
+                break;
+            case float_round_to_odd:
+                one = true;
                 break;
             default:
                 g_assert_not_reached();
@@ -1347,7 +2027,7 @@ static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
             uint64_t rnd_mask = rnd_even_mask >> 1;
             uint64_t inc;
 
-            switch (rounding_mode) {
+            switch (rmode) {
             case float_round_nearest_even:
                 inc = ((a.frac & rnd_even_mask) != frac_lsbm1 ? frac_lsbm1 : 0);
                 break;
@@ -1362,6 +2042,9 @@ static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
                 break;
             case float_round_down:
                 inc = a.sign ? rnd_mask : 0;
+                break;
+            case float_round_to_odd:
+                inc = a.frac & frac_lsb ? 0 : rnd_mask;
                 break;
             default:
                 g_assert_not_reached();
@@ -1387,28 +2070,21 @@ static FloatParts round_to_int(FloatParts a, int rounding_mode, float_status *s)
 float16 float16_round_to_int(float16 a, float_status *s)
 {
     FloatParts pa = float16_unpack_canonical(a, s);
-    FloatParts pr = round_to_int(pa, s->float_rounding_mode, s);
+    FloatParts pr = round_to_int(pa, s->float_rounding_mode, 0, s);
     return float16_round_pack_canonical(pr, s);
 }
 
 float32 float32_round_to_int(float32 a, float_status *s)
 {
     FloatParts pa = float32_unpack_canonical(a, s);
-    FloatParts pr = round_to_int(pa, s->float_rounding_mode, s);
+    FloatParts pr = round_to_int(pa, s->float_rounding_mode, 0, s);
     return float32_round_pack_canonical(pr, s);
 }
 
 float64 float64_round_to_int(float64 a, float_status *s)
 {
     FloatParts pa = float64_unpack_canonical(a, s);
-    FloatParts pr = round_to_int(pa, s->float_rounding_mode, s);
-    return float64_round_pack_canonical(pr, s);
-}
-
-float64 float64_trunc_to_int(float64 a, float_status *s)
-{
-    FloatParts pa = float64_unpack_canonical(a, s);
-    FloatParts pr = round_to_int(pa, float_round_to_zero, s);
+    FloatParts pr = round_to_int(pa, s->float_rounding_mode, 0, s);
     return float64_round_pack_canonical(pr, s);
 }
 
@@ -1423,13 +2099,13 @@ float64 float64_trunc_to_int(float64 a, float_status *s)
  * is returned.
 */
 
-static int64_t round_to_int_and_pack(FloatParts in, int rmode,
+static int64_t round_to_int_and_pack(FloatParts in, int rmode, int scale,
                                      int64_t min, int64_t max,
                                      float_status *s)
 {
     uint64_t r;
     int orig_flags = get_float_exception_flags(s);
-    FloatParts p = round_to_int(in, rmode, s);
+    FloatParts p = round_to_int(in, rmode, scale, s);
 
     switch (p.cls) {
     case float_class_snan:
@@ -1469,38 +2145,158 @@ static int64_t round_to_int_and_pack(FloatParts in, int rmode,
     }
 }
 
-#define FLOAT_TO_INT(fsz, isz)                                          \
-int ## isz ## _t float ## fsz ## _to_int ## isz(float ## fsz a,         \
-                                                float_status *s)        \
-{                                                                       \
-    FloatParts p = float ## fsz ## _unpack_canonical(a, s);             \
-    return round_to_int_and_pack(p, s->float_rounding_mode,             \
-                                 INT ## isz ## _MIN, INT ## isz ## _MAX,\
-                                 s);                                    \
-}                                                                       \
-                                                                        \
-int ## isz ## _t float ## fsz ## _to_int ## isz ## _round_to_zero       \
- (float ## fsz a, float_status *s)                                      \
-{                                                                       \
-    FloatParts p = float ## fsz ## _unpack_canonical(a, s);             \
-    return round_to_int_and_pack(p, float_round_to_zero,                \
-                                 INT ## isz ## _MIN, INT ## isz ## _MAX,\
-                                 s);                                    \
+int16_t float16_to_int16_scalbn(float16 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float16_unpack_canonical(a, s),
+                                 rmode, scale, INT16_MIN, INT16_MAX, s);
 }
 
-FLOAT_TO_INT(16, 16)
-FLOAT_TO_INT(16, 32)
-FLOAT_TO_INT(16, 64)
+int32_t float16_to_int32_scalbn(float16 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float16_unpack_canonical(a, s),
+                                 rmode, scale, INT32_MIN, INT32_MAX, s);
+}
 
-FLOAT_TO_INT(32, 16)
-FLOAT_TO_INT(32, 32)
-FLOAT_TO_INT(32, 64)
+int64_t float16_to_int64_scalbn(float16 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float16_unpack_canonical(a, s),
+                                 rmode, scale, INT64_MIN, INT64_MAX, s);
+}
 
-FLOAT_TO_INT(64, 16)
-FLOAT_TO_INT(64, 32)
-FLOAT_TO_INT(64, 64)
+int16_t float32_to_int16_scalbn(float32 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float32_unpack_canonical(a, s),
+                                 rmode, scale, INT16_MIN, INT16_MAX, s);
+}
 
-#undef FLOAT_TO_INT
+int32_t float32_to_int32_scalbn(float32 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float32_unpack_canonical(a, s),
+                                 rmode, scale, INT32_MIN, INT32_MAX, s);
+}
+
+int64_t float32_to_int64_scalbn(float32 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float32_unpack_canonical(a, s),
+                                 rmode, scale, INT64_MIN, INT64_MAX, s);
+}
+
+int16_t float64_to_int16_scalbn(float64 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float64_unpack_canonical(a, s),
+                                 rmode, scale, INT16_MIN, INT16_MAX, s);
+}
+
+int32_t float64_to_int32_scalbn(float64 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float64_unpack_canonical(a, s),
+                                 rmode, scale, INT32_MIN, INT32_MAX, s);
+}
+
+int64_t float64_to_int64_scalbn(float64 a, int rmode, int scale,
+                                float_status *s)
+{
+    return round_to_int_and_pack(float64_unpack_canonical(a, s),
+                                 rmode, scale, INT64_MIN, INT64_MAX, s);
+}
+
+int16_t float16_to_int16(float16 a, float_status *s)
+{
+    return float16_to_int16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int32_t float16_to_int32(float16 a, float_status *s)
+{
+    return float16_to_int32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int64_t float16_to_int64(float16 a, float_status *s)
+{
+    return float16_to_int64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int16_t float32_to_int16(float32 a, float_status *s)
+{
+    return float32_to_int16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int32_t float32_to_int32(float32 a, float_status *s)
+{
+    return float32_to_int32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int64_t float32_to_int64(float32 a, float_status *s)
+{
+    return float32_to_int64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int16_t float64_to_int16(float64 a, float_status *s)
+{
+    return float64_to_int16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int32_t float64_to_int32(float64 a, float_status *s)
+{
+    return float64_to_int32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int64_t float64_to_int64(float64 a, float_status *s)
+{
+    return float64_to_int64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+int16_t float16_to_int16_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_int16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int32_t float16_to_int32_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_int32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int64_t float16_to_int64_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_int64_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int16_t float32_to_int16_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_int16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int32_t float32_to_int32_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_int32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int64_t float32_to_int64_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_int64_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int16_t float64_to_int16_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_int16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int32_t float64_to_int32_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_int32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+int64_t float64_to_int64_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_int64_scalbn(a, float_round_to_zero, 0, s);
+}
 
 /*
  *  Returns the result of converting the floating-point value `a' to
@@ -1515,11 +2311,12 @@ FLOAT_TO_INT(64, 64)
  *  flag.
  */
 
-static uint64_t round_to_uint_and_pack(FloatParts in, int rmode, uint64_t max,
-                                       float_status *s)
+static uint64_t round_to_uint_and_pack(FloatParts in, int rmode, int scale,
+                                       uint64_t max, float_status *s)
 {
     int orig_flags = get_float_exception_flags(s);
-    FloatParts p = round_to_int(in, rmode, s);
+    FloatParts p = round_to_int(in, rmode, scale, s);
+    uint64_t r;
 
     switch (p.cls) {
     case float_class_snan:
@@ -1532,8 +2329,6 @@ static uint64_t round_to_uint_and_pack(FloatParts in, int rmode, uint64_t max,
     case float_class_zero:
         return 0;
     case float_class_normal:
-    {
-        uint64_t r;
         if (p.sign) {
             s->float_exception_flags = orig_flags | float_flag_invalid;
             return 0;
@@ -1555,45 +2350,165 @@ static uint64_t round_to_uint_and_pack(FloatParts in, int rmode, uint64_t max,
         if (r > max) {
             s->float_exception_flags = orig_flags | float_flag_invalid;
             return max;
-        } else {
-            return r;
         }
-    }
+        return r;
     default:
         g_assert_not_reached();
     }
 }
 
-#define FLOAT_TO_UINT(fsz, isz) \
-uint ## isz ## _t float ## fsz ## _to_uint ## isz(float ## fsz a,       \
-                                                  float_status *s)      \
-{                                                                       \
-    FloatParts p = float ## fsz ## _unpack_canonical(a, s);             \
-    return round_to_uint_and_pack(p, s->float_rounding_mode,            \
-                                 UINT ## isz ## _MAX, s);               \
-}                                                                       \
-                                                                        \
-uint ## isz ## _t float ## fsz ## _to_uint ## isz ## _round_to_zero     \
- (float ## fsz a, float_status *s)                                      \
-{                                                                       \
-    FloatParts p = float ## fsz ## _unpack_canonical(a, s);             \
-    return round_to_uint_and_pack(p, float_round_to_zero,               \
-                                  UINT ## isz ## _MAX, s);              \
+uint16_t float16_to_uint16_scalbn(float16 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float16_unpack_canonical(a, s),
+                                  rmode, scale, UINT16_MAX, s);
 }
 
-FLOAT_TO_UINT(16, 16)
-FLOAT_TO_UINT(16, 32)
-FLOAT_TO_UINT(16, 64)
+uint32_t float16_to_uint32_scalbn(float16 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float16_unpack_canonical(a, s),
+                                  rmode, scale, UINT32_MAX, s);
+}
 
-FLOAT_TO_UINT(32, 16)
-FLOAT_TO_UINT(32, 32)
-FLOAT_TO_UINT(32, 64)
+uint64_t float16_to_uint64_scalbn(float16 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float16_unpack_canonical(a, s),
+                                  rmode, scale, UINT64_MAX, s);
+}
 
-FLOAT_TO_UINT(64, 16)
-FLOAT_TO_UINT(64, 32)
-FLOAT_TO_UINT(64, 64)
+uint16_t float32_to_uint16_scalbn(float32 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float32_unpack_canonical(a, s),
+                                  rmode, scale, UINT16_MAX, s);
+}
 
-#undef FLOAT_TO_UINT
+uint32_t float32_to_uint32_scalbn(float32 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float32_unpack_canonical(a, s),
+                                  rmode, scale, UINT32_MAX, s);
+}
+
+uint64_t float32_to_uint64_scalbn(float32 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float32_unpack_canonical(a, s),
+                                  rmode, scale, UINT64_MAX, s);
+}
+
+uint16_t float64_to_uint16_scalbn(float64 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float64_unpack_canonical(a, s),
+                                  rmode, scale, UINT16_MAX, s);
+}
+
+uint32_t float64_to_uint32_scalbn(float64 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float64_unpack_canonical(a, s),
+                                  rmode, scale, UINT32_MAX, s);
+}
+
+uint64_t float64_to_uint64_scalbn(float64 a, int rmode, int scale,
+                                  float_status *s)
+{
+    return round_to_uint_and_pack(float64_unpack_canonical(a, s),
+                                  rmode, scale, UINT64_MAX, s);
+}
+
+uint16_t float16_to_uint16(float16 a, float_status *s)
+{
+    return float16_to_uint16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint32_t float16_to_uint32(float16 a, float_status *s)
+{
+    return float16_to_uint32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint64_t float16_to_uint64(float16 a, float_status *s)
+{
+    return float16_to_uint64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint16_t float32_to_uint16(float32 a, float_status *s)
+{
+    return float32_to_uint16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint32_t float32_to_uint32(float32 a, float_status *s)
+{
+    return float32_to_uint32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint64_t float32_to_uint64(float32 a, float_status *s)
+{
+    return float32_to_uint64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint16_t float64_to_uint16(float64 a, float_status *s)
+{
+    return float64_to_uint16_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint32_t float64_to_uint32(float64 a, float_status *s)
+{
+    return float64_to_uint32_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint64_t float64_to_uint64(float64 a, float_status *s)
+{
+    return float64_to_uint64_scalbn(a, s->float_rounding_mode, 0, s);
+}
+
+uint16_t float16_to_uint16_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_uint16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint32_t float16_to_uint32_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_uint32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint64_t float16_to_uint64_round_to_zero(float16 a, float_status *s)
+{
+    return float16_to_uint64_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint16_t float32_to_uint16_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_uint16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint32_t float32_to_uint32_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_uint32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint64_t float32_to_uint64_round_to_zero(float32 a, float_status *s)
+{
+    return float32_to_uint64_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint16_t float64_to_uint16_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_uint16_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint32_t float64_to_uint32_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_uint32_scalbn(a, float_round_to_zero, 0, s);
+}
+
+uint64_t float64_to_uint64_round_to_zero(float64 a, float_status *s)
+{
+    return float64_to_uint64_scalbn(a, float_round_to_zero, 0, s);
+}
 
 /*
  * Integer to float conversions
@@ -1603,81 +2518,122 @@ FLOAT_TO_UINT(64, 64)
  * to the IEC/IEEE Standard for Binary Floating-Point Arithmetic.
  */
 
-static FloatParts int_to_float(int64_t a, float_status *status)
+static FloatParts int_to_float(int64_t a, int scale, float_status *status)
 {
-    FloatParts r = {};
+    FloatParts r = { .sign = false };
+
     if (a == 0) {
         r.cls = float_class_zero;
-        r.sign = false;
-    } else if (a == (1ULL << 63)) {
-        r.cls = float_class_normal;
-        r.sign = true;
-        r.frac = DECOMPOSED_IMPLICIT_BIT;
-        r.exp = 63;
     } else {
-        uint64_t f;
-        if (a < 0) {
-            f = -a;
-            r.sign = true;
-        } else {
-            f = a;
-            r.sign = false;
-        }
-        int shift = clz64(f) - 1;
+        uint64_t f = a;
+        int shift;
+
         r.cls = float_class_normal;
-        r.exp = (DECOMPOSED_BINARY_POINT - shift);
-        r.frac = f << shift;
+        if (a < 0) {
+            f = -f;
+            r.sign = true;
+        }
+        shift = clz64(f) - 1;
+        scale = MIN(MAX(scale, -0x10000), 0x10000);
+
+        r.exp = DECOMPOSED_BINARY_POINT - shift + scale;
+        r.frac = (shift < 0 ? DECOMPOSED_IMPLICIT_BIT : f << shift);
     }
 
     return r;
 }
 
+float16 int64_to_float16_scalbn(int64_t a, int scale, float_status *status)
+{
+    FloatParts pa = int_to_float(a, scale, status);
+    return float16_round_pack_canonical(pa, status);
+}
+
+float16 int32_to_float16_scalbn(int32_t a, int scale, float_status *status)
+{
+    return int64_to_float16_scalbn(a, scale, status);
+}
+
+float16 int16_to_float16_scalbn(int16_t a, int scale, float_status *status)
+{
+    return int64_to_float16_scalbn(a, scale, status);
+}
+
 float16 int64_to_float16(int64_t a, float_status *status)
 {
-    FloatParts pa = int_to_float(a, status);
-    return float16_round_pack_canonical(pa, status);
+    return int64_to_float16_scalbn(a, 0, status);
 }
 
 float16 int32_to_float16(int32_t a, float_status *status)
 {
-    return int64_to_float16(a, status);
+    return int64_to_float16_scalbn(a, 0, status);
 }
 
 float16 int16_to_float16(int16_t a, float_status *status)
 {
-    return int64_to_float16(a, status);
+    return int64_to_float16_scalbn(a, 0, status);
+}
+
+float32 int64_to_float32_scalbn(int64_t a, int scale, float_status *status)
+{
+    FloatParts pa = int_to_float(a, scale, status);
+    return float32_round_pack_canonical(pa, status);
+}
+
+float32 int32_to_float32_scalbn(int32_t a, int scale, float_status *status)
+{
+    return int64_to_float32_scalbn(a, scale, status);
+}
+
+float32 int16_to_float32_scalbn(int16_t a, int scale, float_status *status)
+{
+    return int64_to_float32_scalbn(a, scale, status);
 }
 
 float32 int64_to_float32(int64_t a, float_status *status)
 {
-    FloatParts pa = int_to_float(a, status);
-    return float32_round_pack_canonical(pa, status);
+    return int64_to_float32_scalbn(a, 0, status);
 }
 
 float32 int32_to_float32(int32_t a, float_status *status)
 {
-    return int64_to_float32(a, status);
+    return int64_to_float32_scalbn(a, 0, status);
 }
 
 float32 int16_to_float32(int16_t a, float_status *status)
 {
-    return int64_to_float32(a, status);
+    return int64_to_float32_scalbn(a, 0, status);
+}
+
+float64 int64_to_float64_scalbn(int64_t a, int scale, float_status *status)
+{
+    FloatParts pa = int_to_float(a, scale, status);
+    return float64_round_pack_canonical(pa, status);
+}
+
+float64 int32_to_float64_scalbn(int32_t a, int scale, float_status *status)
+{
+    return int64_to_float64_scalbn(a, scale, status);
+}
+
+float64 int16_to_float64_scalbn(int16_t a, int scale, float_status *status)
+{
+    return int64_to_float64_scalbn(a, scale, status);
 }
 
 float64 int64_to_float64(int64_t a, float_status *status)
 {
-    FloatParts pa = int_to_float(a, status);
-    return float64_round_pack_canonical(pa, status);
+    return int64_to_float64_scalbn(a, 0, status);
 }
 
 float64 int32_to_float64(int32_t a, float_status *status)
 {
-    return int64_to_float64(a, status);
+    return int64_to_float64_scalbn(a, 0, status);
 }
 
 float64 int16_to_float64(int16_t a, float_status *status)
 {
-    return int64_to_float64(a, status);
+    return int64_to_float64_scalbn(a, 0, status);
 }
 
 
@@ -1689,73 +2645,120 @@ float64 int16_to_float64(int16_t a, float_status *status)
  * IEC/IEEE Standard for Binary Floating-Point Arithmetic.
  */
 
-static FloatParts uint_to_float(uint64_t a, float_status *status)
+static FloatParts uint_to_float(uint64_t a, int scale, float_status *status)
 {
-    FloatParts r = { .sign = false};
+    FloatParts r = { .sign = false };
 
     if (a == 0) {
         r.cls = float_class_zero;
     } else {
-        int spare_bits = clz64(a) - 1;
+        scale = MIN(MAX(scale, -0x10000), 0x10000);
         r.cls = float_class_normal;
-        r.exp = DECOMPOSED_BINARY_POINT - spare_bits;
-        if (spare_bits < 0) {
-            shift64RightJamming(a, -spare_bits, &a);
+        if ((int64_t)a < 0) {
+            r.exp = DECOMPOSED_BINARY_POINT + 1 + scale;
+            shift64RightJamming(a, 1, &a);
             r.frac = a;
         } else {
-            r.frac = a << spare_bits;
+            int shift = clz64(a) - 1;
+            r.exp = DECOMPOSED_BINARY_POINT - shift + scale;
+            r.frac = a << shift;
         }
     }
 
     return r;
 }
 
+float16 uint64_to_float16_scalbn(uint64_t a, int scale, float_status *status)
+{
+    FloatParts pa = uint_to_float(a, scale, status);
+    return float16_round_pack_canonical(pa, status);
+}
+
+float16 uint32_to_float16_scalbn(uint32_t a, int scale, float_status *status)
+{
+    return uint64_to_float16_scalbn(a, scale, status);
+}
+
+float16 uint16_to_float16_scalbn(uint16_t a, int scale, float_status *status)
+{
+    return uint64_to_float16_scalbn(a, scale, status);
+}
+
 float16 uint64_to_float16(uint64_t a, float_status *status)
 {
-    FloatParts pa = uint_to_float(a, status);
-    return float16_round_pack_canonical(pa, status);
+    return uint64_to_float16_scalbn(a, 0, status);
 }
 
 float16 uint32_to_float16(uint32_t a, float_status *status)
 {
-    return uint64_to_float16(a, status);
+    return uint64_to_float16_scalbn(a, 0, status);
 }
 
 float16 uint16_to_float16(uint16_t a, float_status *status)
 {
-    return uint64_to_float16(a, status);
+    return uint64_to_float16_scalbn(a, 0, status);
+}
+
+float32 uint64_to_float32_scalbn(uint64_t a, int scale, float_status *status)
+{
+    FloatParts pa = uint_to_float(a, scale, status);
+    return float32_round_pack_canonical(pa, status);
+}
+
+float32 uint32_to_float32_scalbn(uint32_t a, int scale, float_status *status)
+{
+    return uint64_to_float32_scalbn(a, scale, status);
+}
+
+float32 uint16_to_float32_scalbn(uint16_t a, int scale, float_status *status)
+{
+    return uint64_to_float32_scalbn(a, scale, status);
 }
 
 float32 uint64_to_float32(uint64_t a, float_status *status)
 {
-    FloatParts pa = uint_to_float(a, status);
-    return float32_round_pack_canonical(pa, status);
+    return uint64_to_float32_scalbn(a, 0, status);
 }
 
 float32 uint32_to_float32(uint32_t a, float_status *status)
 {
-    return uint64_to_float32(a, status);
+    return uint64_to_float32_scalbn(a, 0, status);
 }
 
 float32 uint16_to_float32(uint16_t a, float_status *status)
 {
-    return uint64_to_float32(a, status);
+    return uint64_to_float32_scalbn(a, 0, status);
+}
+
+float64 uint64_to_float64_scalbn(uint64_t a, int scale, float_status *status)
+{
+    FloatParts pa = uint_to_float(a, scale, status);
+    return float64_round_pack_canonical(pa, status);
+}
+
+float64 uint32_to_float64_scalbn(uint32_t a, int scale, float_status *status)
+{
+    return uint64_to_float64_scalbn(a, scale, status);
+}
+
+float64 uint16_to_float64_scalbn(uint16_t a, int scale, float_status *status)
+{
+    return uint64_to_float64_scalbn(a, scale, status);
 }
 
 float64 uint64_to_float64(uint64_t a, float_status *status)
 {
-    FloatParts pa = uint_to_float(a, status);
-    return float64_round_pack_canonical(pa, status);
+    return uint64_to_float64_scalbn(a, 0, status);
 }
 
 float64 uint32_to_float64(uint32_t a, float_status *status)
 {
-    return uint64_to_float64(a, status);
+    return uint64_to_float64_scalbn(a, 0, status);
 }
 
 float64 uint16_to_float64(uint16_t a, float_status *status)
 {
-    return uint64_to_float64(a, status);
+    return uint64_to_float64_scalbn(a, 0, status);
 }
 
 /* Float Min/Max */
@@ -1937,27 +2940,108 @@ static int compare_floats(FloatParts a, FloatParts b, bool is_quiet,
     }
 }
 
-#define COMPARE(sz)                                                     \
-int float ## sz ## _compare(float ## sz a, float ## sz b,               \
-                            float_status *s)                            \
+#define COMPARE(name, attr, sz)                                         \
+static int attr                                                         \
+name(float ## sz a, float ## sz b, bool is_quiet, float_status *s)      \
 {                                                                       \
     FloatParts pa = float ## sz ## _unpack_canonical(a, s);             \
     FloatParts pb = float ## sz ## _unpack_canonical(b, s);             \
-    return compare_floats(pa, pb, false, s);                            \
-}                                                                       \
-int float ## sz ## _compare_quiet(float ## sz a, float ## sz b,         \
-                                  float_status *s)                      \
-{                                                                       \
-    FloatParts pa = float ## sz ## _unpack_canonical(a, s);             \
-    FloatParts pb = float ## sz ## _unpack_canonical(b, s);             \
-    return compare_floats(pa, pb, true, s);                             \
+    return compare_floats(pa, pb, is_quiet, s);                         \
 }
 
-COMPARE(16)
-COMPARE(32)
-COMPARE(64)
+COMPARE(soft_f16_compare, QEMU_FLATTEN, 16)
+COMPARE(soft_f32_compare, QEMU_SOFTFLOAT_ATTR, 32)
+COMPARE(soft_f64_compare, QEMU_SOFTFLOAT_ATTR, 64)
 
 #undef COMPARE
+
+int float16_compare(float16 a, float16 b, float_status *s)
+{
+    return soft_f16_compare(a, b, false, s);
+}
+
+int float16_compare_quiet(float16 a, float16 b, float_status *s)
+{
+    return soft_f16_compare(a, b, true, s);
+}
+
+static int QEMU_FLATTEN
+f32_compare(float32 xa, float32 xb, bool is_quiet, float_status *s)
+{
+    union_float32 ua, ub;
+
+    ua.s = xa;
+    ub.s = xb;
+
+    if (QEMU_NO_HARDFLOAT) {
+        goto soft;
+    }
+
+    float32_input_flush2(&ua.s, &ub.s, s);
+    if (isgreaterequal(ua.h, ub.h)) {
+        if (isgreater(ua.h, ub.h)) {
+            return float_relation_greater;
+        }
+        return float_relation_equal;
+    }
+    if (likely(isless(ua.h, ub.h))) {
+        return float_relation_less;
+    }
+    /* The only condition remaining is unordered.
+     * Fall through to set flags.
+     */
+ soft:
+    return soft_f32_compare(ua.s, ub.s, is_quiet, s);
+}
+
+int float32_compare(float32 a, float32 b, float_status *s)
+{
+    return f32_compare(a, b, false, s);
+}
+
+int float32_compare_quiet(float32 a, float32 b, float_status *s)
+{
+    return f32_compare(a, b, true, s);
+}
+
+static int QEMU_FLATTEN
+f64_compare(float64 xa, float64 xb, bool is_quiet, float_status *s)
+{
+    union_float64 ua, ub;
+
+    ua.s = xa;
+    ub.s = xb;
+
+    if (QEMU_NO_HARDFLOAT) {
+        goto soft;
+    }
+
+    float64_input_flush2(&ua.s, &ub.s, s);
+    if (isgreaterequal(ua.h, ub.h)) {
+        if (isgreater(ua.h, ub.h)) {
+            return float_relation_greater;
+        }
+        return float_relation_equal;
+    }
+    if (likely(isless(ua.h, ub.h))) {
+        return float_relation_less;
+    }
+    /* The only condition remaining is unordered.
+     * Fall through to set flags.
+     */
+ soft:
+    return soft_f64_compare(ua.s, ub.s, is_quiet, s);
+}
+
+int float64_compare(float64 a, float64 b, float_status *s)
+{
+    return f64_compare(a, b, false, s);
+}
+
+int float64_compare_quiet(float64 a, float64 b, float_status *s)
+{
+    return f64_compare(a, b, true, s);
+}
 
 /* Multiply A by 2 raised to the power N.  */
 static FloatParts scalbn_decomposed(FloatParts a, int n, float_status *s)
@@ -2071,25 +3155,81 @@ static FloatParts sqrt_float(FloatParts a, float_status *s, const FloatFmt *p)
     return a;
 }
 
-float16 __attribute__((flatten)) float16_sqrt(float16 a, float_status *status)
+float16 QEMU_FLATTEN float16_sqrt(float16 a, float_status *status)
 {
     FloatParts pa = float16_unpack_canonical(a, status);
     FloatParts pr = sqrt_float(pa, status, &float16_params);
     return float16_round_pack_canonical(pr, status);
 }
 
-float32 __attribute__((flatten)) float32_sqrt(float32 a, float_status *status)
+static float32 QEMU_SOFTFLOAT_ATTR
+soft_f32_sqrt(float32 a, float_status *status)
 {
     FloatParts pa = float32_unpack_canonical(a, status);
     FloatParts pr = sqrt_float(pa, status, &float32_params);
     return float32_round_pack_canonical(pr, status);
 }
 
-float64 __attribute__((flatten)) float64_sqrt(float64 a, float_status *status)
+static float64 QEMU_SOFTFLOAT_ATTR
+soft_f64_sqrt(float64 a, float_status *status)
 {
     FloatParts pa = float64_unpack_canonical(a, status);
     FloatParts pr = sqrt_float(pa, status, &float64_params);
     return float64_round_pack_canonical(pr, status);
+}
+
+float32 QEMU_FLATTEN float32_sqrt(float32 xa, float_status *s)
+{
+    union_float32 ua, ur;
+
+    ua.s = xa;
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+
+    float32_input_flush1(&ua.s, s);
+    if (QEMU_HARDFLOAT_1F32_USE_FP) {
+        if (unlikely(!(fpclassify(ua.h) == FP_NORMAL ||
+                       fpclassify(ua.h) == FP_ZERO) ||
+                     signbit(ua.h))) {
+            goto soft;
+        }
+    } else if (unlikely(!float32_is_zero_or_normal(ua.s) ||
+                        float32_is_neg(ua.s))) {
+        goto soft;
+    }
+    ur.h = sqrtf(ua.h);
+    return ur.s;
+
+ soft:
+    return soft_f32_sqrt(ua.s, s);
+}
+
+float64 QEMU_FLATTEN float64_sqrt(float64 xa, float_status *s)
+{
+    union_float64 ua, ur;
+
+    ua.s = xa;
+    if (unlikely(!can_use_fpu(s))) {
+        goto soft;
+    }
+
+    float64_input_flush1(&ua.s, s);
+    if (QEMU_HARDFLOAT_1F64_USE_FP) {
+        if (unlikely(!(fpclassify(ua.h) == FP_NORMAL ||
+                       fpclassify(ua.h) == FP_ZERO) ||
+                     signbit(ua.h))) {
+            goto soft;
+        }
+    } else if (unlikely(!float64_is_zero_or_normal(ua.s) ||
+                        float64_is_neg(ua.s))) {
+        goto soft;
+    }
+    ur.h = sqrt(ua.h);
+    return ur.s;
+
+ soft:
+    return soft_f64_sqrt(ua.s, s);
 }
 
 /*----------------------------------------------------------------------------
@@ -2128,7 +3268,7 @@ float128 float128_default_nan(float_status *status)
      */
     r.low = -(p.frac & 1);
     r.high = p.frac >> (DECOMPOSED_BINARY_POINT - 48);
-    r.high |= LIT64(0x7FFF000000000000);
+    r.high |= UINT64_C(0x7FFF000000000000);
     r.high |= (uint64_t)p.sign << 63;
 
     return r;
@@ -2165,6 +3305,55 @@ float64 float64_silence_nan(float64 a, float_status *status)
     return float64_pack_raw(p);
 }
 
+
+/*----------------------------------------------------------------------------
+| If `a' is denormal and we are in flush-to-zero mode then set the
+| input-denormal exception and return zero. Otherwise just return the value.
+*----------------------------------------------------------------------------*/
+
+static bool parts_squash_denormal(FloatParts p, float_status *status)
+{
+    if (p.exp == 0 && p.frac != 0) {
+        float_raise(float_flag_input_denormal, status);
+        return true;
+    }
+
+    return false;
+}
+
+float16 float16_squash_input_denormal(float16 a, float_status *status)
+{
+    if (status->flush_inputs_to_zero) {
+        FloatParts p = float16_unpack_raw(a);
+        if (parts_squash_denormal(p, status)) {
+            return float16_set_sign(float16_zero, p.sign);
+        }
+    }
+    return a;
+}
+
+float32 float32_squash_input_denormal(float32 a, float_status *status)
+{
+    if (status->flush_inputs_to_zero) {
+        FloatParts p = float32_unpack_raw(a);
+        if (parts_squash_denormal(p, status)) {
+            return float32_set_sign(float32_zero, p.sign);
+        }
+    }
+    return a;
+}
+
+float64 float64_squash_input_denormal(float64 a, float_status *status)
+{
+    if (status->flush_inputs_to_zero) {
+        FloatParts p = float64_unpack_raw(a);
+        if (parts_squash_denormal(p, status)) {
+            return float64_set_sign(float64_zero, p.sign);
+        }
+    }
+    return a;
+}
+
 /*----------------------------------------------------------------------------
 | Takes a 64-bit fixed-point value `absZ' with binary point between bits 6
 | and 7, and returns the properly rounded 32-bit integer corresponding to the
@@ -2199,6 +3388,9 @@ static int32_t roundAndPackInt32(flag zSign, uint64_t absZ, float_status *status
     case float_round_down:
         roundIncrement = zSign ? 0x7f : 0;
         break;
+    case float_round_to_odd:
+        roundIncrement = absZ & 0x80 ? 0 : 0x7f;
+        break;
     default:
         abort();
     }
@@ -2209,7 +3401,7 @@ static int32_t roundAndPackInt32(flag zSign, uint64_t absZ, float_status *status
     if ( zSign ) z = - z;
     if ( ( absZ>>32 ) || ( z && ( ( z < 0 ) ^ zSign ) ) ) {
         float_raise(float_flag_invalid, status);
-        return zSign ? (int32_t) 0x80000000 : 0x7FFFFFFF;
+        return zSign ? INT32_MIN : INT32_MAX;
     }
     if (roundBits) {
         status->float_exception_flags |= float_flag_inexact;
@@ -2253,6 +3445,9 @@ static int64_t roundAndPackInt64(flag zSign, uint64_t absZ0, uint64_t absZ1,
     case float_round_down:
         increment = zSign && absZ1;
         break;
+    case float_round_to_odd:
+        increment = !(absZ0 & 1) && absZ1;
+        break;
     default:
         abort();
     }
@@ -2266,9 +3461,7 @@ static int64_t roundAndPackInt64(flag zSign, uint64_t absZ0, uint64_t absZ1,
     if ( z && ( ( z < 0 ) ^ zSign ) ) {
  overflow:
         float_raise(float_flag_invalid, status);
-        return
-              zSign ? (int64_t) LIT64( 0x8000000000000000 )
-            : LIT64( 0x7FFFFFFFFFFFFFFF );
+        return zSign ? INT64_MIN : INT64_MAX;
     }
     if (absZ1) {
         status->float_exception_flags |= float_flag_inexact;
@@ -2309,6 +3502,9 @@ static int64_t roundAndPackUint64(flag zSign, uint64_t absZ0,
     case float_round_down:
         increment = zSign && absZ1;
         break;
+    case float_round_to_odd:
+        increment = !(absZ0 & 1) && absZ1;
+        break;
     default:
         abort();
     }
@@ -2316,7 +3512,7 @@ static int64_t roundAndPackUint64(flag zSign, uint64_t absZ0,
         ++absZ0;
         if (absZ0 == 0) {
             float_raise(float_flag_invalid, status);
-            return LIT64(0xFFFFFFFFFFFFFFFF);
+            return UINT64_MAX;
         }
         absZ0 &= ~(((uint64_t)(absZ1<<1) == 0) & roundNearestEven);
     }
@@ -2333,21 +3529,6 @@ static int64_t roundAndPackUint64(flag zSign, uint64_t absZ0,
 }
 
 /*----------------------------------------------------------------------------
-| If `a' is denormal and we are in flush-to-zero mode then set the
-| input-denormal exception and return zero. Otherwise just return the value.
-*----------------------------------------------------------------------------*/
-float32 float32_squash_input_denormal(float32 a, float_status *status)
-{
-    if (status->flush_inputs_to_zero) {
-        if (extractFloat32Exp(a) == 0 && extractFloat32Frac(a) != 0) {
-            float_raise(float_flag_input_denormal, status);
-            return make_float32(float32_val(a) & 0x80000000);
-        }
-    }
-    return a;
-}
-
-/*----------------------------------------------------------------------------
 | Normalizes the subnormal single-precision floating-point value represented
 | by the denormalized significand `aSig'.  The normalized exponent and
 | significand are stored at the locations pointed to by `zExpPtr' and
@@ -2359,7 +3540,7 @@ static void
 {
     int8_t shiftCount;
 
-    shiftCount = countLeadingZeros32( aSig ) - 8;
+    shiftCount = clz32(aSig) - 8;
     *zSigPtr = aSig<<shiftCount;
     *zExpPtr = 1 - shiftCount;
 
@@ -2411,6 +3592,9 @@ static float32 roundAndPackFloat32(flag zSign, int zExp, uint32_t zSig,
     case float_round_down:
         roundIncrement = zSign ? 0x7f : 0;
         break;
+    case float_round_to_odd:
+        roundIncrement = zSig & 0x80 ? 0 : 0x7f;
+        break;
     default:
         abort();
         break;
@@ -2421,8 +3605,10 @@ static float32 roundAndPackFloat32(flag zSign, int zExp, uint32_t zSig,
              || (    ( zExp == 0xFD )
                   && ( (int32_t) ( zSig + roundIncrement ) < 0 ) )
            ) {
+            bool overflow_to_inf = roundingMode != float_round_to_odd &&
+                                   roundIncrement != 0;
             float_raise(float_flag_overflow | float_flag_inexact, status);
-            return packFloat32( zSign, 0xFF, - ( roundIncrement == 0 ));
+            return packFloat32(zSign, 0xFF, -!overflow_to_inf);
         }
         if ( zExp < 0 ) {
             if (status->flush_to_zero) {
@@ -2439,6 +3625,13 @@ static float32 roundAndPackFloat32(flag zSign, int zExp, uint32_t zSig,
             roundBits = zSig & 0x7F;
             if (isTiny && roundBits) {
                 float_raise(float_flag_underflow, status);
+            }
+            if (roundingMode == float_round_to_odd) {
+                /*
+                 * For round-to-odd case, the roundIncrement depends on
+                 * zSig which just changed.
+                 */
+                roundIncrement = zSig & 0x80 ? 0 : 0x7f;
             }
         }
     }
@@ -2467,25 +3660,10 @@ static float32
 {
     int8_t shiftCount;
 
-    shiftCount = countLeadingZeros32( zSig ) - 1;
+    shiftCount = clz32(zSig) - 1;
     return roundAndPackFloat32(zSign, zExp - shiftCount, zSig<<shiftCount,
                                status);
 
-}
-
-/*----------------------------------------------------------------------------
-| If `a' is denormal and we are in flush-to-zero mode then set the
-| input-denormal exception and return zero. Otherwise just return the value.
-*----------------------------------------------------------------------------*/
-float64 float64_squash_input_denormal(float64 a, float_status *status)
-{
-    if (status->flush_inputs_to_zero) {
-        if (extractFloat64Exp(a) == 0 && extractFloat64Frac(a) != 0) {
-            float_raise(float_flag_input_denormal, status);
-            return make_float64(float64_val(a) & (1ULL << 63));
-        }
-    }
-    return a;
 }
 
 /*----------------------------------------------------------------------------
@@ -2500,7 +3678,7 @@ static void
 {
     int8_t shiftCount;
 
-    shiftCount = countLeadingZeros64( aSig ) - 11;
+    shiftCount = clz64(aSig) - 11;
     *zSigPtr = aSig<<shiftCount;
     *zExpPtr = 1 - shiftCount;
 
@@ -2597,7 +3775,7 @@ static float64 roundAndPackFloat64(flag zSign, int zExp, uint64_t zSig,
                    (status->float_detect_tininess
                     == float_tininess_before_rounding)
                 || ( zExp < -1 )
-                || ( zSig + roundIncrement < LIT64( 0x8000000000000000 ) );
+                || ( zSig + roundIncrement < UINT64_C(0x8000000000000000) );
             shift64RightJamming( zSig, - zExp, &zSig );
             zExp = 0;
             roundBits = zSig & 0x3FF;
@@ -2638,7 +3816,7 @@ static float64
 {
     int8_t shiftCount;
 
-    shiftCount = countLeadingZeros64( zSig ) - 1;
+    shiftCount = clz64(zSig) - 1;
     return roundAndPackFloat64(zSign, zExp - shiftCount, zSig<<shiftCount,
                                status);
 
@@ -2656,7 +3834,7 @@ void normalizeFloatx80Subnormal(uint64_t aSig, int32_t *zExpPtr,
 {
     int8_t shiftCount;
 
-    shiftCount = countLeadingZeros64( aSig );
+    shiftCount = clz64(aSig);
     *zSigPtr = aSig<<shiftCount;
     *zExpPtr = 1 - shiftCount;
 }
@@ -2697,12 +3875,12 @@ floatx80 roundAndPackFloatx80(int8_t roundingPrecision, flag zSign,
     roundNearestEven = ( roundingMode == float_round_nearest_even );
     if ( roundingPrecision == 80 ) goto precision80;
     if ( roundingPrecision == 64 ) {
-        roundIncrement = LIT64( 0x0000000000000400 );
-        roundMask = LIT64( 0x00000000000007FF );
+        roundIncrement = UINT64_C(0x0000000000000400);
+        roundMask = UINT64_C(0x00000000000007FF);
     }
     else if ( roundingPrecision == 32 ) {
-        roundIncrement = LIT64( 0x0000008000000000 );
-        roundMask = LIT64( 0x000000FFFFFFFFFF );
+        roundIncrement = UINT64_C(0x0000008000000000);
+        roundMask = UINT64_C(0x000000FFFFFFFFFF);
     }
     else {
         goto precision80;
@@ -2766,7 +3944,7 @@ floatx80 roundAndPackFloatx80(int8_t roundingPrecision, flag zSign,
     zSig0 += roundIncrement;
     if ( zSig0 < roundIncrement ) {
         ++zExp;
-        zSig0 = LIT64( 0x8000000000000000 );
+        zSig0 = UINT64_C(0x8000000000000000);
     }
     roundIncrement = roundMask + 1;
     if ( roundNearestEven && ( roundBits<<1 == roundIncrement ) ) {
@@ -2796,7 +3974,7 @@ floatx80 roundAndPackFloatx80(int8_t roundingPrecision, flag zSign,
     if ( 0x7FFD <= (uint32_t) ( zExp - 1 ) ) {
         if (    ( 0x7FFE < zExp )
              || (    ( zExp == 0x7FFE )
-                  && ( zSig0 == LIT64( 0xFFFFFFFFFFFFFFFF ) )
+                  && ( zSig0 == UINT64_C(0xFFFFFFFFFFFFFFFF) )
                   && increment
                 )
            ) {
@@ -2819,7 +3997,7 @@ floatx80 roundAndPackFloatx80(int8_t roundingPrecision, flag zSign,
                     == float_tininess_before_rounding)
                 || ( zExp < 0 )
                 || ! increment
-                || ( zSig0 < LIT64( 0xFFFFFFFFFFFFFFFF ) );
+                || ( zSig0 < UINT64_C(0xFFFFFFFFFFFFFFFF) );
             shift64ExtraRightJamming( zSig0, zSig1, 1 - zExp, &zSig0, &zSig1 );
             zExp = 0;
             if (isTiny && zSig1) {
@@ -2861,7 +4039,7 @@ floatx80 roundAndPackFloatx80(int8_t roundingPrecision, flag zSign,
         ++zSig0;
         if ( zSig0 == 0 ) {
             ++zExp;
-            zSig0 = LIT64( 0x8000000000000000 );
+            zSig0 = UINT64_C(0x8000000000000000);
         }
         else {
             zSig0 &= ~ ( ( (uint64_t) ( zSig1<<1 ) == 0 ) & roundNearestEven );
@@ -2895,7 +4073,7 @@ floatx80 normalizeRoundAndPackFloatx80(int8_t roundingPrecision,
         zSig1 = 0;
         zExp -= 64;
     }
-    shiftCount = countLeadingZeros64( zSig0 );
+    shiftCount = clz64(zSig0);
     shortShift128Left( zSig0, zSig1, shiftCount, &zSig0, &zSig1 );
     zExp -= shiftCount;
     return roundAndPackFloatx80(roundingPrecision, zSign, zExp,
@@ -2923,7 +4101,7 @@ static inline uint64_t extractFloat128Frac1( float128 a )
 static inline uint64_t extractFloat128Frac0( float128 a )
 {
 
-    return a.high & LIT64( 0x0000FFFFFFFFFFFF );
+    return a.high & UINT64_C(0x0000FFFFFFFFFFFF);
 
 }
 
@@ -2972,7 +4150,7 @@ static void
     int8_t shiftCount;
 
     if ( aSig0 == 0 ) {
-        shiftCount = countLeadingZeros64( aSig1 ) - 15;
+        shiftCount = clz64(aSig1) - 15;
         if ( shiftCount < 0 ) {
             *zSig0Ptr = aSig1>>( - shiftCount );
             *zSig1Ptr = aSig1<<( shiftCount & 63 );
@@ -2984,7 +4162,7 @@ static void
         *zExpPtr = - shiftCount - 63;
     }
     else {
-        shiftCount = countLeadingZeros64( aSig0 ) - 15;
+        shiftCount = clz64(aSig0) - 15;
         shortShift128Left( aSig0, aSig1, shiftCount, zSig0Ptr, zSig1Ptr );
         *zExpPtr = 1 - shiftCount;
     }
@@ -3069,8 +4247,8 @@ static float128 roundAndPackFloat128(flag zSign, int32_t zExp,
         if (    ( 0x7FFD < zExp )
              || (    ( zExp == 0x7FFD )
                   && eq128(
-                         LIT64( 0x0001FFFFFFFFFFFF ),
-                         LIT64( 0xFFFFFFFFFFFFFFFF ),
+                         UINT64_C(0x0001FFFFFFFFFFFF),
+                         UINT64_C(0xFFFFFFFFFFFFFFFF),
                          zSig0,
                          zSig1
                      )
@@ -3087,8 +4265,8 @@ static float128 roundAndPackFloat128(flag zSign, int32_t zExp,
                     packFloat128(
                         zSign,
                         0x7FFE,
-                        LIT64( 0x0000FFFFFFFFFFFF ),
-                        LIT64( 0xFFFFFFFFFFFFFFFF )
+                        UINT64_C(0x0000FFFFFFFFFFFF),
+                        UINT64_C(0xFFFFFFFFFFFFFFFF)
                     );
             }
             return packFloat128( zSign, 0x7FFF, 0, 0 );
@@ -3106,8 +4284,8 @@ static float128 roundAndPackFloat128(flag zSign, int32_t zExp,
                 || lt128(
                        zSig0,
                        zSig1,
-                       LIT64( 0x0001FFFFFFFFFFFF ),
-                       LIT64( 0xFFFFFFFFFFFFFFFF )
+                       UINT64_C(0x0001FFFFFFFFFFFF),
+                       UINT64_C(0xFFFFFFFFFFFFFFFF)
                    );
             shift128ExtraRightJamming(
                 zSig0, zSig1, zSig2, - zExp, &zSig0, &zSig1, &zSig2 );
@@ -3173,7 +4351,7 @@ static float128 normalizeRoundAndPackFloat128(flag zSign, int32_t zExp,
         zSig1 = 0;
         zExp -= 64;
     }
-    shiftCount = countLeadingZeros64( zSig0 ) - 15;
+    shiftCount = clz64(zSig0) - 15;
     if ( 0 <= shiftCount ) {
         zSig2 = 0;
         shortShift128Left( zSig0, zSig1, shiftCount, &zSig0, &zSig1 );
@@ -3205,7 +4383,7 @@ floatx80 int32_to_floatx80(int32_t a, float_status *status)
     if ( a == 0 ) return packFloatx80( 0, 0, 0 );
     zSign = ( a < 0 );
     absA = zSign ? - a : a;
-    shiftCount = countLeadingZeros32( absA ) + 32;
+    shiftCount = clz32(absA) + 32;
     zSig = absA;
     return packFloatx80( zSign, 0x403E - shiftCount, zSig<<shiftCount );
 
@@ -3227,7 +4405,7 @@ float128 int32_to_float128(int32_t a, float_status *status)
     if ( a == 0 ) return packFloat128( 0, 0, 0, 0 );
     zSign = ( a < 0 );
     absA = zSign ? - a : a;
-    shiftCount = countLeadingZeros32( absA ) + 17;
+    shiftCount = clz32(absA) + 17;
     zSig0 = absA;
     return packFloat128( zSign, 0x402E - shiftCount, zSig0<<shiftCount, 0 );
 
@@ -3249,7 +4427,7 @@ floatx80 int64_to_floatx80(int64_t a, float_status *status)
     if ( a == 0 ) return packFloatx80( 0, 0, 0 );
     zSign = ( a < 0 );
     absA = zSign ? - a : a;
-    shiftCount = countLeadingZeros64( absA );
+    shiftCount = clz64(absA);
     return packFloatx80( zSign, 0x403E - shiftCount, absA<<shiftCount );
 
 }
@@ -3271,7 +4449,7 @@ float128 int64_to_float128(int64_t a, float_status *status)
     if ( a == 0 ) return packFloat128( 0, 0, 0, 0 );
     zSign = ( a < 0 );
     absA = zSign ? - a : a;
-    shiftCount = countLeadingZeros64( absA ) + 49;
+    shiftCount = clz64(absA) + 49;
     zExp = 0x406E - shiftCount;
     if ( 64 <= shiftCount ) {
         zSig1 = 0;
@@ -3820,21 +4998,6 @@ int float32_unordered_quiet(float32 a, float32 b, float_status *status)
 }
 
 /*----------------------------------------------------------------------------
-| If `a' is denormal and we are in flush-to-zero mode then set the
-| input-denormal exception and return zero. Otherwise just return the value.
-*----------------------------------------------------------------------------*/
-float16 float16_squash_input_denormal(float16 a, float_status *status)
-{
-    if (status->flush_inputs_to_zero) {
-        if (extractFloat16Exp(a) == 0 && extractFloat16Frac(a) != 0) {
-            float_raise(float_flag_input_denormal, status);
-            return make_float16(float16_val(a) & 0x8000);
-        }
-    }
-    return a;
-}
-
-/*----------------------------------------------------------------------------
 | Returns the result of converting the double-precision floating-point value
 | `a' to the extended double-precision floating-point format.  The conversion
 | is performed according to the IEC/IEEE Standard for Binary Floating-Point
@@ -3865,7 +5028,7 @@ floatx80 float64_to_floatx80(float64 a, float_status *status)
     }
     return
         packFloatx80(
-            aSign, aExp + 0x3C00, ( aSig | LIT64( 0x0010000000000000 ) )<<11 );
+            aSign, aExp + 0x3C00, (aSig | UINT64_C(0x0010000000000000)) << 11);
 
 }
 
@@ -3949,8 +5112,8 @@ float64 float64_rem(float64 a, float64 b, float_status *status)
         normalizeFloat64Subnormal( aSig, &aExp, &aSig );
     }
     expDiff = aExp - bExp;
-    aSig = ( aSig | LIT64( 0x0010000000000000 ) )<<11;
-    bSig = ( bSig | LIT64( 0x0010000000000000 ) )<<11;
+    aSig = (aSig | UINT64_C(0x0010000000000000)) << 11;
+    bSig = (bSig | UINT64_C(0x0010000000000000)) << 11;
     if ( expDiff < 0 ) {
         if ( expDiff < -1 ) return a;
         aSig >>= 1;
@@ -4023,13 +5186,13 @@ float64 float64_log2(float64 a, float_status *status)
     }
 
     aExp -= 0x3FF;
-    aSig |= LIT64( 0x0010000000000000 );
+    aSig |= UINT64_C(0x0010000000000000);
     zSign = aExp < 0;
     zSig = (uint64_t)aExp << 52;
     for (i = 1LL << 51; i > 0; i >>= 1) {
         mul64To128( aSig, aSig, &aSig0, &aSig1 );
         aSig = ( aSig0 << 12 ) | ( aSig1 >> 52 );
-        if ( aSig & LIT64( 0x0020000000000000 ) ) {
+        if ( aSig & UINT64_C(0x0020000000000000) ) {
             aSig >>= 1;
             zSig |= i;
         }
@@ -4370,9 +5533,9 @@ int64_t floatx80_to_int64(floatx80 a, float_status *status)
         if ( shiftCount ) {
             float_raise(float_flag_invalid, status);
             if (!aSign || floatx80_is_any_nan(a)) {
-                return LIT64( 0x7FFFFFFFFFFFFFFF );
+                return INT64_MAX;
             }
-            return (int64_t) LIT64( 0x8000000000000000 );
+            return INT64_MIN;
         }
         aSigExtra = 0;
     }
@@ -4409,14 +5572,14 @@ int64_t floatx80_to_int64_round_to_zero(floatx80 a, float_status *status)
     aSign = extractFloatx80Sign( a );
     shiftCount = aExp - 0x403E;
     if ( 0 <= shiftCount ) {
-        aSig &= LIT64( 0x7FFFFFFFFFFFFFFF );
+        aSig &= UINT64_C(0x7FFFFFFFFFFFFFFF);
         if ( ( a.high != 0xC03E ) || aSig ) {
             float_raise(float_flag_invalid, status);
             if ( ! aSign || ( ( aExp == 0x7FFF ) && aSig ) ) {
-                return LIT64( 0x7FFFFFFFFFFFFFFF );
+                return INT64_MAX;
             }
         }
-        return (int64_t) LIT64( 0x8000000000000000 );
+        return INT64_MIN;
     }
     else if ( aExp < 0x3FFF ) {
         if (aExp | aSig) {
@@ -4578,23 +5741,23 @@ floatx80 floatx80_round_to_int(floatx80 a, float_status *status)
             if ( ( aExp == 0x3FFE ) && (uint64_t) ( extractFloatx80Frac( a )<<1 )
                ) {
                 return
-                    packFloatx80( aSign, 0x3FFF, LIT64( 0x8000000000000000 ) );
+                    packFloatx80( aSign, 0x3FFF, UINT64_C(0x8000000000000000));
             }
             break;
         case float_round_ties_away:
             if (aExp == 0x3FFE) {
-                return packFloatx80(aSign, 0x3FFF, LIT64(0x8000000000000000));
+                return packFloatx80(aSign, 0x3FFF, UINT64_C(0x8000000000000000));
             }
             break;
          case float_round_down:
             return
                   aSign ?
-                      packFloatx80( 1, 0x3FFF, LIT64( 0x8000000000000000 ) )
+                      packFloatx80( 1, 0x3FFF, UINT64_C(0x8000000000000000))
                 : packFloatx80( 0, 0, 0 );
          case float_round_up:
             return
                   aSign ? packFloatx80( 1, 0, 0 )
-                : packFloatx80( 0, 0x3FFF, LIT64( 0x8000000000000000 ) );
+                : packFloatx80( 0, 0x3FFF, UINT64_C(0x8000000000000000));
         }
         return packFloatx80( aSign, 0, 0 );
     }
@@ -4630,7 +5793,7 @@ floatx80 floatx80_round_to_int(floatx80 a, float_status *status)
     z.low &= ~ roundBitsMask;
     if ( z.low == 0 ) {
         ++z.high;
-        z.low = LIT64( 0x8000000000000000 );
+        z.low = UINT64_C(0x8000000000000000);
     }
     if (z.low != a.low) {
         status->float_exception_flags |= float_flag_inexact;
@@ -4703,7 +5866,7 @@ static floatx80 addFloatx80Sigs(floatx80 a, floatx80 b, flag zSign,
     if ( (int64_t) zSig0 < 0 ) goto roundAndPack;
  shiftRight1:
     shift64ExtraRightJamming( zSig0, zSig1, 1, &zSig0, &zSig1 );
-    zSig0 |= LIT64( 0x8000000000000000 );
+    zSig0 |= UINT64_C(0x8000000000000000);
     ++zExp;
  roundAndPack:
     return roundAndPackFloatx80(status->floatx80_rounding_precision,
@@ -5025,7 +6188,7 @@ floatx80 floatx80_rem(floatx80 a, floatx80 b, float_status *status)
         if ( (uint64_t) ( aSig0<<1 ) == 0 ) return a;
         normalizeFloatx80Subnormal( aSig0, &aExp, &aSig0 );
     }
-    bSig |= LIT64( 0x8000000000000000 );
+    bSig |= UINT64_C(0x8000000000000000);
     zSign = aSign;
     expDiff = aExp - bExp;
     aSig1 = 0;
@@ -5127,7 +6290,7 @@ floatx80 floatx80_sqrt(floatx80 a, float_status *status)
         add128( rem0, rem1, zSig0>>63, doubleZSig0 | 1, &rem0, &rem1 );
     }
     zSig1 = estimateDiv128To64( rem1, 0, doubleZSig0 );
-    if ( ( zSig1 & LIT64( 0x3FFFFFFFFFFFFFFF ) ) <= 5 ) {
+    if ( ( zSig1 & UINT64_C(0x3FFFFFFFFFFFFFFF) ) <= 5 ) {
         if ( zSig1 == 0 ) zSig1 = 1;
         mul64To128( doubleZSig0, zSig1, &term1, &term2 );
         sub128( rem1, 0, term1, term2, &rem1, &rem2 );
@@ -5426,7 +6589,7 @@ int32_t float128_to_int32(float128 a, float_status *status)
     aExp = extractFloat128Exp( a );
     aSign = extractFloat128Sign( a );
     if ( ( aExp == 0x7FFF ) && ( aSig0 | aSig1 ) ) aSign = 0;
-    if ( aExp ) aSig0 |= LIT64( 0x0001000000000000 );
+    if ( aExp ) aSig0 |= UINT64_C(0x0001000000000000);
     aSig0 |= ( aSig1 != 0 );
     shiftCount = 0x4028 - aExp;
     if ( 0 < shiftCount ) shift64RightJamming( aSig0, shiftCount, &aSig0 );
@@ -5466,7 +6629,7 @@ int32_t float128_to_int32_round_to_zero(float128 a, float_status *status)
         }
         return 0;
     }
-    aSig0 |= LIT64( 0x0001000000000000 );
+    aSig0 |= UINT64_C(0x0001000000000000);
     shiftCount = 0x402F - aExp;
     savedASig = aSig0;
     aSig0 >>= shiftCount;
@@ -5475,7 +6638,7 @@ int32_t float128_to_int32_round_to_zero(float128 a, float_status *status)
     if ( ( z < 0 ) ^ aSign ) {
  invalid:
         float_raise(float_flag_invalid, status);
-        return aSign ? (int32_t) 0x80000000 : 0x7FFFFFFF;
+        return aSign ? INT32_MIN : INT32_MAX;
     }
     if ( ( aSig0<<shiftCount ) != savedASig ) {
         status->float_exception_flags |= float_flag_inexact;
@@ -5504,19 +6667,19 @@ int64_t float128_to_int64(float128 a, float_status *status)
     aSig0 = extractFloat128Frac0( a );
     aExp = extractFloat128Exp( a );
     aSign = extractFloat128Sign( a );
-    if ( aExp ) aSig0 |= LIT64( 0x0001000000000000 );
+    if ( aExp ) aSig0 |= UINT64_C(0x0001000000000000);
     shiftCount = 0x402F - aExp;
     if ( shiftCount <= 0 ) {
         if ( 0x403E < aExp ) {
             float_raise(float_flag_invalid, status);
             if (    ! aSign
                  || (    ( aExp == 0x7FFF )
-                      && ( aSig1 || ( aSig0 != LIT64( 0x0001000000000000 ) ) )
+                      && ( aSig1 || ( aSig0 != UINT64_C(0x0001000000000000) ) )
                     )
                ) {
-                return LIT64( 0x7FFFFFFFFFFFFFFF );
+                return INT64_MAX;
             }
-            return (int64_t) LIT64( 0x8000000000000000 );
+            return INT64_MIN;
         }
         shortShift128Left( aSig0, aSig1, - shiftCount, &aSig0, &aSig1 );
     }
@@ -5548,13 +6711,13 @@ int64_t float128_to_int64_round_to_zero(float128 a, float_status *status)
     aSig0 = extractFloat128Frac0( a );
     aExp = extractFloat128Exp( a );
     aSign = extractFloat128Sign( a );
-    if ( aExp ) aSig0 |= LIT64( 0x0001000000000000 );
+    if ( aExp ) aSig0 |= UINT64_C(0x0001000000000000);
     shiftCount = aExp - 0x402F;
     if ( 0 < shiftCount ) {
         if ( 0x403E <= aExp ) {
-            aSig0 &= LIT64( 0x0000FFFFFFFFFFFF );
-            if (    ( a.high == LIT64( 0xC03E000000000000 ) )
-                 && ( aSig1 < LIT64( 0x0002000000000000 ) ) ) {
+            aSig0 &= UINT64_C(0x0000FFFFFFFFFFFF);
+            if (    ( a.high == UINT64_C(0xC03E000000000000) )
+                 && ( aSig1 < UINT64_C(0x0002000000000000) ) ) {
                 if (aSig1) {
                     status->float_exception_flags |= float_flag_inexact;
                 }
@@ -5562,10 +6725,10 @@ int64_t float128_to_int64_round_to_zero(float128 a, float_status *status)
             else {
                 float_raise(float_flag_invalid, status);
                 if ( ! aSign || ( ( aExp == 0x7FFF ) && ( aSig0 | aSig1 ) ) ) {
-                    return LIT64( 0x7FFFFFFFFFFFFFFF );
+                    return INT64_MAX;
                 }
             }
-            return (int64_t) LIT64( 0x8000000000000000 );
+            return INT64_MIN;
         }
         z = ( aSig0<<shiftCount ) | ( aSig1>>( ( - shiftCount ) & 63 ) );
         if ( (uint64_t) ( aSig1<<shiftCount ) ) {
@@ -5616,19 +6779,19 @@ uint64_t float128_to_uint64(float128 a, float_status *status)
     if (aSign && (aExp > 0x3FFE)) {
         float_raise(float_flag_invalid, status);
         if (float128_is_any_nan(a)) {
-            return LIT64(0xFFFFFFFFFFFFFFFF);
+            return UINT64_MAX;
         } else {
             return 0;
         }
     }
     if (aExp) {
-        aSig0 |= LIT64(0x0001000000000000);
+        aSig0 |= UINT64_C(0x0001000000000000);
     }
     shiftCount = 0x402F - aExp;
     if (shiftCount <= 0) {
         if (0x403E < aExp) {
             float_raise(float_flag_invalid, status);
-            return LIT64(0xFFFFFFFFFFFFFFFF);
+            return UINT64_MAX;
         }
         shortShift128Left(aSig0, aSig1, -shiftCount, &aSig0, &aSig1);
     } else {
@@ -5667,6 +6830,35 @@ uint32_t float128_to_uint32_round_to_zero(float128 a, float_status *status)
     int old_exc_flags = get_float_exception_flags(status);
 
     v = float128_to_uint64_round_to_zero(a, status);
+    if (v > 0xffffffff) {
+        res = 0xffffffff;
+    } else {
+        return v;
+    }
+    set_float_exception_flags(old_exc_flags, status);
+    float_raise(float_flag_invalid, status);
+    return res;
+}
+
+/*----------------------------------------------------------------------------
+| Returns the result of converting the quadruple-precision floating-point value
+| `a' to the 32-bit unsigned integer format.  The conversion is
+| performed according to the IEC/IEEE Standard for Binary Floating-Point
+| Arithmetic---which means in particular that the conversion is rounded
+| according to the current rounding mode.  If `a' is a NaN, the largest
+| positive integer is returned.  If the conversion overflows, the
+| largest unsigned integer is returned.  If 'a' is negative, the value is
+| rounded and zero is returned; negative values that do not round to zero
+| will raise the inexact exception.
+*----------------------------------------------------------------------------*/
+
+uint32_t float128_to_uint32(float128 a, float_status *status)
+{
+    uint64_t v;
+    uint32_t res;
+    int old_exc_flags = get_float_exception_flags(status);
+
+    v = float128_to_uint64(a, status);
     if (v > 0xffffffff) {
         res = 0xffffffff;
     } else {
@@ -5738,7 +6930,7 @@ float64 float128_to_float64(float128 a, float_status *status)
     shortShift128Left( aSig0, aSig1, 14, &aSig0, &aSig1 );
     aSig0 |= ( aSig1 != 0 );
     if ( aExp || aSig0 ) {
-        aSig0 |= LIT64( 0x4000000000000000 );
+        aSig0 |= UINT64_C(0x4000000000000000);
         aExp -= 0x3C01;
     }
     return roundAndPackFloat64(aSign, aExp, aSig0, status);
@@ -5774,7 +6966,7 @@ floatx80 float128_to_floatx80(float128 a, float_status *status)
         normalizeFloat128Subnormal( aSig0, aSig1, &aExp, &aSig0, &aSig1 );
     }
     else {
-        aSig0 |= LIT64( 0x0001000000000000 );
+        aSig0 |= UINT64_C(0x0001000000000000);
     }
     shortShift128Left( aSig0, aSig1, 15, &aSig0, &aSig1 );
     return roundAndPackFloatx80(80, aSign, aExp, aSig0, aSig1, status);
@@ -5843,6 +7035,15 @@ float128 float128_round_to_int(float128 a, float_status *status)
                 add128(z.high, z.low, 0, roundBitsMask, &z.high, &z.low);
             }
             break;
+        case float_round_to_odd:
+            /*
+             * Note that if lastBitMask == 0, the last bit is the lsb
+             * of high, and roundBitsMask == -1.
+             */
+            if ((lastBitMask ? z.low & lastBitMask : z.high & 1) == 0) {
+                add128(z.high, z.low, 0, roundBitsMask, &z.high, &z.low);
+            }
+            break;
         default:
             abort();
         }
@@ -5854,7 +7055,7 @@ float128 float128_round_to_int(float128 a, float_status *status)
             status->float_exception_flags |= float_flag_inexact;
             aSign = extractFloat128Sign( a );
             switch (status->float_rounding_mode) {
-             case float_round_nearest_even:
+            case float_round_nearest_even:
                 if (    ( aExp == 0x3FFE )
                      && (   extractFloat128Frac0( a )
                           | extractFloat128Frac1( a ) )
@@ -5867,14 +7068,17 @@ float128 float128_round_to_int(float128 a, float_status *status)
                     return packFloat128(aSign, 0x3FFF, 0, 0);
                 }
                 break;
-             case float_round_down:
+            case float_round_down:
                 return
                       aSign ? packFloat128( 1, 0x3FFF, 0, 0 )
                     : packFloat128( 0, 0, 0, 0 );
-             case float_round_up:
+            case float_round_up:
                 return
                       aSign ? packFloat128( 1, 0, 0, 0 )
                     : packFloat128( 0, 0x3FFF, 0, 0 );
+
+            case float_round_to_odd:
+                return packFloat128(aSign, 0x3FFF, 0, 0);
             }
             return packFloat128( aSign, 0, 0, 0 );
         }
@@ -5903,6 +7107,12 @@ float128 float128_round_to_int(float128 a, float_status *status)
             break;
         case float_round_down:
             if (extractFloat128Sign(z)) {
+                z.high |= (a.low != 0);
+                z.high += roundBitsMask;
+            }
+            break;
+        case float_round_to_odd:
+            if ((z.high & lastBitMask) == 0) {
                 z.high |= (a.low != 0);
                 z.high += roundBitsMask;
             }
@@ -5952,7 +7162,7 @@ static float128 addFloat128Sigs(float128 a, float128 b, flag zSign,
             --expDiff;
         }
         else {
-            bSig0 |= LIT64( 0x0001000000000000 );
+            bSig0 |= UINT64_C(0x0001000000000000);
         }
         shift128ExtraRightJamming(
             bSig0, bSig1, 0, expDiff, &bSig0, &bSig1, &zSig2 );
@@ -5969,7 +7179,7 @@ static float128 addFloat128Sigs(float128 a, float128 b, flag zSign,
             ++expDiff;
         }
         else {
-            aSig0 |= LIT64( 0x0001000000000000 );
+            aSig0 |= UINT64_C(0x0001000000000000);
         }
         shift128ExtraRightJamming(
             aSig0, aSig1, 0, - expDiff, &aSig0, &aSig1, &zSig2 );
@@ -5993,14 +7203,14 @@ static float128 addFloat128Sigs(float128 a, float128 b, flag zSign,
             return packFloat128( zSign, 0, zSig0, zSig1 );
         }
         zSig2 = 0;
-        zSig0 |= LIT64( 0x0002000000000000 );
+        zSig0 |= UINT64_C(0x0002000000000000);
         zExp = aExp;
         goto shiftRight1;
     }
-    aSig0 |= LIT64( 0x0001000000000000 );
+    aSig0 |= UINT64_C(0x0001000000000000);
     add128( aSig0, aSig1, bSig0, bSig1, &zSig0, &zSig1 );
     --zExp;
-    if ( zSig0 < LIT64( 0x0002000000000000 ) ) goto roundAndPack;
+    if ( zSig0 < UINT64_C(0x0002000000000000) ) goto roundAndPack;
     ++zExp;
  shiftRight1:
     shift128ExtraRightJamming(
@@ -6064,10 +7274,10 @@ static float128 subFloat128Sigs(float128 a, float128 b, flag zSign,
         ++expDiff;
     }
     else {
-        aSig0 |= LIT64( 0x4000000000000000 );
+        aSig0 |= UINT64_C(0x4000000000000000);
     }
     shift128RightJamming( aSig0, aSig1, - expDiff, &aSig0, &aSig1 );
-    bSig0 |= LIT64( 0x4000000000000000 );
+    bSig0 |= UINT64_C(0x4000000000000000);
  bBigger:
     sub128( bSig0, bSig1, aSig0, aSig1, &zSig0, &zSig1 );
     zExp = bExp;
@@ -6084,10 +7294,10 @@ static float128 subFloat128Sigs(float128 a, float128 b, flag zSign,
         --expDiff;
     }
     else {
-        bSig0 |= LIT64( 0x4000000000000000 );
+        bSig0 |= UINT64_C(0x4000000000000000);
     }
     shift128RightJamming( bSig0, bSig1, expDiff, &bSig0, &bSig1 );
-    aSig0 |= LIT64( 0x4000000000000000 );
+    aSig0 |= UINT64_C(0x4000000000000000);
  aBigger:
     sub128( aSig0, aSig1, bSig0, bSig1, &zSig0, &zSig1 );
     zExp = aExp;
@@ -6189,12 +7399,12 @@ float128 float128_mul(float128 a, float128 b, float_status *status)
         normalizeFloat128Subnormal( bSig0, bSig1, &bExp, &bSig0, &bSig1 );
     }
     zExp = aExp + bExp - 0x4000;
-    aSig0 |= LIT64( 0x0001000000000000 );
+    aSig0 |= UINT64_C(0x0001000000000000);
     shortShift128Left( bSig0, bSig1, 16, &bSig0, &bSig1 );
     mul128To256( aSig0, aSig1, bSig0, bSig1, &zSig0, &zSig1, &zSig2, &zSig3 );
     add128( zSig0, zSig1, aSig0, aSig1, &zSig0, &zSig1 );
     zSig2 |= ( zSig3 != 0 );
-    if ( LIT64( 0x0002000000000000 ) <= zSig0 ) {
+    if (UINT64_C( 0x0002000000000000) <= zSig0 ) {
         shift128ExtraRightJamming(
             zSig0, zSig1, zSig2, 1, &zSig0, &zSig1, &zSig2 );
         ++zExp;
@@ -6261,9 +7471,9 @@ float128 float128_div(float128 a, float128 b, float_status *status)
     }
     zExp = aExp - bExp + 0x3FFD;
     shortShift128Left(
-        aSig0 | LIT64( 0x0001000000000000 ), aSig1, 15, &aSig0, &aSig1 );
+        aSig0 | UINT64_C(0x0001000000000000), aSig1, 15, &aSig0, &aSig1 );
     shortShift128Left(
-        bSig0 | LIT64( 0x0001000000000000 ), bSig1, 15, &bSig0, &bSig1 );
+        bSig0 | UINT64_C(0x0001000000000000), bSig1, 15, &bSig0, &bSig1 );
     if ( le128( bSig0, bSig1, aSig0, aSig1 ) ) {
         shift128Right( aSig0, aSig1, 1, &aSig0, &aSig1 );
         ++zExp;
@@ -6339,14 +7549,14 @@ float128 float128_rem(float128 a, float128 b, float_status *status)
     expDiff = aExp - bExp;
     if ( expDiff < -1 ) return a;
     shortShift128Left(
-        aSig0 | LIT64( 0x0001000000000000 ),
+        aSig0 | UINT64_C(0x0001000000000000),
         aSig1,
         15 - ( expDiff < 0 ),
         &aSig0,
         &aSig1
     );
     shortShift128Left(
-        bSig0 | LIT64( 0x0001000000000000 ), bSig1, 15, &bSig0, &bSig1 );
+        bSig0 | UINT64_C(0x0001000000000000), bSig1, 15, &bSig0, &bSig1 );
     q = le128( bSig0, bSig1, aSig0, aSig1 );
     if ( q ) sub128( aSig0, aSig1, bSig0, bSig1, &aSig0, &aSig1 );
     expDiff -= 64;
@@ -6432,7 +7642,7 @@ float128 float128_sqrt(float128 a, float_status *status)
         normalizeFloat128Subnormal( aSig0, aSig1, &aExp, &aSig0, &aSig1 );
     }
     zExp = ( ( aExp - 0x3FFF )>>1 ) + 0x3FFE;
-    aSig0 |= LIT64( 0x0001000000000000 );
+    aSig0 |= UINT64_C(0x0001000000000000);
     zSig0 = estimateSqrt32( aExp, aSig0>>17 );
     shortShift128Left( aSig0, aSig1, 13 - ( aExp & 1 ), &aSig0, &aSig1 );
     zSig0 = estimateDiv128To64( aSig0, aSig1, zSig0<<32 ) + ( zSig0<<30 );
@@ -6853,7 +8063,7 @@ float128 float128_scalbn(float128 a, int n, float_status *status)
         return a;
     }
     if (aExp != 0) {
-        aSig0 |= LIT64( 0x0001000000000000 );
+        aSig0 |= UINT64_C(0x0001000000000000);
     } else if (aSig0 == 0 && aSig1 == 0) {
         return a;
     } else {
@@ -6870,4 +8080,25 @@ float128 float128_scalbn(float128 a, int n, float_status *status)
     return normalizeRoundAndPackFloat128( aSign, aExp, aSig0, aSig1
                                          , status);
 
+}
+
+static void __attribute__((constructor)) softfloat_init(void)
+{
+    union_float64 ua, ub, uc, ur;
+
+    if (QEMU_NO_HARDFLOAT) {
+        return;
+    }
+    /*
+     * Test that the host's FMA is not obviously broken. For example,
+     * glibc < 2.23 can perform an incorrect FMA on certain hosts; see
+     *   https://sourceware.org/bugzilla/show_bug.cgi?id=13304
+     */
+    ua.s = 0x0020000000000001ULL;
+    ub.s = 0x3ca0000000000000ULL;
+    uc.s = 0x0020000000000000ULL;
+    ur.h = fma(ua.h, ub.h, uc.h);
+    if (ur.s != 0x0020000000000001ULL) {
+        force_soft_fma = true;
+    }
 }

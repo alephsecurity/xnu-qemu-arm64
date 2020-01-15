@@ -18,26 +18,43 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "hw/sysbus.h"
 #include "chardev/char.h"
 #include "chardev/char-fe.h"
-#include "target/riscv/cpu.h"
+#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/riscv/sifive_uart.h"
 
 /*
  * Not yet implemented:
  *
  * Transmit FIFO using "qemu/fifo8.h"
- * SIFIVE_UART_IE_TXWM interrupts
- * SIFIVE_UART_IE_RXWM interrupts must honor fifo watermark
- * Rx FIFO watermark interrupt trigger threshold
- * Tx FIFO watermark interrupt trigger threshold.
  */
+
+/* Returns the state of the IP (interrupt pending) register */
+static uint64_t uart_ip(SiFiveUARTState *s)
+{
+    uint64_t ret = 0;
+
+    uint64_t txcnt = SIFIVE_UART_GET_TXCNT(s->txctrl);
+    uint64_t rxcnt = SIFIVE_UART_GET_RXCNT(s->rxctrl);
+
+    if (txcnt != 0) {
+        ret |= SIFIVE_UART_IP_TXWM;
+    }
+    if (s->rx_fifo_len > rxcnt) {
+        ret |= SIFIVE_UART_IP_RXWM;
+    }
+
+    return ret;
+}
 
 static void update_irq(SiFiveUARTState *s)
 {
     int cond = 0;
-    if ((s->ie & SIFIVE_UART_IE_RXWM) && s->rx_fifo_len) {
+    if ((s->ie & SIFIVE_UART_IE_TXWM) ||
+        ((s->ie & SIFIVE_UART_IE_RXWM) && s->rx_fifo_len)) {
         cond = 1;
     }
     if (cond) {
@@ -69,7 +86,7 @@ uart_read(void *opaque, hwaddr addr, unsigned int size)
     case SIFIVE_UART_IE:
         return s->ie;
     case SIFIVE_UART_IP:
-        return s->rx_fifo_len ? SIFIVE_UART_IP_RXWM : 0;
+        return uart_ip(s);
     case SIFIVE_UART_TXCTRL:
         return s->txctrl;
     case SIFIVE_UART_RXCTRL:
@@ -78,8 +95,8 @@ uart_read(void *opaque, hwaddr addr, unsigned int size)
         return s->div;
     }
 
-    hw_error("%s: bad read: addr=0x%x\n",
-        __func__, (int)addr);
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: bad read: addr=0x%x\n",
+                  __func__, (int)addr);
     return 0;
 }
 
@@ -94,6 +111,7 @@ uart_write(void *opaque, hwaddr addr,
     switch (addr) {
     case SIFIVE_UART_TXFIFO:
         qemu_chr_fe_write(&s->chr, &ch, 1);
+        update_irq(s);
         return;
     case SIFIVE_UART_IE:
         s->ie = val64;
@@ -109,8 +127,8 @@ uart_write(void *opaque, hwaddr addr,
         s->div = val64;
         return;
     }
-    hw_error("%s: bad write: addr=0x%x v=0x%x\n",
-        __func__, (int)addr, (int)value);
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: bad write: addr=0x%x v=0x%x\n",
+                  __func__, (int)addr, (int)value);
 }
 
 static const MemoryRegionOps uart_ops = {

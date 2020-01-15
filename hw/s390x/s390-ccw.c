@@ -14,10 +14,12 @@
 #include "qemu/osdep.h"
 #include <libgen.h>
 #include "qapi/error.h"
+#include "qemu/module.h"
 #include "hw/sysbus.h"
 #include "hw/s390x/css.h"
 #include "hw/s390x/css-bridge.h"
 #include "hw/s390x/s390-ccw.h"
+#include "sysemu/sysemu.h"
 
 IOInstEnding s390_ccw_cmd_request(SubchDev *sch)
 {
@@ -27,6 +29,26 @@ IOInstEnding s390_ccw_cmd_request(SubchDev *sch)
         return IOINST_CC_STATUS_PRESENT;
     }
     return cdc->handle_request(sch);
+}
+
+int s390_ccw_halt(SubchDev *sch)
+{
+    S390CCWDeviceClass *cdc = S390_CCW_DEVICE_GET_CLASS(sch->driver_data);
+
+    if (!cdc->handle_halt) {
+        return -ENOSYS;
+    }
+    return cdc->handle_halt(sch);
+}
+
+int s390_ccw_clear(SubchDev *sch)
+{
+    S390CCWDeviceClass *cdc = S390_CCW_DEVICE_GET_CLASS(sch->driver_data);
+
+    if (!cdc->handle_clear) {
+        return -ENOSYS;
+    }
+    return cdc->handle_clear(sch);
 }
 
 static void s390_ccw_get_dev_info(S390CCWDevice *cdev,
@@ -67,8 +89,6 @@ static void s390_ccw_realize(S390CCWDevice *cdev, char *sysfsdev, Error **errp)
     CcwDevice *ccw_dev = CCW_DEVICE(cdev);
     CCWDeviceClass *ck = CCW_DEVICE_GET_CLASS(ccw_dev);
     DeviceState *parent = DEVICE(ccw_dev);
-    BusState *qbus = qdev_get_parent_bus(parent);
-    VirtualCssBus *cbus = VIRTUAL_CSS_BUS(qbus);
     SubchDev *sch;
     int ret;
     Error *err = NULL;
@@ -78,7 +98,7 @@ static void s390_ccw_realize(S390CCWDevice *cdev, char *sysfsdev, Error **errp)
         goto out_err_propagate;
     }
 
-    sch = css_create_sch(ccw_dev->devno, cbus->squash_mcss, &err);
+    sch = css_create_sch(ccw_dev->devno, &err);
     if (!sch) {
         goto out_mdevid_free;
     }
@@ -126,6 +146,14 @@ static void s390_ccw_unrealize(S390CCWDevice *cdev, Error **errp)
     g_free(cdev->mdevid);
 }
 
+static void s390_ccw_instance_init(Object *obj)
+{
+    S390CCWDevice *dev = S390_CCW_DEVICE(obj);
+
+    device_add_bootindex_property(obj, &dev->bootindex, "bootindex",
+                                  "/disk@0,0", DEVICE(obj), NULL);
+}
+
 static void s390_ccw_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -139,6 +167,7 @@ static void s390_ccw_class_init(ObjectClass *klass, void *data)
 static const TypeInfo s390_ccw_info = {
     .name          = TYPE_S390_CCW,
     .parent        = TYPE_CCW_DEVICE,
+    .instance_init = s390_ccw_instance_init,
     .instance_size = sizeof(S390CCWDevice),
     .class_size    = sizeof(S390CCWDeviceClass),
     .class_init    = s390_ccw_class_init,

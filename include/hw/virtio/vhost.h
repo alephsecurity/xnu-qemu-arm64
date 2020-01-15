@@ -1,12 +1,20 @@
 #ifndef VHOST_H
 #define VHOST_H
 
-#include "hw/hw.h"
 #include "hw/virtio/vhost-backend.h"
 #include "hw/virtio/virtio.h"
 #include "exec/memory.h"
 
 /* Generic structures common for any vhost based device. */
+
+struct vhost_inflight {
+    int fd;
+    void *addr;
+    uint64_t size;
+    uint64_t offset;
+    uint16_t queue_size;
+};
+
 struct vhost_virtqueue {
     int kick;
     int call;
@@ -120,4 +128,13 @@ int vhost_dev_set_config(struct vhost_dev *dev, const uint8_t *data,
  */
 void vhost_dev_set_config_notifier(struct vhost_dev *dev,
                                    const VhostDevConfigOps *ops);
+
+void vhost_dev_reset_inflight(struct vhost_inflight *inflight);
+void vhost_dev_free_inflight(struct vhost_inflight *inflight);
+void vhost_dev_save_inflight(struct vhost_inflight *inflight, QEMUFile *f);
+int vhost_dev_load_inflight(struct vhost_inflight *inflight, QEMUFile *f);
+int vhost_dev_set_inflight(struct vhost_dev *dev,
+                           struct vhost_inflight *inflight);
+int vhost_dev_get_inflight(struct vhost_dev *dev, uint16_t queue_size,
+                           struct vhost_inflight *inflight);
 #endif

@@ -12,7 +12,6 @@
 #ifndef HW_VFIO_VFIO_PCI_H
 #define HW_VFIO_VFIO_PCI_H
 
-#include "qemu-common.h"
 #include "exec/memory.h"
 #include "hw/pci/pci.h"
 #include "hw/vfio/vfio-common.h"
@@ -149,6 +148,8 @@ typedef struct VFIOPCIDevice {
 #define VFIO_FEATURE_ENABLE_IGD_OPREGION \
                                 (1 << VFIO_FEATURE_ENABLE_IGD_OPREGION_BIT)
     OnOffAuto display;
+    uint32_t display_xres;
+    uint32_t display_yres;
     int32_t bootindex;
     uint32_t igd_gms;
     OffAutoPCIBAR msix_relo;
@@ -165,7 +166,10 @@ typedef struct VFIOPCIDevice {
     bool no_geforce_quirks;
     bool no_kvm_ioeventfd;
     bool no_vfio_ioeventfd;
+    bool enable_ramfb;
     VFIODisplay *dpy;
+    Error *migration_blocker;
+    Notifier irqchip_change_notifier;
 } VFIOPCIDevice;
 
 uint32_t vfio_pci_read_config(PCIDevice *pdev, uint32_t addr, int len);
@@ -193,6 +197,8 @@ int vfio_populate_vga(VFIOPCIDevice *vdev, Error **errp);
 int vfio_pci_igd_opregion_init(VFIOPCIDevice *vdev,
                                struct vfio_region_info *info,
                                Error **errp);
+int vfio_pci_nvidia_v100_ram_init(VFIOPCIDevice *vdev, Error **errp);
+int vfio_pci_nvlink2_init(VFIOPCIDevice *vdev, Error **errp);
 
 void vfio_display_reset(VFIOPCIDevice *vdev);
 int vfio_display_probe(VFIOPCIDevice *vdev, Error **errp);

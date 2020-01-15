@@ -21,14 +21,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
+#include "qemu/module.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
 #include "hw/loader.h"
 #include "trace.h"
 #include "ui/vnc.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 
 #undef VERBOSE
 #define HW_RECT_ACCEL
@@ -1116,7 +1119,6 @@ static inline void vmsvga_check_size(struct vmsvga_state_s *s)
 static void vmsvga_update_display(void *opaque)
 {
     struct vmsvga_state_s *s = opaque;
-    DisplaySurface *surface;
 
     if (!s->enable || !s->config) {
         /* in standard vga mode */
@@ -1125,15 +1127,13 @@ static void vmsvga_update_display(void *opaque)
     }
 
     vmsvga_check_size(s);
-    surface = qemu_console_surface(s->vga.con);
 
     vmsvga_fifo_run(s);
     vmsvga_update_rect_flush(s);
 
     if (s->invalidated) {
         s->invalidated = 0;
-        dpy_gfx_update(s->vga.con, 0, 0,
-                   surface_width(surface), surface_height(surface));
+        dpy_gfx_update_full(s->vga.con);
     }
 }
 

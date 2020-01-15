@@ -68,11 +68,10 @@ typedef struct SaveVMHandlers {
     int (*resume_prepare)(MigrationState *s, void *opaque);
 } SaveVMHandlers;
 
-int register_savevm_live(DeviceState *dev,
-                         const char *idstr,
+int register_savevm_live(const char *idstr,
                          int instance_id,
                          int version_id,
-                         SaveVMHandlers *ops,
+                         const SaveVMHandlers *ops,
                          void *opaque);
 
 void unregister_savevm(DeviceState *dev, const char *idstr, void *opaque);

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # This test covers expected filetypes for the file, host_cdrom and
 # host_device drivers.
@@ -25,7 +25,6 @@ owner=jsnow@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1    # failure is the default!
 
 _cleanup()
@@ -41,6 +40,9 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 # Generic format, but tests file-protocol specific error handling
 _supported_fmt generic
+if [ "$IMGOPTSSYNTAX" = "true" ]; then
+    _unsupported_fmt $IMGFMT
+fi
 _supported_proto file
 _supported_os Linux
 
@@ -52,11 +54,11 @@ for PROTO in "file" "host_device" "host_cdrom"; do
     echo "=== Testing with driver:$PROTO ==="
     echo
     echo "== Testing RO =="
-    $QEMU_IO -c "open -r -o driver=$PROTO,filename=$TEST_IMG" 2>&1 | _filter_imgfmt | _filter_testdir
-    $QEMU_IO -c "open -r -o driver=$PROTO,filename=/dev/null" 2>&1 | _filter_imgfmt
+    $QEMU_IO -c "open -r -o driver=$PROTO,filename=$TEST_IMG" 2>&1 | _filter_testdir | _filter_imgfmt
+    $QEMU_IO -c "open -r -o driver=$PROTO,filename=/dev/null,locking=off" 2>&1 | _filter_imgfmt
     echo "== Testing RW =="
-    $QEMU_IO -c "open -o driver=$PROTO,filename=$TEST_IMG" 2>&1 | _filter_imgfmt | _filter_testdir
-    $QEMU_IO -c "open -o driver=$PROTO,filename=/dev/null" 2>&1 | _filter_imgfmt
+    $QEMU_IO -c "open -o driver=$PROTO,filename=$TEST_IMG" 2>&1 | _filter_testdir | _filter_imgfmt
+    $QEMU_IO -c "open -o driver=$PROTO,filename=/dev/null,locking=off" 2>&1 | _filter_imgfmt
 done
 
 # success, all done

@@ -13,6 +13,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/vfio/vfio-amd-xgbe.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 
 static void amd_xgbe_realize(DeviceState *dev, Error **errp)
 {
@@ -20,12 +22,13 @@ static void amd_xgbe_realize(DeviceState *dev, Error **errp)
     VFIOAmdXgbeDeviceClass *k = VFIO_AMD_XGBE_DEVICE_GET_CLASS(dev);
 
     vdev->compat = g_strdup("amd,xgbe-seattle-v1a");
+    vdev->num_compat = 1;
 
     k->parent_realize(dev, errp);
 }
 
 static const VMStateDescription vfio_platform_amd_xgbe_vmstate = {
-    .name = TYPE_VFIO_AMD_XGBE,
+    .name = "vfio-amd-xgbe",
     .unmigratable = 1,
 };
 

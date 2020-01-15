@@ -28,23 +28,29 @@
 #define TYPE_SPAPR_PCI_HOST_BRIDGE "spapr-pci-host-bridge"
 
 #define SPAPR_PCI_HOST_BRIDGE(obj) \
-    OBJECT_CHECK(sPAPRPHBState, (obj), TYPE_SPAPR_PCI_HOST_BRIDGE)
+    OBJECT_CHECK(SpaprPhbState, (obj), TYPE_SPAPR_PCI_HOST_BRIDGE)
 
 #define SPAPR_PCI_DMA_MAX_WINDOWS    2
 
-typedef struct sPAPRPHBState sPAPRPHBState;
+typedef struct SpaprPhbState SpaprPhbState;
 
-typedef struct spapr_pci_msi {
+typedef struct SpaprPciMsi {
     uint32_t first_irq;
     uint32_t num;
-} spapr_pci_msi;
+} SpaprPciMsi;
 
-typedef struct spapr_pci_msi_mig {
+typedef struct SpaprPciMsiMig {
     uint32_t key;
-    spapr_pci_msi value;
-} spapr_pci_msi_mig;
+    SpaprPciMsi value;
+} SpaprPciMsiMig;
 
-struct sPAPRPHBState {
+typedef struct SpaprPciLsi {
+    uint32_t irq;
+} SpaprPciLsi;
+
+typedef struct SpaprPhbPciNvGpuConfig SpaprPhbPciNvGpuConfig;
+
+struct SpaprPhbState {
     PCIHostState parent_obj;
 
     uint32_t index;
@@ -63,16 +69,14 @@ struct sPAPRPHBState {
     AddressSpace iommu_as;
     MemoryRegion iommu_root;
 
-    struct spapr_pci_lsi {
-        uint32_t irq;
-    } lsi_table[PCI_NUM_PINS];
+    SpaprPciLsi lsi_table[PCI_NUM_PINS];
 
     GHashTable *msi;
     /* Temporary cache for migration purposes */
     int32_t msi_devs_num;
-    spapr_pci_msi_mig *msi_devs;
+    SpaprPciMsiMig *msi_devs;
 
-    QLIST_ENTRY(sPAPRPHBState) list;
+    QLIST_ENTRY(SpaprPhbState) list;
 
     bool ddw_enabled;
     uint64_t page_size_mask;
@@ -87,6 +91,9 @@ struct sPAPRPHBState {
     uint32_t mig_liobn;
     hwaddr mig_mem_win_addr, mig_mem_win_size;
     hwaddr mig_io_win_addr, mig_io_win_size;
+    hwaddr nv2_gpa_win_addr;
+    hwaddr nv2_atsd_win_addr;
+    SpaprPhbPciNvGpuConfig *nvgpus;
 };
 
 #define SPAPR_PCI_MEM_WIN_BUS_OFFSET 0x80000000ULL
@@ -94,75 +101,115 @@ struct sPAPRPHBState {
     ((1ULL << 32) - SPAPR_PCI_MEM_WIN_BUS_OFFSET)
 #define SPAPR_PCI_MEM64_WIN_SIZE     0x10000000000ULL /* 1 TiB */
 
-/* Without manual configuration, all PCI outbound windows will be
- * within this range */
+/* All PCI outbound windows will be within this range */
 #define SPAPR_PCI_BASE               (1ULL << 45) /* 32 TiB */
 #define SPAPR_PCI_LIMIT              (1ULL << 46) /* 64 TiB */
 
-#define SPAPR_PCI_2_7_MMIO_WIN_SIZE  0xf80000000
+#define SPAPR_MAX_PHBS ((SPAPR_PCI_LIMIT - SPAPR_PCI_BASE) / \
+                        SPAPR_PCI_MEM64_WIN_SIZE - 1)
+
 #define SPAPR_PCI_IO_WIN_SIZE        0x10000
 
 #define SPAPR_PCI_MSI_WINDOW         0x40000000000ULL
 
-static inline qemu_irq spapr_phb_lsi_qirq(struct sPAPRPHBState *phb, int pin)
-{
-    sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
+#define SPAPR_PCI_NV2RAM64_WIN_BASE  SPAPR_PCI_LIMIT
+#define SPAPR_PCI_NV2RAM64_WIN_SIZE  (2 * TiB) /* For up to 6 GPUs 256GB each */
 
-    return spapr_qirq(spapr, phb->lsi_table[pin].irq);
-}
+/* Max number of these GPUsper a physical box */
+#define NVGPU_MAX_NUM                6
+/* Max number of NVLinks per GPU in any physical box */
+#define NVGPU_MAX_LINKS              3
 
-PCIHostState *spapr_create_phb(sPAPRMachineState *spapr, int index);
+/*
+ * GPU RAM starts at 64TiB so huge DMA window to cover it all ends at 128TiB
+ * which is enough. We do not need DMA for ATSD so we put them at 128TiB.
+ */
+#define SPAPR_PCI_NV2ATSD_WIN_BASE   (128 * TiB)
+#define SPAPR_PCI_NV2ATSD_WIN_SIZE   (NVGPU_MAX_NUM * NVGPU_MAX_LINKS * \
+                                      64 * KiB)
 
-int spapr_populate_pci_dt(sPAPRPHBState *phb,
-                          uint32_t xics_phandle,
-                          void *fdt);
+int spapr_dt_phb(SpaprMachineState *spapr, SpaprPhbState *phb,
+                 uint32_t intc_phandle, void *fdt, int *node_offset);
 
 void spapr_pci_rtas_init(void);
 
-sPAPRPHBState *spapr_pci_find_phb(sPAPRMachineState *spapr, uint64_t buid);
-PCIDevice *spapr_pci_find_dev(sPAPRMachineState *spapr, uint64_t buid,
+SpaprPhbState *spapr_pci_find_phb(SpaprMachineState *spapr, uint64_t buid);
+PCIDevice *spapr_pci_find_dev(SpaprMachineState *spapr, uint64_t buid,
                               uint32_t config_addr);
 
-/* PCI release callback. */
+/* DRC callbacks */
 void spapr_phb_remove_pci_device_cb(DeviceState *dev);
+int spapr_pci_dt_populate(SpaprDrc *drc, SpaprMachineState *spapr,
+                          void *fdt, int *fdt_start_offset, Error **errp);
 
 /* VFIO EEH hooks */
 #ifdef CONFIG_LINUX
-bool spapr_phb_eeh_available(sPAPRPHBState *sphb);
-int spapr_phb_vfio_eeh_set_option(sPAPRPHBState *sphb,
+bool spapr_phb_eeh_available(SpaprPhbState *sphb);
+int spapr_phb_vfio_eeh_set_option(SpaprPhbState *sphb,
                                   unsigned int addr, int option);
-int spapr_phb_vfio_eeh_get_state(sPAPRPHBState *sphb, int *state);
-int spapr_phb_vfio_eeh_reset(sPAPRPHBState *sphb, int option);
-int spapr_phb_vfio_eeh_configure(sPAPRPHBState *sphb);
+int spapr_phb_vfio_eeh_get_state(SpaprPhbState *sphb, int *state);
+int spapr_phb_vfio_eeh_reset(SpaprPhbState *sphb, int option);
+int spapr_phb_vfio_eeh_configure(SpaprPhbState *sphb);
 void spapr_phb_vfio_reset(DeviceState *qdev);
+void spapr_phb_nvgpu_setup(SpaprPhbState *sphb, Error **errp);
+void spapr_phb_nvgpu_free(SpaprPhbState *sphb);
+void spapr_phb_nvgpu_populate_dt(SpaprPhbState *sphb, void *fdt, int bus_off,
+                                 Error **errp);
+void spapr_phb_nvgpu_ram_populate_dt(SpaprPhbState *sphb, void *fdt);
+void spapr_phb_nvgpu_populate_pcidev_dt(PCIDevice *dev, void *fdt, int offset,
+                                        SpaprPhbState *sphb);
 #else
-static inline bool spapr_phb_eeh_available(sPAPRPHBState *sphb)
+static inline bool spapr_phb_eeh_available(SpaprPhbState *sphb)
 {
     return false;
 }
-static inline int spapr_phb_vfio_eeh_set_option(sPAPRPHBState *sphb,
+static inline int spapr_phb_vfio_eeh_set_option(SpaprPhbState *sphb,
                                                 unsigned int addr, int option)
 {
     return RTAS_OUT_HW_ERROR;
 }
-static inline int spapr_phb_vfio_eeh_get_state(sPAPRPHBState *sphb,
+static inline int spapr_phb_vfio_eeh_get_state(SpaprPhbState *sphb,
                                                int *state)
 {
     return RTAS_OUT_HW_ERROR;
 }
-static inline int spapr_phb_vfio_eeh_reset(sPAPRPHBState *sphb, int option)
+static inline int spapr_phb_vfio_eeh_reset(SpaprPhbState *sphb, int option)
 {
     return RTAS_OUT_HW_ERROR;
 }
-static inline int spapr_phb_vfio_eeh_configure(sPAPRPHBState *sphb)
+static inline int spapr_phb_vfio_eeh_configure(SpaprPhbState *sphb)
 {
     return RTAS_OUT_HW_ERROR;
 }
 static inline void spapr_phb_vfio_reset(DeviceState *qdev)
 {
 }
+static inline void spapr_phb_nvgpu_setup(SpaprPhbState *sphb, Error **errp)
+{
+}
+static inline void spapr_phb_nvgpu_free(SpaprPhbState *sphb)
+{
+}
+static inline void spapr_phb_nvgpu_populate_dt(SpaprPhbState *sphb, void *fdt,
+                                               int bus_off, Error **errp)
+{
+}
+static inline void spapr_phb_nvgpu_ram_populate_dt(SpaprPhbState *sphb,
+                                                   void *fdt)
+{
+}
+static inline void spapr_phb_nvgpu_populate_pcidev_dt(PCIDevice *dev, void *fdt,
+                                                      int offset,
+                                                      SpaprPhbState *sphb)
+{
+}
 #endif
 
-void spapr_phb_dma_reset(sPAPRPHBState *sphb);
+void spapr_phb_dma_reset(SpaprPhbState *sphb);
+
+static inline unsigned spapr_phb_windows_supported(SpaprPhbState *sphb)
+{
+    return sphb->ddw_enabled ? SPAPR_PCI_DMA_MAX_WINDOWS : 1;
+}
 
 #endif /* PCI_HOST_SPAPR_H */

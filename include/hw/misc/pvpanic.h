@@ -11,11 +11,23 @@
  * See the COPYING file in the top-level directory.
  *
  */
+
 #ifndef HW_MISC_PVPANIC_H
 #define HW_MISC_PVPANIC_H
 
+#include "qom/object.h"
+
 #define TYPE_PVPANIC "pvpanic"
 
-uint16_t pvpanic_port(void);
+#define PVPANIC_IOPORT_PROP "ioport"
+
+static inline uint16_t pvpanic_port(void)
+{
+    Object *o = object_resolve_path_type("", TYPE_PVPANIC, NULL);
+    if (!o) {
+        return 0;
+    }
+    return object_property_get_uint(o, PVPANIC_IOPORT_PROP, NULL);
+}
 
 #endif

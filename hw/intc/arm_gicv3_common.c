@@ -23,154 +23,20 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qom/cpu.h"
+#include "qemu/module.h"
+#include "hw/core/cpu.h"
 #include "hw/intc/arm_gicv3_common.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "gicv3_internal.h"
 #include "hw/arm/linux-boot-if.h"
 #include "sysemu/kvm.h"
 
-static int gicv3_pre_save(void *opaque)
+
+static void gicv3_gicd_no_migration_shift_bug_post_load(GICv3State *cs)
 {
-    GICv3State *s = (GICv3State *)opaque;
-    ARMGICv3CommonClass *c = ARM_GICV3_COMMON_GET_CLASS(s);
-
-    if (c->pre_save) {
-        c->pre_save(s);
-    }
-
-    return 0;
-}
-
-static int gicv3_post_load(void *opaque, int version_id)
-{
-    GICv3State *s = (GICv3State *)opaque;
-    ARMGICv3CommonClass *c = ARM_GICV3_COMMON_GET_CLASS(s);
-
-    if (c->post_load) {
-        c->post_load(s);
-    }
-    return 0;
-}
-
-static bool virt_state_needed(void *opaque)
-{
-    GICv3CPUState *cs = opaque;
-
-    return cs->num_list_regs != 0;
-}
-
-static const VMStateDescription vmstate_gicv3_cpu_virt = {
-    .name = "arm_gicv3_cpu/virt",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = virt_state_needed,
-    .fields = (VMStateField[]) {
-        VMSTATE_UINT64_2DARRAY(ich_apr, GICv3CPUState, 3, 4),
-        VMSTATE_UINT64(ich_hcr_el2, GICv3CPUState),
-        VMSTATE_UINT64_ARRAY(ich_lr_el2, GICv3CPUState, GICV3_LR_MAX),
-        VMSTATE_UINT64(ich_vmcr_el2, GICv3CPUState),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static int icc_sre_el1_reg_pre_load(void *opaque)
-{
-    GICv3CPUState *cs = opaque;
-
-   /*
-    * If the sre_el1 subsection is not transferred this
-    * means SRE_EL1 is 0x7 (which might not be the same as
-    * our reset value).
-    */
-    cs->icc_sre_el1 = 0x7;
-    return 0;
-}
-
-static bool icc_sre_el1_reg_needed(void *opaque)
-{
-    GICv3CPUState *cs = opaque;
-
-    return cs->icc_sre_el1 != 7;
-}
-
-const VMStateDescription vmstate_gicv3_cpu_sre_el1 = {
-    .name = "arm_gicv3_cpu/sre_el1",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .pre_load = icc_sre_el1_reg_pre_load,
-    .needed = icc_sre_el1_reg_needed,
-    .fields = (VMStateField[]) {
-        VMSTATE_UINT64(icc_sre_el1, GICv3CPUState),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static const VMStateDescription vmstate_gicv3_cpu = {
-    .name = "arm_gicv3_cpu",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
-        VMSTATE_UINT32(level, GICv3CPUState),
-        VMSTATE_UINT32(gicr_ctlr, GICv3CPUState),
-        VMSTATE_UINT32_ARRAY(gicr_statusr, GICv3CPUState, 2),
-        VMSTATE_UINT32(gicr_waker, GICv3CPUState),
-        VMSTATE_UINT64(gicr_propbaser, GICv3CPUState),
-        VMSTATE_UINT64(gicr_pendbaser, GICv3CPUState),
-        VMSTATE_UINT32(gicr_igroupr0, GICv3CPUState),
-        VMSTATE_UINT32(gicr_ienabler0, GICv3CPUState),
-        VMSTATE_UINT32(gicr_ipendr0, GICv3CPUState),
-        VMSTATE_UINT32(gicr_iactiver0, GICv3CPUState),
-        VMSTATE_UINT32(edge_trigger, GICv3CPUState),
-        VMSTATE_UINT32(gicr_igrpmodr0, GICv3CPUState),
-        VMSTATE_UINT32(gicr_nsacr, GICv3CPUState),
-        VMSTATE_UINT8_ARRAY(gicr_ipriorityr, GICv3CPUState, GIC_INTERNAL),
-        VMSTATE_UINT64_ARRAY(icc_ctlr_el1, GICv3CPUState, 2),
-        VMSTATE_UINT64(icc_pmr_el1, GICv3CPUState),
-        VMSTATE_UINT64_ARRAY(icc_bpr, GICv3CPUState, 3),
-        VMSTATE_UINT64_2DARRAY(icc_apr, GICv3CPUState, 3, 4),
-        VMSTATE_UINT64_ARRAY(icc_igrpen, GICv3CPUState, 3),
-        VMSTATE_UINT64(icc_ctlr_el3, GICv3CPUState),
-        VMSTATE_END_OF_LIST()
-    },
-    .subsections = (const VMStateDescription * []) {
-        &vmstate_gicv3_cpu_virt,
-        NULL
-    },
-    .subsections = (const VMStateDescription * []) {
-        &vmstate_gicv3_cpu_sre_el1,
-        NULL
-    }
-};
-
-static int gicv3_gicd_no_migration_shift_bug_pre_load(void *opaque)
-{
-    GICv3State *cs = opaque;
-
-   /*
-    * The gicd_no_migration_shift_bug flag is used for migration compatibility
-    * for old version QEMU which may have the GICD bmp shift bug under KVM mode.
-    * Strictly, what we want to know is whether the migration source is using
-    * KVM. Since we don't have any way to determine that, we look at whether the
-    * destination is using KVM; this is close enough because for the older QEMU
-    * versions with this bug KVM -> TCG migration didn't work anyway. If the
-    * source is a newer QEMU without this bug it will transmit the migration
-    * subsection which sets the flag to true; otherwise it will remain set to
-    * the value we select here.
-    */
-    if (kvm_enabled()) {
-        cs->gicd_no_migration_shift_bug = false;
-    }
-
-    return 0;
-}
-
-static int gicv3_gicd_no_migration_shift_bug_post_load(void *opaque,
-                                                       int version_id)
-{
-    GICv3State *cs = opaque;
-
     if (cs->gicd_no_migration_shift_bug) {
-        return 0;
+        return;
     }
 
     /* Older versions of QEMU had a bug in the handling of state save/restore
@@ -199,16 +65,152 @@ static int gicv3_gicd_no_migration_shift_bug_post_load(void *opaque,
      * for next migration to work from this new version QEMU.
      */
     cs->gicd_no_migration_shift_bug = true;
+}
+
+static int gicv3_pre_save(void *opaque)
+{
+    GICv3State *s = (GICv3State *)opaque;
+    ARMGICv3CommonClass *c = ARM_GICV3_COMMON_GET_CLASS(s);
+
+    if (c->pre_save) {
+        c->pre_save(s);
+    }
 
     return 0;
+}
+
+static int gicv3_post_load(void *opaque, int version_id)
+{
+    GICv3State *s = (GICv3State *)opaque;
+    ARMGICv3CommonClass *c = ARM_GICV3_COMMON_GET_CLASS(s);
+
+    gicv3_gicd_no_migration_shift_bug_post_load(s);
+
+    if (c->post_load) {
+        c->post_load(s);
+    }
+    return 0;
+}
+
+static bool virt_state_needed(void *opaque)
+{
+    GICv3CPUState *cs = opaque;
+
+    return cs->num_list_regs != 0;
+}
+
+static const VMStateDescription vmstate_gicv3_cpu_virt = {
+    .name = "arm_gicv3_cpu/virt",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = virt_state_needed,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT64_2DARRAY(ich_apr, GICv3CPUState, 3, 4),
+        VMSTATE_UINT64(ich_hcr_el2, GICv3CPUState),
+        VMSTATE_UINT64_ARRAY(ich_lr_el2, GICv3CPUState, GICV3_LR_MAX),
+        VMSTATE_UINT64(ich_vmcr_el2, GICv3CPUState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int vmstate_gicv3_cpu_pre_load(void *opaque)
+{
+    GICv3CPUState *cs = opaque;
+
+   /*
+    * If the sre_el1 subsection is not transferred this
+    * means SRE_EL1 is 0x7 (which might not be the same as
+    * our reset value).
+    */
+    cs->icc_sre_el1 = 0x7;
+    return 0;
+}
+
+static bool icc_sre_el1_reg_needed(void *opaque)
+{
+    GICv3CPUState *cs = opaque;
+
+    return cs->icc_sre_el1 != 7;
+}
+
+const VMStateDescription vmstate_gicv3_cpu_sre_el1 = {
+    .name = "arm_gicv3_cpu/sre_el1",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = icc_sre_el1_reg_needed,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT64(icc_sre_el1, GICv3CPUState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_gicv3_cpu = {
+    .name = "arm_gicv3_cpu",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_load = vmstate_gicv3_cpu_pre_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(level, GICv3CPUState),
+        VMSTATE_UINT32(gicr_ctlr, GICv3CPUState),
+        VMSTATE_UINT32_ARRAY(gicr_statusr, GICv3CPUState, 2),
+        VMSTATE_UINT32(gicr_waker, GICv3CPUState),
+        VMSTATE_UINT64(gicr_propbaser, GICv3CPUState),
+        VMSTATE_UINT64(gicr_pendbaser, GICv3CPUState),
+        VMSTATE_UINT32(gicr_igroupr0, GICv3CPUState),
+        VMSTATE_UINT32(gicr_ienabler0, GICv3CPUState),
+        VMSTATE_UINT32(gicr_ipendr0, GICv3CPUState),
+        VMSTATE_UINT32(gicr_iactiver0, GICv3CPUState),
+        VMSTATE_UINT32(edge_trigger, GICv3CPUState),
+        VMSTATE_UINT32(gicr_igrpmodr0, GICv3CPUState),
+        VMSTATE_UINT32(gicr_nsacr, GICv3CPUState),
+        VMSTATE_UINT8_ARRAY(gicr_ipriorityr, GICv3CPUState, GIC_INTERNAL),
+        VMSTATE_UINT64_ARRAY(icc_ctlr_el1, GICv3CPUState, 2),
+        VMSTATE_UINT64(icc_pmr_el1, GICv3CPUState),
+        VMSTATE_UINT64_ARRAY(icc_bpr, GICv3CPUState, 3),
+        VMSTATE_UINT64_2DARRAY(icc_apr, GICv3CPUState, 3, 4),
+        VMSTATE_UINT64_ARRAY(icc_igrpen, GICv3CPUState, 3),
+        VMSTATE_UINT64(icc_ctlr_el3, GICv3CPUState),
+        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * []) {
+        &vmstate_gicv3_cpu_virt,
+        &vmstate_gicv3_cpu_sre_el1,
+        NULL
+    }
+};
+
+static int gicv3_pre_load(void *opaque)
+{
+    GICv3State *cs = opaque;
+
+   /*
+    * The gicd_no_migration_shift_bug flag is used for migration compatibility
+    * for old version QEMU which may have the GICD bmp shift bug under KVM mode.
+    * Strictly, what we want to know is whether the migration source is using
+    * KVM. Since we don't have any way to determine that, we look at whether the
+    * destination is using KVM; this is close enough because for the older QEMU
+    * versions with this bug KVM -> TCG migration didn't work anyway. If the
+    * source is a newer QEMU without this bug it will transmit the migration
+    * subsection which sets the flag to true; otherwise it will remain set to
+    * the value we select here.
+    */
+    if (kvm_enabled()) {
+        cs->gicd_no_migration_shift_bug = false;
+    }
+
+    return 0;
+}
+
+static bool needed_always(void *opaque)
+{
+    return true;
 }
 
 const VMStateDescription vmstate_gicv3_gicd_no_migration_shift_bug = {
     .name = "arm_gicv3/gicd_no_migration_shift_bug",
     .version_id = 1,
     .minimum_version_id = 1,
-    .pre_load = gicv3_gicd_no_migration_shift_bug_pre_load,
-    .post_load = gicv3_gicd_no_migration_shift_bug_post_load,
+    .needed = needed_always,
     .fields = (VMStateField[]) {
         VMSTATE_BOOL(gicd_no_migration_shift_bug, GICv3State),
         VMSTATE_END_OF_LIST()
@@ -219,6 +221,7 @@ static const VMStateDescription vmstate_gicv3 = {
     .name = "arm_gicv3",
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = gicv3_pre_load,
     .pre_save = gicv3_pre_save,
     .post_load = gicv3_post_load,
     .priority = MIG_PRI_GICV3,

@@ -1,7 +1,6 @@
 #ifndef STREAM_H
 #define STREAM_H
 
-#include "qemu-common.h"
 #include "qom/object.h"
 
 /* stream slave. Used until qdev provides a generic way.  */
@@ -14,9 +13,7 @@
 #define STREAM_SLAVE(obj) \
      INTERFACE_CHECK(StreamSlave, (obj), TYPE_STREAM_SLAVE)
 
-typedef struct StreamSlave {
-    Object Parent;
-} StreamSlave;
+typedef struct StreamSlave StreamSlave;
 
 typedef void (*StreamCanPushNotifyFn)(void *opaque);
 

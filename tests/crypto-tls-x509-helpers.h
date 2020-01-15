@@ -18,19 +18,20 @@
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
 
+#ifndef TESTS_CRYPTO_TLS_X509_HELPERS_H
+#define TESTS_CRYPTO_TLS_X509_HELPERS_H
+
 #include <gnutls/gnutls.h>
 #include <gnutls/x509.h>
 
 #if !(defined WIN32) && \
-    defined(CONFIG_TASN1) && \
-    (LIBGNUTLS_VERSION_NUMBER >= 0x020600)
+    defined(CONFIG_TASN1)
 # define QCRYPTO_HAVE_TLS_TEST_SUPPORT
 #endif
 
 #ifdef QCRYPTO_HAVE_TLS_TEST_SUPPORT
 # include <libtasn1.h>
 
-# include "qemu-common.h"
 
 /*
  * This contains parameter about how to generate
@@ -127,3 +128,5 @@ void test_tls_cleanup(const char *keyfile);
 extern const ASN1_ARRAY_TYPE pkix_asn1_tab[];
 
 #endif /* QCRYPTO_HAVE_TLS_TEST_SUPPORT */
+
+#endif

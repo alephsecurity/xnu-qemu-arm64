@@ -20,6 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/module.h"
 #include "io/channel-tls.h"
 #include "trace.h"
 
@@ -275,6 +276,9 @@ static ssize_t qio_channel_tls_readv(QIOChannel *ioc,
                 } else {
                     return QIO_CHANNEL_ERR_BLOCK;
                 }
+            } else if (errno == ECONNABORTED &&
+                       (tioc->shutdown & QIO_CHANNEL_SHUTDOWN_READ)) {
+                return 0;
             }
 
             error_setg_errno(errp, errno,
@@ -356,6 +360,8 @@ static int qio_channel_tls_shutdown(QIOChannel *ioc,
                                     Error **errp)
 {
     QIOChannelTLS *tioc = QIO_CHANNEL_TLS(ioc);
+
+    tioc->shutdown |= how;
 
     return qio_channel_shutdown(tioc->master, how, errp);
 }

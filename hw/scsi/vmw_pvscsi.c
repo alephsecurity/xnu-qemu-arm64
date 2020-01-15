@@ -27,9 +27,13 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/main-loop.h"
+#include "qemu/module.h"
 #include "hw/scsi/scsi.h"
+#include "migration/vmstate.h"
 #include "scsi/constants.h"
 #include "hw/pci/msi.h"
+#include "hw/qdev-properties.h"
 #include "vmw_pvscsi.h"
 #include "trace.h"
 
@@ -440,7 +444,7 @@ static void
 pvscsi_reset_adapter(PVSCSIState *s)
 {
     s->resetting++;
-    qbus_reset_all_fn(&s->bus);
+    qbus_reset_all(BUS(&s->bus));
     s->resetting--;
     pvscsi_process_completion_queue(s);
     assert(QTAILQ_EMPTY(&s->pending_queue));
@@ -848,7 +852,7 @@ pvscsi_on_cmd_reset_bus(PVSCSIState *s)
     trace_pvscsi_on_cmd_arrived("PVSCSI_CMD_RESET_BUS");
 
     s->resetting++;
-    qbus_reset_all_fn(&s->bus);
+    qbus_reset_all(BUS(&s->bus));
     s->resetting--;
     return PVSCSI_COMMAND_PROCESSING_SUCCEEDED;
 }
@@ -1142,7 +1146,7 @@ pvscsi_realizefn(PCIDevice *pci_dev, Error **errp)
     scsi_bus_new(&s->bus, sizeof(s->bus), DEVICE(pci_dev),
                  &pvscsi_scsi_info, NULL);
     /* override default SCSI bus hotplug-handler, with pvscsi's one */
-    qbus_set_hotplug_handler(BUS(&s->bus), DEVICE(s), &error_abort);
+    qbus_set_hotplug_handler(BUS(&s->bus), OBJECT(s), &error_abort);
     pvscsi_reset_state(s);
 }
 

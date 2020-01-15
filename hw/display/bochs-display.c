@@ -4,11 +4,15 @@
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
  * See the COPYING file in the top-level directory.
  */
+
 #include "qemu/osdep.h"
+#include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/display/bochs-vbe.h"
+#include "hw/display/edid.h"
 
 #include "qapi/error.h"
 
@@ -35,9 +39,13 @@ typedef struct BochsDisplayState {
     MemoryRegion     mmio;
     MemoryRegion     vbe;
     MemoryRegion     qext;
+    MemoryRegion     edid;
 
     /* device config */
     uint64_t         vgamem;
+    bool             enable_edid;
+    qemu_edid_info   edid_info;
+    uint8_t          edid_blob[256];
 
     /* device registers */
     uint16_t         vbe_regs[VBE_DISPI_INDEX_NB];
@@ -283,10 +291,17 @@ static void bochs_display_realize(PCIDevice *dev, Error **errp)
     pci_register_bar(&s->pci, 0, PCI_BASE_ADDRESS_MEM_PREFETCH, &s->vram);
     pci_register_bar(&s->pci, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
 
+    if (s->enable_edid) {
+        qemu_edid_generate(s->edid_blob, sizeof(s->edid_blob), &s->edid_info);
+        qemu_edid_region_io(&s->edid, obj, s->edid_blob, sizeof(s->edid_blob));
+        memory_region_add_subregion(&s->mmio, 0, &s->edid);
+    }
+
     if (pci_bus_is_express(pci_get_bus(dev))) {
-        dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
         ret = pcie_endpoint_cap_init(dev, 0x80);
         assert(ret > 0);
+    } else {
+        dev->cap_present &= ~QEMU_PCI_CAP_EXPRESS;
     }
 
     memory_region_set_log(&s->vram, true, DIRTY_MEMORY_VGA);
@@ -309,11 +324,15 @@ static void bochs_display_set_big_endian_fb(Object *obj, bool value,
 
 static void bochs_display_init(Object *obj)
 {
+    PCIDevice *dev = PCI_DEVICE(obj);
+
     /* Expose framebuffer byteorder via QOM */
     object_property_add_bool(obj, "big-endian-framebuffer",
                              bochs_display_get_big_endian_fb,
                              bochs_display_set_big_endian_fb,
                              NULL);
+
+    dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
 }
 
 static void bochs_display_exit(PCIDevice *dev)
@@ -325,6 +344,8 @@ static void bochs_display_exit(PCIDevice *dev)
 
 static Property bochs_display_properties[] = {
     DEFINE_PROP_SIZE("vgamem", BochsDisplayState, vgamem, 16 * MiB),
+    DEFINE_PROP_BOOL("edid", BochsDisplayState, enable_edid, true),
+    DEFINE_EDID_PROPERTIES(BochsDisplayState, edid_info),
     DEFINE_PROP_END_OF_LIST(),
 };
 

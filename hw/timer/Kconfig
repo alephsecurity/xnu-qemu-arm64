@@ -1,0 +1,36 @@
+config ARM_TIMER
+    bool
+    select PTIMER
+
+config ARM_MPTIMER
+    bool
+    select PTIMER
+
+config A9_GTIMER
+    bool
+
+config HPET
+    bool
+    default y if PC
+
+config I8254
+    bool
+
+config ALTERA_TIMER
+    bool
+    select PTIMER
+
+config ALLWINNER_A10_PIT
+    bool
+    select PTIMER
+
+config STM32F2XX_TIMER
+    bool
+
+config CMSDK_APB_TIMER
+    bool
+    select PTIMER
+
+config CMSDK_APB_DUALTIMER
+    bool
+    select PTIMER

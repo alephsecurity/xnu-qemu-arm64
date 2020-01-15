@@ -16,17 +16,20 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/exec-all.h"
 #include "qemu/host-utils.h"
+#include "qemu/main-loop.h"
 #include "exec/helper-proto.h"
 #include "helper_regs.h"
 #include "exec/cpu_ldst.h"
 #include "tcg.h"
 #include "internal.h"
+#include "qemu/atomic128.h"
 
-//#define DEBUG_OP
+/* #define DEBUG_OP */
 
 static inline bool needs_byteswap(const CPUPPCState *env)
 {
@@ -102,10 +105,11 @@ void helper_lsw(CPUPPCState *env, target_ulong addr, uint32_t nb, uint32_t reg)
     do_lsw(env, addr, nb, reg, GETPC());
 }
 
-/* PPC32 specification says we must generate an exception if
- * rA is in the range of registers to be loaded.
- * In an other hand, IBM says this is valid, but rA won't be loaded.
- * For now, I'll follow the spec...
+/*
+ * PPC32 specification says we must generate an exception if rA is in
+ * the range of registers to be loaded.  In an other hand, IBM says
+ * this is valid, but rA won't be loaded.  For now, I'll follow the
+ * spec...
  */
 void helper_lswx(CPUPPCState *env, target_ulong addr, uint32_t reg,
                  uint32_t ra, uint32_t rb)
@@ -141,11 +145,13 @@ void helper_stsw(CPUPPCState *env, target_ulong addr, uint32_t nb,
     }
 }
 
-void helper_dcbz(CPUPPCState *env, target_ulong addr, uint32_t opcode)
+static void dcbz_common(CPUPPCState *env, target_ulong addr,
+                        uint32_t opcode, bool epid, uintptr_t retaddr)
 {
     target_ulong mask, dcbz_size = env->dcache_line_size;
     uint32_t i;
     void *haddr;
+    int mmu_idx = epid ? PPC_TLB_EPID_STORE : env->dmmu_idx;
 
 #if defined(TARGET_PPC64)
     /* Check for dcbz vs dcbzl on 970 */
@@ -165,26 +171,53 @@ void helper_dcbz(CPUPPCState *env, target_ulong addr, uint32_t opcode)
     }
 
     /* Try fast path translate */
-    haddr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, env->dmmu_idx);
+    haddr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     if (haddr) {
         memset(haddr, 0, dcbz_size);
     } else {
         /* Slow path */
         for (i = 0; i < dcbz_size; i += 8) {
-            cpu_stq_data_ra(env, addr + i, 0, GETPC());
+            if (epid) {
+#if !defined(CONFIG_USER_ONLY)
+                /* Does not make sense on USER_ONLY config */
+                cpu_stq_eps_ra(env, addr + i, 0, retaddr);
+#endif
+            } else {
+                cpu_stq_data_ra(env, addr + i, 0, retaddr);
+            }
         }
     }
+}
+
+void helper_dcbz(CPUPPCState *env, target_ulong addr, uint32_t opcode)
+{
+    dcbz_common(env, addr, opcode, false, GETPC());
+}
+
+void helper_dcbzep(CPUPPCState *env, target_ulong addr, uint32_t opcode)
+{
+    dcbz_common(env, addr, opcode, true, GETPC());
 }
 
 void helper_icbi(CPUPPCState *env, target_ulong addr)
 {
     addr &= ~(env->dcache_line_size - 1);
-    /* Invalidate one cache line :
+    /*
+     * Invalidate one cache line :
      * PowerPC specification says this is to be treated like a load
      * (not a fetch) by the MMU. To be sure it will be so,
      * do the load "by hand".
      */
     cpu_ldl_data_ra(env, addr, GETPC());
+}
+
+void helper_icbiep(CPUPPCState *env, target_ulong addr)
+{
+#if !defined(CONFIG_USER_ONLY)
+    /* See comments above */
+    addr &= ~(env->dcache_line_size - 1);
+    cpu_ldl_epl_ra(env, addr, GETPC());
+#endif
 }
 
 /* XXX: to be tested */
@@ -215,11 +248,15 @@ target_ulong helper_lscbx(CPUPPCState *env, target_ulong addr, uint32_t reg,
     return i;
 }
 
-#if defined(TARGET_PPC64) && defined(CONFIG_ATOMIC128)
+#ifdef TARGET_PPC64
 uint64_t helper_lq_le_parallel(CPUPPCState *env, target_ulong addr,
                                uint32_t opidx)
 {
-    Int128 ret = helper_atomic_ldo_le_mmu(env, addr, opidx, GETPC());
+    Int128 ret;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_ATOMIC128);
+    ret = helper_atomic_ldo_le_mmu(env, addr, opidx, GETPC());
     env->retxh = int128_gethi(ret);
     return int128_getlo(ret);
 }
@@ -227,7 +264,11 @@ uint64_t helper_lq_le_parallel(CPUPPCState *env, target_ulong addr,
 uint64_t helper_lq_be_parallel(CPUPPCState *env, target_ulong addr,
                                uint32_t opidx)
 {
-    Int128 ret = helper_atomic_ldo_be_mmu(env, addr, opidx, GETPC());
+    Int128 ret;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_ATOMIC128);
+    ret = helper_atomic_ldo_be_mmu(env, addr, opidx, GETPC());
     env->retxh = int128_gethi(ret);
     return int128_getlo(ret);
 }
@@ -235,14 +276,22 @@ uint64_t helper_lq_be_parallel(CPUPPCState *env, target_ulong addr,
 void helper_stq_le_parallel(CPUPPCState *env, target_ulong addr,
                             uint64_t lo, uint64_t hi, uint32_t opidx)
 {
-    Int128 val = int128_make128(lo, hi);
+    Int128 val;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_ATOMIC128);
+    val = int128_make128(lo, hi);
     helper_atomic_sto_le_mmu(env, addr, val, opidx, GETPC());
 }
 
 void helper_stq_be_parallel(CPUPPCState *env, target_ulong addr,
                             uint64_t lo, uint64_t hi, uint32_t opidx)
 {
-    Int128 val = int128_make128(lo, hi);
+    Int128 val;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_ATOMIC128);
+    val = int128_make128(lo, hi);
     helper_atomic_sto_be_mmu(env, addr, val, opidx, GETPC());
 }
 
@@ -251,6 +300,9 @@ uint32_t helper_stqcx_le_parallel(CPUPPCState *env, target_ulong addr,
                                   uint32_t opidx)
 {
     bool success = false;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_CMPXCHG128);
 
     if (likely(addr == env->reserve_addr)) {
         Int128 oldv, cmpv, newv;
@@ -270,6 +322,9 @@ uint32_t helper_stqcx_be_parallel(CPUPPCState *env, target_ulong addr,
                                   uint32_t opidx)
 {
     bool success = false;
+
+    /* We will have raised EXCP_ATOMIC from the translator.  */
+    assert(HAVE_CMPXCHG128);
 
     if (likely(addr == env->reserve_addr)) {
         Int128 oldv, cmpv, newv;
@@ -295,17 +350,19 @@ uint32_t helper_stqcx_be_parallel(CPUPPCState *env, target_ulong addr,
 #define LO_IDX 0
 #endif
 
-/* We use msr_le to determine index ordering in a vector.  However,
-   byteswapping is not simply controlled by msr_le.  We also need to take
-   into account endianness of the target.  This is done for the little-endian
-   PPC64 user-mode target. */
+/*
+ * We use msr_le to determine index ordering in a vector.  However,
+ * byteswapping is not simply controlled by msr_le.  We also need to
+ * take into account endianness of the target.  This is done for the
+ * little-endian PPC64 user-mode target.
+ */
 
 #define LVE(name, access, swap, element)                        \
     void helper_##name(CPUPPCState *env, ppc_avr_t *r,          \
                        target_ulong addr)                       \
     {                                                           \
         size_t n_elems = ARRAY_SIZE(r->element);                \
-        int adjust = HI_IDX*(n_elems - 1);                      \
+        int adjust = HI_IDX * (n_elems - 1);                    \
         int sh = sizeof(r->element[0]) >> 1;                    \
         int index = (addr & 0xf) >> sh;                         \
         if (msr_le) {                                           \
@@ -360,28 +417,28 @@ STVE(stvewx, cpu_stl_data_ra, bswap32, u32)
 
 #define VSX_LXVL(name, lj)                                              \
 void helper_##name(CPUPPCState *env, target_ulong addr,                 \
-                   target_ulong xt_num, target_ulong rb)                \
+                   ppc_vsr_t *xt, target_ulong rb)                      \
 {                                                                       \
-    int i;                                                              \
-    ppc_vsr_t xt;                                                       \
+    ppc_vsr_t t;                                                        \
     uint64_t nb = GET_NB(rb);                                           \
+    int i;                                                              \
                                                                         \
-    xt.s128 = int128_zero();                                            \
+    t.s128 = int128_zero();                                             \
     if (nb) {                                                           \
         nb = (nb >= 16) ? 16 : nb;                                      \
         if (msr_le && !lj) {                                            \
             for (i = 16; i > 16 - nb; i--) {                            \
-                xt.VsrB(i - 1) = cpu_ldub_data_ra(env, addr, GETPC());  \
+                t.VsrB(i - 1) = cpu_ldub_data_ra(env, addr, GETPC());   \
                 addr = addr_add(env, addr, 1);                          \
             }                                                           \
         } else {                                                        \
             for (i = 0; i < nb; i++) {                                  \
-                xt.VsrB(i) = cpu_ldub_data_ra(env, addr, GETPC());      \
+                t.VsrB(i) = cpu_ldub_data_ra(env, addr, GETPC());       \
                 addr = addr_add(env, addr, 1);                          \
             }                                                           \
         }                                                               \
     }                                                                   \
-    putVSR(xt_num, &xt, env);                                           \
+    *xt = t;                                                            \
 }
 
 VSX_LXVL(lxvl, 0)
@@ -390,25 +447,24 @@ VSX_LXVL(lxvll, 1)
 
 #define VSX_STXVL(name, lj)                                       \
 void helper_##name(CPUPPCState *env, target_ulong addr,           \
-                   target_ulong xt_num, target_ulong rb)          \
+                   ppc_vsr_t *xt, target_ulong rb)                \
 {                                                                 \
-    int i;                                                        \
-    ppc_vsr_t xt;                                                 \
     target_ulong nb = GET_NB(rb);                                 \
+    int i;                                                        \
                                                                   \
     if (!nb) {                                                    \
         return;                                                   \
     }                                                             \
-    getVSR(xt_num, &xt, env);                                     \
+                                                                  \
     nb = (nb >= 16) ? 16 : nb;                                    \
     if (msr_le && !lj) {                                          \
         for (i = 16; i > 16 - nb; i--) {                          \
-            cpu_stb_data_ra(env, addr, xt.VsrB(i - 1), GETPC());  \
+            cpu_stb_data_ra(env, addr, xt->VsrB(i - 1), GETPC()); \
             addr = addr_add(env, addr, 1);                        \
         }                                                         \
     } else {                                                      \
         for (i = 0; i < nb; i++) {                                \
-            cpu_stb_data_ra(env, addr, xt.VsrB(i), GETPC());      \
+            cpu_stb_data_ra(env, addr, xt->VsrB(i), GETPC());     \
             addr = addr_add(env, addr, 1);                        \
         }                                                         \
     }                                                             \
@@ -425,12 +481,13 @@ VSX_STXVL(stxvll, 1)
 
 void helper_tbegin(CPUPPCState *env)
 {
-    /* As a degenerate implementation, always fail tbegin.  The reason
+    /*
+     * As a degenerate implementation, always fail tbegin.  The reason
      * given is "Nesting overflow".  The "persistent" bit is set,
      * providing a hint to the error handler to not retry.  The TFIAR
      * captures the address of the failure, which is this tbegin
-     * instruction.  Instruction execution will continue with the
-     * next instruction in memory, which is precisely what we want.
+     * instruction.  Instruction execution will continue with the next
+     * instruction in memory, which is precisely what we want.
      */
 
     env->spr[SPR_TEXASR] =

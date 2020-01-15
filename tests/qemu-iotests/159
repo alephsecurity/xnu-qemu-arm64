@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/usr/bin/env bash
 #
 # qemu-img dd test with different block sizes
 #
@@ -23,7 +23,6 @@ owner=fullmanet@gmail.com
 seq="$(basename $0)"
 echo "QA output created by $seq"
 
-here="$PWD"
 status=1
 
 _cleanup()
@@ -39,7 +38,6 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt generic
 _supported_proto file
-_supported_os Linux
 _unsupported_fmt luks
 
 TEST_SIZES="5 512 1024 1999 1K 64K 1M"

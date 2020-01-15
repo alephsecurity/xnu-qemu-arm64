@@ -15,6 +15,7 @@
 #include "fsdev/qemu-fsdev.h"
 #include "qemu/thread.h"
 #include "qemu/coroutine.h"
+#include "qemu/main-loop.h"
 #include "coth.h"
 
 int coroutine_fn v9fs_co_st_gen(V9fsPDU *pdu, V9fsPath *path, mode_t st_mode,
@@ -140,10 +141,10 @@ int coroutine_fn v9fs_co_open2(V9fsPDU *pdu, V9fsFidState *fidp,
     cred.fc_gid = gid;
     /*
      * Hold the directory fid lock so that directory path name
-     * don't change. Read lock is fine because this fid cannot
-     * be used by any other operation.
+     * don't change. Take the write lock to be sure this fid
+     * cannot be used by another operation.
      */
-    v9fs_path_read_lock(s);
+    v9fs_path_write_lock(s);
     v9fs_co_run_in_worker(
         {
             err = s->ops->open2(&s->ctx, &fidp->path,

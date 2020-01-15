@@ -22,11 +22,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
 #include <windows.h>
 #include <mmsystem.h>
-#include "sysemu/sysemu.h"
+#include "qemu-common.h"
 #include "qemu-options.h"
+#include "sysemu/runstate.h"
 
 /***********************************************************/
 /* Functions missing in mingw */
@@ -96,29 +98,4 @@ void os_set_line_buffering(void)
 int os_parse_cmd_args(int index, const char *optarg)
 {
     return -1;
-}
-
-int qemu_create_pidfile(const char *filename)
-{
-    char buffer[128];
-    int len;
-    HANDLE file;
-    OVERLAPPED overlap;
-    BOOL ret;
-    memset(&overlap, 0, sizeof(overlap));
-
-    file = CreateFile(filename, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-    if (file == INVALID_HANDLE_VALUE) {
-        return -1;
-    }
-    len = snprintf(buffer, sizeof(buffer), "%d\n", getpid());
-    ret = WriteFile(file, (LPCVOID)buffer, (DWORD)len,
-                    NULL, &overlap);
-    CloseHandle(file);
-    if (ret == 0) {
-        return -1;
-    }
-    return 0;
 }

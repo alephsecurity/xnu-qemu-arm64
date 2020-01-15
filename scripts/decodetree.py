@@ -17,151 +17,23 @@
 
 #
 # Generate a decoding tree from a specification file.
-#
-# The tree is built from instruction "patterns".  A pattern may represent
-# a single architectural instruction or a group of same, depending on what
-# is convenient for further processing.
-#
-# Each pattern has "fixedbits" & "fixedmask", the combination of which
-# describes the condition under which the pattern is matched:
-#
-#   (insn & fixedmask) == fixedbits
-#
-# Each pattern may have "fields", which are extracted from the insn and
-# passed along to the translator.  Examples of such are registers,
-# immediates, and sub-opcodes.
-#
-# In support of patterns, one may declare fields, argument sets, and
-# formats, each of which may be re-used to simplify further definitions.
-#
-# *** Field syntax:
-#
-# field_def     := '%' identifier ( unnamed_field )+ ( !function=identifier )?
-# unnamed_field := number ':' ( 's' ) number
-#
-# For unnamed_field, the first number is the least-significant bit position of
-# the field and the second number is the length of the field.  If the 's' is
-# present, the field is considered signed.  If multiple unnamed_fields are
-# present, they are concatenated.  In this way one can define disjoint fields.
-#
-# If !function is specified, the concatenated result is passed through the
-# named function, taking and returning an integral value.
-#
-# FIXME: the fields of the structure into which this result will be stored
-# is restricted to "int".  Which means that we cannot expand 64-bit items.
-#
-# Field examples:
-#
-#   %disp   0:s16          -- sextract(i, 0, 16)
-#   %imm9   16:6 10:3      -- extract(i, 16, 6) << 3 | extract(i, 10, 3)
-#   %disp12 0:s1 1:1 2:10  -- sextract(i, 0, 1) << 11
-#                             | extract(i, 1, 1) << 10
-#                             | extract(i, 2, 10)
-#   %shimm8 5:s8 13:1 !function=expand_shimm8
-#                          -- expand_shimm8(sextract(i, 5, 8) << 1
-#                                           | extract(i, 13, 1))
-#
-# *** Argument set syntax:
-#
-# args_def    := '&' identifier ( args_elt )+
-# args_elt    := identifier
-#
-# Each args_elt defines an argument within the argument set.
-# Each argument set will be rendered as a C structure "arg_$name"
-# with each of the fields being one of the member arguments.
-#
-# Argument set examples:
-#
-#   &reg3       ra rb rc
-#   &loadstore  reg base offset
-#
-# *** Format syntax:
-#
-# fmt_def      := '@' identifier ( fmt_elt )+
-# fmt_elt      := fixedbit_elt | field_elt | field_ref | args_ref
-# fixedbit_elt := [01.-]+
-# field_elt    := identifier ':' 's'? number
-# field_ref    := '%' identifier | identifier '=' '%' identifier
-# args_ref     := '&' identifier
-#
-# Defining a format is a handy way to avoid replicating groups of fields
-# across many instruction patterns.
-#
-# A fixedbit_elt describes a contiguous sequence of bits that must
-# be 1, 0, [.-] for don't care.  The difference between '.' and '-'
-# is that '.' means that the bit will be covered with a field or a
-# final [01] from the pattern, and '-' means that the bit is really
-# ignored by the cpu and will not be specified.
-#
-# A field_elt describes a simple field only given a width; the position of
-# the field is implied by its position with respect to other fixedbit_elt
-# and field_elt.
-#
-# If any fixedbit_elt or field_elt appear then all bits must be defined.
-# Padding with a fixedbit_elt of all '.' is an easy way to accomplish that.
-#
-# A field_ref incorporates a field by reference.  This is the only way to
-# add a complex field to a format.  A field may be renamed in the process
-# via assignment to another identifier.  This is intended to allow the
-# same argument set be used with disjoint named fields.
-#
-# A single args_ref may specify an argument set to use for the format.
-# The set of fields in the format must be a subset of the arguments in
-# the argument set.  If an argument set is not specified, one will be
-# inferred from the set of fields.
-#
-# It is recommended, but not required, that all field_ref and args_ref
-# appear at the end of the line, not interleaving with fixedbit_elf or
-# field_elt.
-#
-# Format examples:
-#
-#   @opr    ...... ra:5 rb:5 ... 0 ....... rc:5
-#   @opi    ...... ra:5 lit:8    1 ....... rc:5
-#
-# *** Pattern syntax:
-#
-# pat_def      := identifier ( pat_elt )+
-# pat_elt      := fixedbit_elt | field_elt | field_ref
-#               | args_ref | fmt_ref | const_elt
-# fmt_ref      := '@' identifier
-# const_elt    := identifier '=' number
-#
-# The fixedbit_elt and field_elt specifiers are unchanged from formats.
-# A pattern that does not specify a named format will have one inferred
-# from a referenced argument set (if present) and the set of fields.
-#
-# A const_elt allows a argument to be set to a constant value.  This may
-# come in handy when fields overlap between patterns and one has to
-# include the values in the fixedbit_elt instead.
-#
-# The decoder will call a translator function for each pattern matched.
-#
-# Pattern examples:
-#
-#   addl_r   010000 ..... ..... .... 0000000 ..... @opr
-#   addl_i   010000 ..... ..... .... 0000000 ..... @opi
-#
-# which will, in part, invoke
-#
-#   trans_addl_r(ctx, &arg_opr, insn)
-# and
-#   trans_addl_i(ctx, &arg_opi, insn)
+# See the syntax and semantics in docs/devel/decodetree.rst.
 #
 
-import io
 import os
 import re
 import sys
 import getopt
-import pdb
 
 insnwidth = 32
 insnmask = 0xffffffff
+variablewidth = False
 fields = {}
 arguments = {}
 formats = {}
 patterns = []
+allpatterns = []
+anyextern = False
 
 translate_prefix = 'trans'
 translate_scope = 'static '
@@ -169,19 +41,20 @@ input_file = ''
 output_file = None
 output_fd = None
 insntype = 'uint32_t'
+decode_function = 'decode'
 
 re_ident = '[a-zA-Z][a-zA-Z0-9_]*'
 
 
-def error(lineno, *args):
+def error_with_file(file, lineno, *args):
     """Print an error message from file:line and args and exit."""
     global output_file
     global output_fd
 
     if lineno:
-        r = '{0}:{1}: error:'.format(input_file, lineno)
+        r = '{0}:{1}: error:'.format(file, lineno)
     elif input_file:
-        r = '{0}: error:'.format(input_file)
+        r = '{0}: error:'.format(file)
     else:
         r = 'error:'
     for a in args:
@@ -193,6 +66,8 @@ def error(lineno, *args):
         os.remove(output_file)
     exit(1)
 
+def error(lineno, *args):
+    error_with_file(input_file, lineno, args)
 
 def output(*args):
     global output_fd
@@ -200,7 +75,7 @@ def output(*args):
         output_fd.write(a)
 
 
-if sys.version_info >= (3, 0):
+if sys.version_info >= (3, 4):
     re_fullmatch = re.fullmatch
 else:
     def re_fullmatch(pat, str):
@@ -300,7 +175,7 @@ class Field:
             s = 's'
         else:
             s = ''
-        return str(pos) + ':' + s + str(len)
+        return str(self.pos) + ':' + s + str(self.len)
 
     def str_extract(self):
         if self.sign:
@@ -310,7 +185,7 @@ class Field:
         return '{0}(insn, {1}, {2})'.format(extr, self.pos, self.len)
 
     def __eq__(self, other):
-        return self.sign == other.sign and self.sign == other.sign
+        return self.sign == other.sign and self.mask == other.mask
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -371,7 +246,7 @@ class ConstField:
 
 
 class FunctionField:
-    """Class representing a field passed through an expander"""
+    """Class representing a field passed through a function"""
     def __init__(self, func, base):
         self.mask = base.mask
         self.sign = base.sign
@@ -382,7 +257,7 @@ class FunctionField:
         return self.func + '(' + str(self.base) + ')'
 
     def str_extract(self):
-        return self.func + '(' + self.base.str_extract() + ')'
+        return self.func + '(ctx, ' + self.base.str_extract() + ')'
 
     def __eq__(self, other):
         return self.func == other.func and self.base == other.base
@@ -392,10 +267,32 @@ class FunctionField:
 # end FunctionField
 
 
+class ParameterField:
+    """Class representing a pseudo-field read from a function"""
+    def __init__(self, func):
+        self.mask = 0
+        self.sign = 0
+        self.func = func
+
+    def __str__(self):
+        return self.func
+
+    def str_extract(self):
+        return self.func + '(ctx)'
+
+    def __eq__(self, other):
+        return self.func == other.func
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+# end ParameterField
+
+
 class Arguments:
     """Class representing the extracted fields of a format"""
-    def __init__(self, nm, flds):
+    def __init__(self, nm, flds, extern):
         self.name = nm
+        self.extern = extern
         self.fields = sorted(flds)
 
     def __str__(self):
@@ -405,17 +302,19 @@ class Arguments:
         return 'arg_' + self.name
 
     def output_def(self):
-        output('typedef struct {\n')
-        for n in self.fields:
-            output('    int ', n, ';\n')
-        output('} ', self.struct_name(), ';\n\n')
+        if not self.extern:
+            output('typedef struct {\n')
+            for n in self.fields:
+                output('    int ', n, ';\n')
+            output('} ', self.struct_name(), ';\n\n')
 # end Arguments
 
 
 class General:
     """Common code between instruction formats and instruction patterns"""
-    def __init__(self, name, lineno, base, fixb, fixm, udfm, fldm, flds):
+    def __init__(self, name, lineno, base, fixb, fixm, udfm, fldm, flds, w):
         self.name = name
+        self.file = input_file
         self.lineno = lineno
         self.base = base
         self.fixedbits = fixb
@@ -423,15 +322,10 @@ class General:
         self.undefmask = udfm
         self.fieldmask = fldm
         self.fields = flds
+        self.width = w
 
     def __str__(self):
-        r = self.name
-        if self.base:
-            r = r + ' ' + self.base.name
-        else:
-            r = r + ' ' + str(self.fields)
-        r = r + ' ' + str_match_bits(self.fixedbits, self.fixedmask)
-        return r
+        return self.name + ' ' + str_match_bits(self.fixedbits, self.fixedmask)
 
     def str1(self, i):
         return str_indent(i) + self.__str__()
@@ -442,10 +336,11 @@ class Format(General):
     """Class representing an instruction format"""
 
     def extract_name(self):
-        return 'extract_' + self.name
+        global decode_function
+        return decode_function + '_extract_' + self.name
 
     def output_extract(self):
-        output('static void ', self.extract_name(), '(',
+        output('static void ', self.extract_name(), '(DisasContext *ctx, ',
                self.base.struct_name(), ' *a, ', insntype, ' insn)\n{\n')
         for n, f in self.fields.items():
             output('    a->', n, ' = ', f.str_extract(), ';\n')
@@ -462,21 +357,63 @@ class Pattern(General):
         output('typedef ', self.base.base.struct_name(),
                ' arg_', self.name, ';\n')
         output(translate_scope, 'bool ', translate_prefix, '_', self.name,
-               '(DisasContext *ctx, arg_', self.name,
-               ' *a, ', insntype, ' insn);\n')
+               '(DisasContext *ctx, arg_', self.name, ' *a);\n')
 
     def output_code(self, i, extracted, outerbits, outermask):
         global translate_prefix
         ind = str_indent(i)
         arg = self.base.base.name
-        output(ind, '/* line ', str(self.lineno), ' */\n')
+        output(ind, '/* ', self.file, ':', str(self.lineno), ' */\n')
         if not extracted:
-            output(ind, self.base.extract_name(), '(&u.f_', arg, ', insn);\n')
+            output(ind, self.base.extract_name(),
+                   '(ctx, &u.f_', arg, ', insn);\n')
         for n, f in self.fields.items():
             output(ind, 'u.f_', arg, '.', n, ' = ', f.str_extract(), ';\n')
-        output(ind, 'return ', translate_prefix, '_', self.name,
-               '(ctx, &u.f_', arg, ', insn);\n')
+        output(ind, 'if (', translate_prefix, '_', self.name,
+               '(ctx, &u.f_', arg, ')) return true;\n')
 # end Pattern
+
+
+class MultiPattern(General):
+    """Class representing an overlapping set of instruction patterns"""
+
+    def __init__(self, lineno, pats, fixb, fixm, udfm, w):
+        self.file = input_file
+        self.lineno = lineno
+        self.pats = pats
+        self.base = None
+        self.fixedbits = fixb
+        self.fixedmask = fixm
+        self.undefmask = udfm
+        self.width = w
+
+    def __str__(self):
+        r = "{"
+        for p in self.pats:
+           r = r + ' ' + str(p)
+        return r + "}"
+
+    def output_decl(self):
+        for p in self.pats:
+            p.output_decl()
+
+    def output_code(self, i, extracted, outerbits, outermask):
+        global translate_prefix
+        ind = str_indent(i)
+        for p in self.pats:
+            if outermask != p.fixedmask:
+                innermask = p.fixedmask & ~outermask
+                innerbits = p.fixedbits & ~outermask
+                output(ind, 'if ((insn & ',
+                       '0x{0:08x}) == 0x{1:08x}'.format(innermask, innerbits),
+                       ') {\n')
+                output(ind, '    /* ',
+                       str_match_bits(p.fixedbits, p.fixedmask), ' */\n')
+                p.output_code(i + 4, extracted, p.fixedbits, p.fixedmask)
+                output(ind, '}\n')
+            else:
+                p.output_code(i, extracted, p.fixedbits, p.fixedmask)
+#end MultiPattern
 
 
 def parse_field(lineno, name, toks):
@@ -518,17 +455,23 @@ def parse_field(lineno, name, toks):
 
     if width > insnwidth:
         error(lineno, 'field too large')
-    if len(subs) == 1:
-        f = subs[0]
+    if len(subs) == 0:
+        if func:
+            f = ParameterField(func)
+        else:
+            error(lineno, 'field with no value')
     else:
-        mask = 0
-        for s in subs:
-            if mask & s.mask:
-                error(lineno, 'field components overlap')
-            mask |= s.mask
-        f = MultiField(subs, mask)
-    if func:
-        f = FunctionField(func, f)
+        if len(subs) == 1:
+            f = subs[0]
+        else:
+            mask = 0
+            for s in subs:
+                if mask & s.mask:
+                    error(lineno, 'field components overlap')
+                mask |= s.mask
+            f = MultiField(subs, mask)
+        if func:
+            f = FunctionField(func, f)
 
     if name in fields:
         error(lineno, 'duplicate field', name)
@@ -540,9 +483,15 @@ def parse_arguments(lineno, name, toks):
     """Parse one argument set from TOKS at LINENO"""
     global arguments
     global re_ident
+    global anyextern
 
     flds = []
+    extern = False
     for t in toks:
+        if re_fullmatch('!extern', t):
+            extern = True
+            anyextern = True
+            continue
         if not re_fullmatch(re_ident, t):
             error(lineno, 'invalid argument set token "{0}"'.format(t))
         if t in flds:
@@ -551,7 +500,7 @@ def parse_arguments(lineno, name, toks):
 
     if name in arguments:
         error(lineno, 'duplicate argument set', name)
-    arguments[name] = Arguments(name, flds)
+    arguments[name] = Arguments(name, flds, extern)
 # end parse_arguments
 
 
@@ -575,20 +524,22 @@ def add_field_byname(lineno, flds, new_name, old_name):
 
 def infer_argument_set(flds):
     global arguments
+    global decode_function
 
     for arg in arguments.values():
         if eq_fields_for_args(flds, arg.fields):
             return arg
 
-    name = str(len(arguments))
-    arg = Arguments(name, flds.keys())
+    name = decode_function + str(len(arguments))
+    arg = Arguments(name, flds.keys(), False)
     arguments[name] = arg
     return arg
 
 
-def infer_format(arg, fieldmask, flds):
+def infer_format(arg, fieldmask, flds, width):
     global arguments
     global formats
+    global decode_function
 
     const_flds = {}
     var_flds = {}
@@ -604,15 +555,17 @@ def infer_format(arg, fieldmask, flds):
             continue
         if fieldmask != fmt.fieldmask:
             continue
+        if width != fmt.width:
+            continue
         if not eq_fields_for_fmts(flds, fmt.fields):
             continue
         return (fmt, const_flds)
 
-    name = 'Fmt_' + str(len(formats))
+    name = decode_function + '_Fmt_' + str(len(formats))
     if not arg:
         arg = infer_argument_set(flds)
 
-    fmt = Format(name, 0, arg, 0, 0, 0, fieldmask, var_flds)
+    fmt = Format(name, 0, arg, 0, 0, 0, fieldmask, var_flds, width)
     formats[name] = fmt
 
     return (fmt, const_flds)
@@ -625,9 +578,11 @@ def parse_generic(lineno, is_format, name, toks):
     global arguments
     global formats
     global patterns
+    global allpatterns
     global re_ident
     global insnwidth
     global insnmask
+    global variablewidth
 
     fixedmask = 0
     fixedbits = 0
@@ -672,7 +627,7 @@ def parse_generic(lineno, is_format, name, toks):
             continue
 
         # 'Foo=number' sets an argument field to a constant value
-        if re_fullmatch(re_ident + '=[0-9]+', t):
+        if re_fullmatch(re_ident + '=[+-]?[0-9]+', t):
             (fname, value) = t.split('=')
             value = int(value)
             flds = add_field(lineno, flds, fname, ConstField(value))
@@ -704,6 +659,8 @@ def parse_generic(lineno, is_format, name, toks):
                 sign = True
                 flen = flen[1:]
             shift = int(flen, 10)
+            if shift + width > insnwidth:
+                error(lineno, 'field {0} exceeds insnwidth'.format(fname))
             f = Field(sign, insnwidth - width - shift, shift)
             flds = add_field(lineno, flds, fname, f)
             fixedbits <<= shift
@@ -713,8 +670,15 @@ def parse_generic(lineno, is_format, name, toks):
             error(lineno, 'invalid token "{0}"'.format(t))
         width += shift
 
+    if variablewidth and width < insnwidth and width % 8 == 0:
+        shift = insnwidth - width
+        fixedbits <<= shift
+        fixedmask <<= shift
+        undefmask <<= shift
+        undefmask |= (1 << shift) - 1
+
     # We should have filled in all of the bits of the instruction.
-    if not (is_format and width == 0) and width != insnwidth:
+    elif not (is_format and width == 0) and width != insnwidth:
         error(lineno, 'definition has {0} bits'.format(width))
 
     # Do not check for fields overlaping fields; one valid usage
@@ -740,7 +704,7 @@ def parse_generic(lineno, is_format, name, toks):
         if name in formats:
             error(lineno, 'duplicate format name', name)
         fmt = Format(name, lineno, arg, fixedbits, fixedmask,
-                     undefmask, fieldmask, flds)
+                     undefmask, fieldmask, flds, width)
         formats[name] = fmt
     else:
         # Patterns can reference a format ...
@@ -750,12 +714,14 @@ def parse_generic(lineno, is_format, name, toks):
                 error(lineno, 'pattern specifies both format and argument set')
             if fixedmask & fmt.fixedmask:
                 error(lineno, 'pattern fixed bits overlap format fixed bits')
+            if width != fmt.width:
+                error(lineno, 'pattern uses format of different width')
             fieldmask |= fmt.fieldmask
             fixedbits |= fmt.fixedbits
             fixedmask |= fmt.fixedmask
             undefmask |= fmt.undefmask
         else:
-            (fmt, flds) = infer_format(arg, fieldmask, flds)
+            (fmt, flds) = infer_format(arg, fieldmask, flds, width)
         arg = fmt.base
         for f in flds.keys():
             if f not in arg.fields:
@@ -767,8 +733,9 @@ def parse_generic(lineno, is_format, name, toks):
             if f not in flds.keys() and f not in fmt.fields.keys():
                 error(lineno, 'field {0} not initialized'.format(f))
         pat = Pattern(name, lineno, fmt, fixedbits, fixedmask,
-                      undefmask, fieldmask, flds)
+                      undefmask, fieldmask, flds, width)
         patterns.append(pat)
+        allpatterns.append(pat)
 
     # Validate the masks that we have assembled.
     if fieldmask & fixedmask:
@@ -787,16 +754,72 @@ def parse_generic(lineno, is_format, name, toks):
                           .format(allbits ^ insnmask))
 # end parse_general
 
+def build_multi_pattern(lineno, pats):
+    """Validate the Patterns going into a MultiPattern."""
+    global patterns
+    global insnmask
+
+    if len(pats) < 2:
+        error(lineno, 'less than two patterns within braces')
+
+    fixedmask = insnmask
+    undefmask = insnmask
+
+    # Collect fixed/undefmask for all of the children.
+    # Move the defining lineno back to that of the first child.
+    for p in pats:
+        fixedmask &= p.fixedmask
+        undefmask &= p.undefmask
+        if p.lineno < lineno:
+            lineno = p.lineno
+
+    width = None
+    for p in pats:
+        if width is None:
+            width = p.width
+        elif width != p.width:
+            error(lineno, 'width mismatch in patterns within braces')
+
+    repeat = True
+    while repeat:
+        if fixedmask == 0:
+            error(lineno, 'no overlap in patterns within braces')
+        fixedbits = None
+        for p in pats:
+            thisbits = p.fixedbits & fixedmask
+            if fixedbits is None:
+                fixedbits = thisbits
+            elif fixedbits != thisbits:
+                fixedmask &= ~(fixedbits ^ thisbits)
+                break
+        else:
+            repeat = False
+
+    mp = MultiPattern(lineno, pats, fixedbits, fixedmask, undefmask, width)
+    patterns.append(mp)
+# end build_multi_pattern
 
 def parse_file(f):
     """Parse all of the patterns within a file"""
+
+    global patterns
 
     # Read all of the lines of the file.  Concatenate lines
     # ending in backslash; discard empty lines and comments.
     toks = []
     lineno = 0
+    nesting = 0
+    saved_pats = []
+
     for line in f:
         lineno += 1
+
+        # Expand and strip spaces, to find indent.
+        line = line.rstrip()
+        line = line.expandtabs()
+        len1 = len(line)
+        line = line.lstrip()
+        len2 = len(line)
 
         # Discard comments
         end = line.find('#')
@@ -807,10 +830,18 @@ def parse_file(f):
         if len(toks) != 0:
             # Next line after continuation
             toks.extend(t)
-        elif len(t) == 0:
-            # Empty line
-            continue
         else:
+            # Allow completely blank lines.
+            if len1 == 0:
+                continue
+            indent = len1 - len2
+            # Empty line due to comment.
+            if len(t) == 0:
+                # Indentation must be correct, even for comment lines.
+                if indent != nesting:
+                    error(lineno, 'indentation ', indent, ' != ', nesting)
+                continue
+            start_lineno = lineno
             toks = t
 
         # Continuation?
@@ -818,21 +849,47 @@ def parse_file(f):
             toks.pop()
             continue
 
-        if len(toks) < 2:
-            error(lineno, 'short line')
-
         name = toks[0]
         del toks[0]
 
+        # End nesting?
+        if name == '}':
+            if nesting == 0:
+                error(start_lineno, 'mismatched close brace')
+            if len(toks) != 0:
+                error(start_lineno, 'extra tokens after close brace')
+            nesting -= 2
+            if indent != nesting:
+                error(start_lineno, 'indentation ', indent, ' != ', nesting)
+            pats = patterns
+            patterns = saved_pats.pop()
+            build_multi_pattern(lineno, pats)
+            toks = []
+            continue
+
+        # Everything else should have current indentation.
+        if indent != nesting:
+            error(start_lineno, 'indentation ', indent, ' != ', nesting)
+
+        # Start nesting?
+        if name == '{':
+            if len(toks) != 0:
+                error(start_lineno, 'extra tokens after open brace')
+            saved_pats.append(patterns)
+            patterns = []
+            nesting += 2
+            toks = []
+            continue
+
         # Determine the type of object needing to be parsed.
         if name[0] == '%':
-            parse_field(lineno, name[1:], toks)
+            parse_field(start_lineno, name[1:], toks)
         elif name[0] == '&':
-            parse_arguments(lineno, name[1:], toks)
+            parse_arguments(start_lineno, name[1:], toks)
         elif name[0] == '@':
-            parse_generic(lineno, True, name[1:], toks)
+            parse_generic(start_lineno, True, name[1:], toks)
         else:
-            parse_generic(lineno, False, name, toks)
+            parse_generic(start_lineno, False, name, toks)
         toks = []
 # end parse_file
 
@@ -868,7 +925,7 @@ class Tree:
         # extract the fields now.
         if not extracted and self.base:
             output(ind, self.base.extract_name(),
-                   '(&u.f_', self.base.base.name, ', insn);\n')
+                   '(ctx, &u.f_', self.base.base.name, ', insn);\n')
             extracted = True
 
         # Attempt to aid the compiler in producing compact switch statements.
@@ -897,22 +954,22 @@ class Tree:
             output(ind, '    /* ',
                    str_match_bits(innerbits, innermask), ' */\n')
             s.output_code(i + 4, extracted, innerbits, innermask)
+            output(ind, '    return false;\n')
         output(ind, '}\n')
-        output(ind, 'return false;\n')
 # end Tree
 
 
 def build_tree(pats, outerbits, outermask):
     # Find the intersection of all remaining fixedmask.
-    innermask = ~outermask
+    innermask = ~outermask & insnmask
     for i in pats:
         innermask &= i.fixedmask
 
     if innermask == 0:
-        pnames = []
+        text = 'overlapping patterns:'
         for p in pats:
-            pnames.append(p.name + ':' + str(p.lineno))
-        error(pats[0].lineno, 'overlapping patterns:', pnames)
+            text += '\n' + p.file + ':' + str(p.lineno) + ': ' + str(p)
+        error_with_file(pats[0].file, pats[0].lineno, text)
 
     fullmask = outermask | innermask
 
@@ -939,6 +996,147 @@ def build_tree(pats, outerbits, outermask):
 # end build_tree
 
 
+class SizeTree:
+    """Class representing a node in a size decode tree"""
+
+    def __init__(self, m, w):
+        self.mask = m
+        self.subs = []
+        self.base = None
+        self.width = w
+
+    def str1(self, i):
+        ind = str_indent(i)
+        r = '{0}{1:08x}'.format(ind, self.mask)
+        r += ' [\n'
+        for (b, s) in self.subs:
+            r += '{0}  {1:08x}:\n'.format(ind, b)
+            r += s.str1(i + 4) + '\n'
+        r += ind + ']'
+        return r
+
+    def __str__(self):
+        return self.str1(0)
+
+    def output_code(self, i, extracted, outerbits, outermask):
+        ind = str_indent(i)
+
+        # If we need to load more bytes to test, do so now.
+        if extracted < self.width:
+            output(ind, 'insn = ', decode_function,
+                   '_load_bytes(ctx, insn, {0}, {1});\n'
+                   .format(extracted / 8, self.width / 8));
+            extracted = self.width
+
+        # Attempt to aid the compiler in producing compact switch statements.
+        # If the bits in the mask are contiguous, extract them.
+        sh = is_contiguous(self.mask)
+        if sh > 0:
+            # Propagate SH down into the local functions.
+            def str_switch(b, sh=sh):
+                return '(insn >> {0}) & 0x{1:x}'.format(sh, b >> sh)
+
+            def str_case(b, sh=sh):
+                return '0x{0:x}'.format(b >> sh)
+        else:
+            def str_switch(b):
+                return 'insn & 0x{0:08x}'.format(b)
+
+            def str_case(b):
+                return '0x{0:08x}'.format(b)
+
+        output(ind, 'switch (', str_switch(self.mask), ') {\n')
+        for b, s in sorted(self.subs):
+            innermask = outermask | self.mask
+            innerbits = outerbits | b
+            output(ind, 'case ', str_case(b), ':\n')
+            output(ind, '    /* ',
+                   str_match_bits(innerbits, innermask), ' */\n')
+            s.output_code(i + 4, extracted, innerbits, innermask)
+        output(ind, '}\n')
+        output(ind, 'return insn;\n')
+# end SizeTree
+
+class SizeLeaf:
+    """Class representing a leaf node in a size decode tree"""
+
+    def __init__(self, m, w):
+        self.mask = m
+        self.width = w
+
+    def str1(self, i):
+        ind = str_indent(i)
+        return '{0}{1:08x}'.format(ind, self.mask)
+
+    def __str__(self):
+        return self.str1(0)
+
+    def output_code(self, i, extracted, outerbits, outermask):
+        global decode_function
+        ind = str_indent(i)
+
+        # If we need to load more bytes, do so now.
+        if extracted < self.width:
+            output(ind, 'insn = ', decode_function,
+                   '_load_bytes(ctx, insn, {0}, {1});\n'
+                   .format(extracted / 8, self.width / 8));
+            extracted = self.width
+        output(ind, 'return insn;\n')
+# end SizeLeaf
+
+
+def build_size_tree(pats, width, outerbits, outermask):
+    global insnwidth
+
+    # Collect the mask of bits that are fixed in this width
+    innermask = 0xff << (insnwidth - width)
+    innermask &= ~outermask
+    minwidth = None
+    onewidth = True
+    for i in pats:
+        innermask &= i.fixedmask
+        if minwidth is None:
+            minwidth = i.width
+        elif minwidth != i.width:
+            onewidth = False;
+            if minwidth < i.width:
+                minwidth = i.width
+
+    if onewidth:
+        return SizeLeaf(innermask, minwidth)
+
+    if innermask == 0:
+        if width < minwidth:
+            return build_size_tree(pats, width + 8, outerbits, outermask)
+
+        pnames = []
+        for p in pats:
+            pnames.append(p.name + ':' + p.file + ':' + str(p.lineno))
+        error_with_file(pats[0].file, pats[0].lineno,
+                        'overlapping patterns size {0}:'.format(width), pnames)
+
+    bins = {}
+    for i in pats:
+        fb = i.fixedbits & innermask
+        if fb in bins:
+            bins[fb].append(i)
+        else:
+            bins[fb] = [i]
+
+    fullmask = outermask | innermask
+    lens = sorted(bins.keys())
+    if len(lens) == 1:
+        b = lens[0]
+        return build_size_tree(bins[b], width + 8, b | outerbits, fullmask)
+
+    r = SizeTree(innermask, width)
+    for b, l in bins.items():
+        s = build_size_tree(l, width, b | outerbits, fullmask)
+        r.subs.append((b, s))
+    return r
+# end build_size_tree
+
+
 def prop_format(tree):
     """Propagate Format objects into the decode tree"""
 
@@ -961,10 +1159,28 @@ def prop_format(tree):
 # end prop_format
 
 
+def prop_size(tree):
+    """Propagate minimum widths up the decode size tree"""
+
+    if isinstance(tree, SizeTree):
+        min = None
+        for (b, s) in tree.subs:
+            width = prop_size(s)
+            if min is None or min > width:
+                min = width
+        assert min >= tree.width
+        tree.width = min
+    else:
+        min = tree.width
+    return min
+# end prop_size
+
+
 def main():
     global arguments
     global formats
     global patterns
+    global allpatterns
     global translate_scope
     global translate_prefix
     global output_fd
@@ -973,13 +1189,16 @@ def main():
     global insnwidth
     global insntype
     global insnmask
+    global decode_function
+    global variablewidth
+    global anyextern
 
-    decode_function = 'decode'
     decode_scope = 'static '
 
-    long_opts = ['decode=', 'translate=', 'output=', 'insnwidth=']
+    long_opts = ['decode=', 'translate=', 'output=', 'insnwidth=',
+                 'static-decode=', 'varinsnwidth=']
     try:
-        (opts, args) = getopt.getopt(sys.argv[1:], 'o:w:', long_opts)
+        (opts, args) = getopt.getopt(sys.argv[1:], 'o:vw:', long_opts)
     except getopt.GetoptError as err:
         error(0, err)
     for o, a in opts:
@@ -988,10 +1207,14 @@ def main():
         elif o == '--decode':
             decode_function = a
             decode_scope = ''
+        elif o == '--static-decode':
+            decode_function = a
         elif o == '--translate':
             translate_prefix = a
             translate_scope = ''
-        elif o in ('-w', '--insnwidth'):
+        elif o in ('-w', '--insnwidth', '--varinsnwidth'):
+            if o == '--varinsnwidth':
+                variablewidth = True
             insnwidth = int(a)
             if insnwidth == 16:
                 insntype = 'uint16_t'
@@ -1003,13 +1226,18 @@ def main():
 
     if len(args) < 1:
         error(0, 'missing input file')
-    input_file = args[0]
-    f = open(input_file, 'r')
-    parse_file(f)
-    f.close()
+    for filename in args:
+        input_file = filename
+        f = open(filename, 'r')
+        parse_file(f)
+        f.close()
 
-    t = build_tree(patterns, 0, 0)
-    prop_format(t)
+    if variablewidth:
+        stree = build_size_tree(patterns, 8, 0, 0)
+        prop_size(stree)
+
+    dtree = build_tree(patterns, 0, 0)
+    prop_format(dtree)
 
     if output_file:
         output_fd = open(output_file, 'w')
@@ -1024,8 +1252,21 @@ def main():
     # A single translate function can be invoked for different patterns.
     # Make sure that the argument sets are the same, and declare the
     # function only once.
+    #
+    # If we're sharing formats, we're likely also sharing trans_* functions,
+    # but we can't tell which ones.  Prevent issues from the compiler by
+    # suppressing redundant declaration warnings.
+    if anyextern:
+        output("#ifdef CONFIG_PRAGMA_DIAGNOSTIC_AVAILABLE\n",
+               "# pragma GCC diagnostic push\n",
+               "# pragma GCC diagnostic ignored \"-Wredundant-decls\"\n",
+               "# ifdef __clang__\n"
+               "#  pragma GCC diagnostic ignored \"-Wtypedef-redefinition\"\n",
+               "# endif\n",
+               "#endif\n\n")
+
     out_pats = {}
-    for i in patterns:
+    for i in allpatterns:
         if i.name in out_pats:
             p = out_pats[i.name]
             if i.base.base != p.base.base:
@@ -1035,6 +1276,11 @@ def main():
             out_pats[i.name] = i
     output('\n')
 
+    if anyextern:
+        output("#ifdef CONFIG_PRAGMA_DIAGNOSTIC_AVAILABLE\n",
+               "# pragma GCC diagnostic pop\n",
+               "#endif\n\n")
+
     for n in sorted(formats.keys()):
         f = formats[n]
         f.output_extract()
@@ -1043,15 +1289,24 @@ def main():
            '(DisasContext *ctx, ', insntype, ' insn)\n{\n')
 
     i4 = str_indent(4)
-    output(i4, 'union {\n')
-    for n in sorted(arguments.keys()):
-        f = arguments[n]
-        output(i4, i4, f.struct_name(), ' f_', f.name, ';\n')
-    output(i4, '} u;\n\n')
 
-    t.output_code(4, False, 0, 0)
+    if len(allpatterns) != 0:
+        output(i4, 'union {\n')
+        for n in sorted(arguments.keys()):
+            f = arguments[n]
+            output(i4, i4, f.struct_name(), ' f_', f.name, ';\n')
+        output(i4, '} u;\n\n')
+        dtree.output_code(4, False, 0, 0)
 
+    output(i4, 'return false;\n')
     output('}\n')
+
+    if variablewidth:
+        output('\n', decode_scope, insntype, ' ', decode_function,
+               '_load(DisasContext *ctx)\n{\n',
+               '    ', insntype, ' insn = 0;\n\n')
+        stree.output_code(4, 0, 0, 0)
+        output('}\n')
 
     if output_file:
         output_fd.close()

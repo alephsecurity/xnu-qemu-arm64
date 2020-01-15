@@ -10,11 +10,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "sysemu/replay.h"
+#include "sysemu/runstate.h"
 #include "replay-internal.h"
 #include "qemu/error-report.h"
-#include "sysemu/sysemu.h"
+#include "qemu/main-loop.h"
 
 /* Mutex to protect reading and writing events to the log.
    data_kind and has_unread_data are also protected
@@ -33,6 +33,12 @@ static void replay_write_error(void)
         error_report("replay write error");
         write_error = true;
     }
+}
+
+static void replay_read_error(void)
+{
+    error_report("error reading the replay data");
+    exit(1);
 }
 
 void replay_put_byte(uint8_t byte)
@@ -83,7 +89,11 @@ uint8_t replay_get_byte(void)
 {
     uint8_t byte = 0;
     if (replay_file) {
-        byte = getc(replay_file);
+        int r = getc(replay_file);
+        if (r == EOF) {
+            replay_read_error();
+        }
+        byte = r;
     }
     return byte;
 }
@@ -126,7 +136,7 @@ void replay_get_array(uint8_t *buf, size_t *size)
     if (replay_file) {
         *size = replay_get_dword();
         if (fread(buf, 1, *size, replay_file) != *size) {
-            error_report("replay read error");
+            replay_read_error();
         }
     }
 }
@@ -137,7 +147,7 @@ void replay_get_array_alloc(uint8_t **buf, size_t *size)
         *size = replay_get_dword();
         *buf = g_malloc(*size);
         if (fread(*buf, 1, *size, replay_file) != *size) {
-            error_report("replay read error");
+            replay_read_error();
         }
     }
 }
@@ -163,7 +173,7 @@ void replay_fetch_data_kind(void)
         if (!replay_state.has_unread_data) {
             replay_state.data_kind = replay_get_byte();
             if (replay_state.data_kind == EVENT_INSTRUCTION) {
-                replay_state.instructions_count = replay_get_dword();
+                replay_state.instruction_count = replay_get_dword();
             }
             replay_check_error();
             replay_state.has_unread_data = 1;
@@ -217,20 +227,25 @@ void replay_mutex_unlock(void)
     }
 }
 
+void replay_advance_current_icount(uint64_t current_icount)
+{
+    int diff = (int)(current_icount - replay_state.current_icount);
+
+    /* Time can only go forward */
+    assert(diff >= 0);
+
+    if (diff > 0) {
+        replay_put_event(EVENT_INSTRUCTION);
+        replay_put_dword(diff);
+        replay_state.current_icount += diff;
+    }
+}
+
 /*! Saves cached instructions. */
 void replay_save_instructions(void)
 {
     if (replay_file && replay_mode == REPLAY_MODE_RECORD) {
         g_assert(replay_mutex_locked());
-        int diff = (int)(replay_get_current_step() - replay_state.current_step);
-
-        /* Time can only go forward */
-        assert(diff >= 0);
-
-        if (diff > 0) {
-            replay_put_event(EVENT_INSTRUCTION);
-            replay_put_dword(diff);
-            replay_state.current_step += diff;
-        }
+        replay_advance_current_icount(replay_get_current_icount());
     }
 }

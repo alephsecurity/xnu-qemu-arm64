@@ -39,7 +39,7 @@ static void colo_failover_bh(void *opaque)
         return;
     }
 
-    colo_do_failover(NULL);
+    colo_do_failover();
 }
 
 void failover_request_active(Error **errp)
@@ -77,7 +77,7 @@ FailoverStatus failover_get_state(void)
 
 void qmp_x_colo_lost_heartbeat(Error **errp)
 {
-    if (get_colo_mode() == COLO_MODE_UNKNOWN) {
+    if (get_colo_mode() == COLO_MODE_NONE) {
         error_setg(errp, QERR_FEATURE_DISABLED, "colo");
         return;
     }

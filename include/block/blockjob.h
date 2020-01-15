@@ -70,6 +70,9 @@ typedef struct BlockJob {
     /** Called when the job transitions to READY */
     Notifier ready_notifier;
 
+    /** Called when the job coroutine yields or terminates */
+    Notifier idle_notifier;
+
     /** BlockDriverStates that are involved in this block job */
     GSList *nodes;
 } BlockJob;
@@ -117,6 +120,15 @@ int block_job_add_bdrv(BlockJob *job, const char *name, BlockDriverState *bs,
  * job. This removes the blockers added with block_job_add_bdrv().
  */
 void block_job_remove_all_bdrv(BlockJob *job);
+
+/**
+ * block_job_has_bdrv:
+ * @job: The block job
+ *
+ * Searches for @bs in the list of nodes that are involved in the
+ * job.
+ */
+bool block_job_has_bdrv(BlockJob *job, BlockDriverState *bs);
 
 /**
  * block_job_set_speed:

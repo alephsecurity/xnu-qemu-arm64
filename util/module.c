@@ -14,7 +14,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #ifdef CONFIG_MODULES
 #include <gmodule.h>
 #endif
@@ -157,20 +156,23 @@ out:
 }
 #endif
 
-void module_load_one(const char *prefix, const char *lib_name)
+bool module_load_one(const char *prefix, const char *lib_name)
 {
+    bool success = false;
+
 #ifdef CONFIG_MODULES
     char *fname = NULL;
     char *exec_dir;
-    char *dirs[3];
+    const char *search_dir;
+    char *dirs[4];
     char *module_name;
-    int i = 0;
+    int i = 0, n_dirs = 0;
     int ret;
     static GHashTable *loaded_modules;
 
     if (!g_module_supported()) {
         fprintf(stderr, "Module is not supported by system.\n");
-        return;
+        return false;
     }
 
     if (!loaded_modules) {
@@ -179,21 +181,25 @@ void module_load_one(const char *prefix, const char *lib_name)
 
     module_name = g_strdup_printf("%s%s", prefix, lib_name);
 
-    if (g_hash_table_lookup(loaded_modules, module_name)) {
+    if (!g_hash_table_add(loaded_modules, module_name)) {
         g_free(module_name);
-        return;
+        return true;
     }
-    g_hash_table_insert(loaded_modules, module_name, module_name);
 
     exec_dir = qemu_get_exec_dir();
-    dirs[i++] = g_strdup_printf("%s", CONFIG_QEMU_MODDIR);
-    dirs[i++] = g_strdup_printf("%s/..", exec_dir ? : "");
-    dirs[i++] = g_strdup_printf("%s", exec_dir ? : "");
-    assert(i == ARRAY_SIZE(dirs));
+    search_dir = getenv("QEMU_MODULE_DIR");
+    if (search_dir != NULL) {
+        dirs[n_dirs++] = g_strdup_printf("%s", search_dir);
+    }
+    dirs[n_dirs++] = g_strdup_printf("%s", CONFIG_QEMU_MODDIR);
+    dirs[n_dirs++] = g_strdup_printf("%s/..", exec_dir ? : "");
+    dirs[n_dirs++] = g_strdup_printf("%s", exec_dir ? : "");
+    assert(n_dirs <= ARRAY_SIZE(dirs));
+
     g_free(exec_dir);
     exec_dir = NULL;
 
-    for (i = 0; i < ARRAY_SIZE(dirs); i++) {
+    for (i = 0; i < n_dirs; i++) {
         fname = g_strdup_printf("%s/%s%s",
                 dirs[i], module_name, HOST_DSOSUF);
         ret = module_load_file(fname);
@@ -201,13 +207,19 @@ void module_load_one(const char *prefix, const char *lib_name)
         fname = NULL;
         /* Try loading until loaded a module file */
         if (!ret) {
+            success = true;
             break;
         }
     }
 
-    for (i = 0; i < ARRAY_SIZE(dirs); i++) {
+    if (!success) {
+        g_hash_table_remove(loaded_modules, module_name);
+    }
+
+    for (i = 0; i < n_dirs; i++) {
         g_free(dirs[i]);
     }
 
 #endif
+    return success;
 }

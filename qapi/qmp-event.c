@@ -13,23 +13,10 @@
 
 #include "qemu/osdep.h"
 
-#include "qemu-common.h"
 #include "qapi/qmp-event.h"
 #include "qapi/qmp/qstring.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qjson.h"
-
-static QMPEventFuncEmit qmp_emit;
-
-void qmp_event_set_func_emit(QMPEventFuncEmit emit)
-{
-    qmp_emit = emit;
-}
-
-QMPEventFuncEmit qmp_event_get_func_emit(void)
-{
-    return qmp_emit;
-}
 
 static void timestamp_put(QDict *qdict)
 {

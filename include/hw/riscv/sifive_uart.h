@@ -20,6 +20,9 @@
 #ifndef HW_SIFIVE_UART_H
 #define HW_SIFIVE_UART_H
 
+#include "chardev/char-fe.h"
+#include "hw/sysbus.h"
+
 enum {
     SIFIVE_UART_TXFIFO        = 0,
     SIFIVE_UART_RXFIFO        = 4,
@@ -42,6 +45,9 @@ enum {
     SIFIVE_UART_IP_TXWM       = 1, /* Transmit watermark interrupt pending */
     SIFIVE_UART_IP_RXWM       = 2  /* Receive watermark interrupt pending */
 };
+
+#define SIFIVE_UART_GET_TXCNT(txctrl)   ((txctrl >> 16) & 0x7)
+#define SIFIVE_UART_GET_RXCNT(rxctrl)   ((rxctrl >> 16) & 0x7)
 
 #define TYPE_SIFIVE_UART "riscv.sifive.uart"
 

@@ -22,6 +22,7 @@
 
 #include "qemu/osdep.h"
 #include "block/block_int.h"
+#include "qemu/module.h"
 
 
 static int cor_open(BlockDriverState *bs, QDict *options, int flags,
@@ -34,19 +35,13 @@ static int cor_open(BlockDriverState *bs, QDict *options, int flags,
     }
 
     bs->supported_write_flags = BDRV_REQ_WRITE_UNCHANGED |
-                                (BDRV_REQ_FUA &
-                                    bs->file->bs->supported_write_flags);
+        (BDRV_REQ_FUA & bs->file->bs->supported_write_flags);
 
     bs->supported_zero_flags = BDRV_REQ_WRITE_UNCHANGED |
-                               ((BDRV_REQ_FUA | BDRV_REQ_MAY_UNMAP) &
-                                    bs->file->bs->supported_zero_flags);
+        ((BDRV_REQ_FUA | BDRV_REQ_MAY_UNMAP | BDRV_REQ_NO_FALLBACK) &
+            bs->file->bs->supported_zero_flags);
 
     return 0;
-}
-
-
-static void cor_close(BlockDriverState *bs)
-{
 }
 
 
@@ -61,29 +56,20 @@ static void cor_child_perm(BlockDriverState *bs, BdrvChild *c,
                            uint64_t perm, uint64_t shared,
                            uint64_t *nperm, uint64_t *nshared)
 {
-    if (c == NULL) {
-        *nperm = (perm & PERM_PASSTHROUGH) | BLK_PERM_WRITE_UNCHANGED;
-        *nshared = (shared & PERM_PASSTHROUGH) | PERM_UNCHANGED;
-        return;
-    }
+    *nperm = perm & PERM_PASSTHROUGH;
+    *nshared = (shared & PERM_PASSTHROUGH) | PERM_UNCHANGED;
 
-    *nperm = (perm & PERM_PASSTHROUGH) |
-             (c->perm & PERM_UNCHANGED);
-    *nshared = (shared & PERM_PASSTHROUGH) |
-               (c->shared_perm & PERM_UNCHANGED);
+    /* We must not request write permissions for an inactive node, the child
+     * cannot provide it. */
+    if (!(bs->open_flags & BDRV_O_INACTIVE)) {
+        *nperm |= BLK_PERM_WRITE_UNCHANGED;
+    }
 }
 
 
 static int64_t cor_getlength(BlockDriverState *bs)
 {
     return bdrv_getlength(bs->file->bs);
-}
-
-
-static int coroutine_fn cor_co_truncate(BlockDriverState *bs, int64_t offset,
-                                        PreallocMode prealloc, Error **errp)
-{
-    return bdrv_co_truncate(bs->file, offset, prealloc, errp);
 }
 
 
@@ -139,15 +125,13 @@ static bool cor_recurse_is_first_non_filter(BlockDriverState *bs,
 }
 
 
-BlockDriver bdrv_copy_on_read = {
+static BlockDriver bdrv_copy_on_read = {
     .format_name                        = "copy-on-read",
 
     .bdrv_open                          = cor_open,
-    .bdrv_close                         = cor_close,
     .bdrv_child_perm                    = cor_child_perm,
 
     .bdrv_getlength                     = cor_getlength,
-    .bdrv_co_truncate                   = cor_co_truncate,
 
     .bdrv_co_preadv                     = cor_co_preadv,
     .bdrv_co_pwritev                    = cor_co_pwritev,

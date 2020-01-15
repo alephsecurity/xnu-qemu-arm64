@@ -164,6 +164,7 @@
 #define PCI_DEVICE_ID_LSI_SAS0079        0x0079
 
 #define PCI_VENDOR_ID_DEC                0x1011
+#define PCI_DEVICE_ID_DEC_21143          0x0019
 #define PCI_DEVICE_ID_DEC_21154          0x0026
 
 #define PCI_VENDOR_ID_CIRRUS             0x1013
@@ -255,7 +256,7 @@
 #define PCI_DEVICE_ID_INTEL_82801I_EHCI2 0x293c
 #define PCI_DEVICE_ID_INTEL_82599_SFP_VF 0x10ed
 
-#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x29c0
+#define PCI_DEVICE_ID_INTEL_P35_MCH      0x29c0
 
 #define PCI_VENDOR_ID_XEN                0x5853
 #define PCI_DEVICE_ID_XEN_PLATFORM       0x0001
@@ -270,5 +271,7 @@
 #define PCI_DEVICE_ID_VMWARE_PVRDMA      0x0820
 
 #define PCI_VENDOR_ID_SYNOPSYS           0x16C3
+
+#define PCI_VENDOR_ID_NVIDIA             0x10de
 
 #endif

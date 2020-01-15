@@ -27,6 +27,7 @@
 #include "net/net.h"
 #include "clients.h"
 #include "hub.h"
+#include "hw/qdev-properties.h"
 #include "net/slirp.h"
 #include "net/eth.h"
 #include "util.h"
@@ -41,7 +42,7 @@
 #include "qemu/sockets.h"
 #include "qemu/cutils.h"
 #include "qemu/config-file.h"
-#include "hw/qdev.h"
+#include "qemu/ctype.h"
 #include "qemu/iov.h"
 #include "qemu/main-loop.h"
 #include "qemu/option.h"
@@ -49,6 +50,8 @@
 #include "qapi/opts-visitor.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/qtest.h"
+#include "sysemu/runstate.h"
+#include "sysemu/sysemu.h"
 #include "net/filter.h"
 #include "qapi/string-output-visitor.h"
 
@@ -63,55 +66,42 @@ static QTAILQ_HEAD(, NetClientState) net_clients;
 /***********************************************************/
 /* network device redirectors */
 
-static int get_str_sep(char *buf, int buf_size, const char **pp, int sep)
-{
-    const char *p, *p1;
-    int len;
-    p = *pp;
-    p1 = strchr(p, sep);
-    if (!p1)
-        return -1;
-    len = p1 - p;
-    p1++;
-    if (buf_size > 0) {
-        if (len > buf_size - 1)
-            len = buf_size - 1;
-        memcpy(buf, p, len);
-        buf[len] = '\0';
-    }
-    *pp = p1;
-    return 0;
-}
-
 int parse_host_port(struct sockaddr_in *saddr, const char *str,
                     Error **errp)
 {
-    char buf[512];
+    gchar **substrings;
     struct hostent *he;
-    const char *p, *r;
-    int port;
+    const char *addr, *p, *r;
+    int port, ret = 0;
 
-    p = str;
-    if (get_str_sep(buf, sizeof(buf), &p, ':') < 0) {
+    substrings = g_strsplit(str, ":", 2);
+    if (!substrings || !substrings[0] || !substrings[1]) {
         error_setg(errp, "host address '%s' doesn't contain ':' "
                    "separating host from port", str);
-        return -1;
+        ret = -1;
+        goto out;
     }
+
+    addr = substrings[0];
+    p = substrings[1];
+
     saddr->sin_family = AF_INET;
-    if (buf[0] == '\0') {
+    if (addr[0] == '\0') {
         saddr->sin_addr.s_addr = 0;
     } else {
-        if (qemu_isdigit(buf[0])) {
-            if (!inet_aton(buf, &saddr->sin_addr)) {
+        if (qemu_isdigit(addr[0])) {
+            if (!inet_aton(addr, &saddr->sin_addr)) {
                 error_setg(errp, "host address '%s' is not a valid "
-                           "IPv4 address", buf);
-                return -1;
+                           "IPv4 address", addr);
+                ret = -1;
+                goto out;
             }
         } else {
-            he = gethostbyname(buf);
+            he = gethostbyname(addr);
             if (he == NULL) {
-                error_setg(errp, "can't resolve host address '%s'", buf);
-                return - 1;
+                error_setg(errp, "can't resolve host address '%s'", addr);
+                ret = -1;
+                goto out;
             }
             saddr->sin_addr = *(struct in_addr *)he->h_addr;
         }
@@ -119,10 +109,14 @@ int parse_host_port(struct sockaddr_in *saddr, const char *str,
     port = strtol(p, (char **)&r, 0);
     if (r == p) {
         error_setg(errp, "port number '%s' is invalid", p);
-        return -1;
+        ret = -1;
+        goto out;
     }
     saddr->sin_port = htons(port);
-    return 0;
+
+out:
+    g_strfreev(substrings);
+    return ret;
 }
 
 char *qemu_mac_strdup_printf(const uint8_t *macaddr)
@@ -231,6 +225,11 @@ static void qemu_net_client_destructor(NetClientState *nc)
 {
     g_free(nc);
 }
+static ssize_t qemu_deliver_packet_iov(NetClientState *sender,
+                                       unsigned flags,
+                                       const struct iovec *iov,
+                                       int iovcnt,
+                                       void *opaque);
 
 static void qemu_net_client_setup(NetClientState *nc,
                                   NetClientInfo *info,
@@ -558,7 +557,7 @@ static ssize_t filter_receive_iov(NetClientState *nc,
             }
         }
     } else {
-        QTAILQ_FOREACH_REVERSE(nf, &nc->filters, NetFilterHead, next) {
+        QTAILQ_FOREACH_REVERSE(nf, &nc->filters, next) {
             ret = qemu_netfilter_receive(nf, direction, sender, flags, iov,
                                          iovcnt, sent_cb);
             if (ret) {
@@ -663,9 +662,9 @@ ssize_t qemu_send_packet_async(NetClientState *sender,
                                              buf, size, sent_cb);
 }
 
-void qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size)
+ssize_t qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size)
 {
-    qemu_send_packet_async(nc, buf, size, NULL);
+    return qemu_send_packet_async(nc, buf, size, NULL);
 }
 
 ssize_t qemu_send_packet_raw(NetClientState *nc, const uint8_t *buf, int size)
@@ -705,14 +704,15 @@ static ssize_t nc_sendv_compat(NetClientState *nc, const struct iovec *iov,
     return ret;
 }
 
-ssize_t qemu_deliver_packet_iov(NetClientState *sender,
-                                unsigned flags,
-                                const struct iovec *iov,
-                                int iovcnt,
-                                void *opaque)
+static ssize_t qemu_deliver_packet_iov(NetClientState *sender,
+                                       unsigned flags,
+                                       const struct iovec *iov,
+                                       int iovcnt,
+                                       void *opaque)
 {
     NetClientState *nc = opaque;
     int ret;
+
 
     if (nc->link_down) {
         return iov_size(iov, iovcnt);
@@ -740,10 +740,15 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
                                 NetPacketSent *sent_cb)
 {
     NetQueue *queue;
+    size_t size = iov_size(iov, iovcnt);
     int ret;
 
+    if (size > NET_BUFSIZE) {
+        return size;
+    }
+
     if (sender->link_down || !sender->peer) {
-        return iov_size(iov, iovcnt);
+        return size;
     }
 
     /* Let filters handle the packet first */
@@ -826,9 +831,10 @@ int qemu_show_nic_models(const char *arg, const char *const *models)
         return 0;
     }
 
-    fprintf(stderr, "qemu: Supported NIC models: ");
-    for (i = 0 ; models[i]; i++)
-        fprintf(stderr, "%s%c", models[i], models[i+1] ? ',' : '\n');
+    printf("Supported NIC models:\n");
+    for (i = 0 ; models[i]; i++) {
+        printf("%s\n", models[i]);
+    }
     return 1;
 }
 
@@ -950,7 +956,7 @@ static int (* const net_client_init_fun[NET_CLIENT_DRIVER__MAX])(
         [NET_CLIENT_DRIVER_BRIDGE]    = net_init_bridge,
 #endif
         [NET_CLIENT_DRIVER_HUBPORT]   = net_init_hubport,
-#ifdef CONFIG_VHOST_NET_USED
+#ifdef CONFIG_VHOST_NET_USER
         [NET_CLIENT_DRIVER_VHOST_USER] = net_init_vhost_user,
 #endif
 #ifdef CONFIG_L2TPV3
@@ -983,6 +989,10 @@ static int net_client_init1(const void *object, bool is_netdev, Error **errp)
         netdev = &legacy;
         /* missing optional values have been initialized to "all bits zero" */
         name = net->has_id ? net->id : net->name;
+
+        if (net->has_name) {
+            warn_report("The 'name' parameter is deprecated, use 'id' instead");
+        }
 
         /* Map the old options to the new flat type */
         switch (opts->type) {
@@ -1088,6 +1098,7 @@ static void show_netdevs(void)
 
 static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
 {
+    gchar **substrings = NULL;
     void *object = NULL;
     Error *err = NULL;
     int ret = -1;
@@ -1103,28 +1114,33 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
         const char *ip6_net = qemu_opt_get(opts, "ipv6-net");
 
         if (ip6_net) {
-            char buf[strlen(ip6_net) + 1];
+            char *prefix_addr;
+            unsigned long prefix_len = 64; /* Default 64bit prefix length. */
 
-            if (get_str_sep(buf, sizeof(buf), &ip6_net, '/') < 0) {
-                /* Default 64bit prefix length.  */
-                qemu_opt_set(opts, "ipv6-prefix", ip6_net, &error_abort);
-                qemu_opt_set_number(opts, "ipv6-prefixlen", 64, &error_abort);
-            } else {
+            substrings = g_strsplit(ip6_net, "/", 2);
+            if (!substrings || !substrings[0]) {
+                error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "ipv6-net",
+                           "a valid IPv6 prefix");
+                goto out;
+            }
+
+            prefix_addr = substrings[0];
+
+            if (substrings[1]) {
                 /* User-specified prefix length.  */
-                unsigned long len;
                 int err;
 
-                qemu_opt_set(opts, "ipv6-prefix", buf, &error_abort);
-                err = qemu_strtoul(ip6_net, NULL, 10, &len);
-
+                err = qemu_strtoul(substrings[1], NULL, 10, &prefix_len);
                 if (err) {
                     error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
-                              "ipv6-prefix", "a number");
-                } else {
-                    qemu_opt_set_number(opts, "ipv6-prefixlen", len,
-                                        &error_abort);
+                               "ipv6-prefixlen", "a number");
+                    goto out;
                 }
             }
+
+            qemu_opt_set(opts, "ipv6-prefix", prefix_addr, &error_abort);
+            qemu_opt_set_number(opts, "ipv6-prefixlen", prefix_len,
+                                &error_abort);
             qemu_opt_unset(opts, "ipv6-net");
         }
     }
@@ -1145,7 +1161,9 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
         qapi_free_NetLegacy(object);
     }
 
+out:
     error_propagate(errp, err);
+    g_strfreev(substrings);
     visit_free(v);
     return ret;
 }
@@ -1327,6 +1345,25 @@ void hmp_info_network(Monitor *mon, const QDict *qdict)
         if (peer && type == NET_CLIENT_DRIVER_NIC) {
             monitor_printf(mon, " \\ ");
             print_net_client(mon, peer);
+        }
+    }
+}
+
+void colo_notify_filters_event(int event, Error **errp)
+{
+    NetClientState *nc;
+    NetFilterState *nf;
+    NetFilterClass *nfc = NULL;
+    Error *local_err = NULL;
+
+    QTAILQ_FOREACH(nc, &net_clients, next) {
+        QTAILQ_FOREACH(nf, &nc->filters, next) {
+            nfc = NETFILTER_GET_CLASS(OBJECT(nf));
+            nfc->handle_event(nf, event, &local_err);
+            if (local_err) {
+                error_propagate(errp, local_err);
+                return;
+            }
         }
     }
 }

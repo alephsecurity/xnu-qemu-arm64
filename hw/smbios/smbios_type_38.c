@@ -9,8 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/ipmi/ipmi.h"
-#include "hw/smbios/ipmi.h"
-#include "hw/smbios/smbios.h"
+#include "hw/firmware/smbios.h"
 #include "qemu/error-report.h"
 #include "smbios_build.h"
 
@@ -95,6 +94,9 @@ static void smbios_add_ipmi_devices(BusState *bus)
             ii = IPMI_INTERFACE(obj);
             iic = IPMI_INTERFACE_GET_CLASS(obj);
             memset(&info, 0, sizeof(info));
+            if (!iic->get_fwinfo) {
+                continue;
+            }
             iic->get_fwinfo(ii, &info);
             smbios_build_one_type_38(&info);
             continue;

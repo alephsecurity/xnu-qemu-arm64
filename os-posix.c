@@ -29,12 +29,13 @@
 #include <grp.h>
 #include <libgen.h>
 
+#include "qemu-common.h"
 /* Needed early for CONFIG_BSD etc. */
-#include "sysemu/sysemu.h"
 #include "net/slirp.h"
 #include "qemu-options.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "sysemu/runstate.h"
 #include "qemu/cutils.h"
 
 #ifdef CONFIG_LINUX
@@ -168,14 +169,6 @@ static bool os_parse_runas_uid_gid(const char *optarg)
 int os_parse_cmd_args(int index, const char *optarg)
 {
     switch (index) {
-#ifdef CONFIG_SLIRP
-    case QEMU_OPTION_smb:
-        error_report("The -smb option is deprecated. "
-                     "Please use '-netdev user,smb=...' instead.");
-        if (net_slirp_smb(optarg) < 0)
-            exit(1);
-        break;
-#endif
     case QEMU_OPTION_runas:
         user_pwd = getpwnam(optarg);
         if (user_pwd) {
@@ -350,30 +343,6 @@ void os_setup_post(void)
 void os_set_line_buffering(void)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
-}
-
-int qemu_create_pidfile(const char *filename)
-{
-    char buffer[128];
-    int len;
-    int fd;
-
-    fd = qemu_open(filename, O_RDWR | O_CREAT, 0600);
-    if (fd == -1) {
-        return -1;
-    }
-    if (lockf(fd, F_TLOCK, 0) == -1) {
-        close(fd);
-        return -1;
-    }
-    len = snprintf(buffer, sizeof(buffer), FMT_pid "\n", getpid());
-    if (write(fd, buffer, len) != len) {
-        close(fd);
-        return -1;
-    }
-
-    /* keep pidfile open & locked forever */
-    return 0;
 }
 
 bool is_daemonized(void)

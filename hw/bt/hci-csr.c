@@ -20,7 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include "qemu-common.h"
+#include "qemu/module.h"
 #include "chardev/char-serial.h"
 #include "qemu/timer.h"
 #include "qemu/bswap.h"
@@ -501,7 +501,7 @@ static const TypeInfo char_hci_type_info = {
 Chardev *uart_hci_init(void)
 {
     return qemu_chardev_new(NULL, TYPE_CHARDEV_HCI,
-                            NULL, &error_abort);
+                            NULL, NULL, &error_abort);
 }
 
 static void register_types(void)

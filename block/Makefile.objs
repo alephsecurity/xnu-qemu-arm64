@@ -1,10 +1,18 @@
-block-obj-y += raw-format.o qcow.o vdi.o vmdk.o cloop.o bochs.o vpc.o vvfat.o dmg.o
-block-obj-y += qcow2.o qcow2-refcount.o qcow2-cluster.o qcow2-snapshot.o qcow2-cache.o qcow2-bitmap.o
-block-obj-y += qed.o qed-l2-cache.o qed-table.o qed-cluster.o
-block-obj-y += qed-check.o
+block-obj-y += raw-format.o vmdk.o vpc.o
+block-obj-$(CONFIG_QCOW1) += qcow.o
+block-obj-$(CONFIG_VDI) += vdi.o
+block-obj-$(CONFIG_CLOOP) += cloop.o
+block-obj-$(CONFIG_BOCHS) += bochs.o
+block-obj-$(CONFIG_VVFAT) += vvfat.o
+block-obj-$(CONFIG_DMG) += dmg.o
+
+block-obj-y += qcow2.o qcow2-refcount.o qcow2-cluster.o qcow2-snapshot.o qcow2-cache.o qcow2-bitmap.o qcow2-threads.o
+block-obj-$(CONFIG_QED) += qed.o qed-l2-cache.o qed-table.o qed-cluster.o
+block-obj-$(CONFIG_QED) += qed-check.o
 block-obj-y += vhdx.o vhdx-endian.o vhdx-log.o
 block-obj-y += quorum.o
-block-obj-y += parallels.o blkdebug.o blkverify.o blkreplay.o
+block-obj-y += blkdebug.o blkverify.o blkreplay.o
+block-obj-$(CONFIG_PARALLELS) += parallels.o
 block-obj-y += blklogwrites.o
 block-obj-y += block-backend.o snapshot.o qapi.o
 block-obj-$(CONFIG_WIN32) += file-win32.o win32-aio.o
@@ -14,7 +22,8 @@ block-obj-y += null.o mirror.o commit.o io.o create.o
 block-obj-y += throttle-groups.o
 block-obj-$(CONFIG_LINUX) += nvme.o
 
-block-obj-y += nbd.o nbd-client.o sheepdog.o
+block-obj-y += nbd.o
+block-obj-$(CONFIG_SHEEPDOG) += sheepdog.o
 block-obj-$(CONFIG_LIBISCSI) += iscsi.o
 block-obj-$(if $(CONFIG_LIBISCSI),y,n) += iscsi-opts.o
 block-obj-$(CONFIG_LIBNFS) += nfs.o
@@ -22,14 +31,18 @@ block-obj-$(CONFIG_CURL) += curl.o
 block-obj-$(CONFIG_RBD) += rbd.o
 block-obj-$(CONFIG_GLUSTERFS) += gluster.o
 block-obj-$(CONFIG_VXHS) += vxhs.o
-block-obj-$(CONFIG_LIBSSH2) += ssh.o
+block-obj-$(CONFIG_LIBSSH) += ssh.o
 block-obj-y += accounting.o dirty-bitmap.o
 block-obj-y += write-threshold.o
 block-obj-y += backup.o
 block-obj-$(CONFIG_REPLICATION) += replication.o
 block-obj-y += throttle.o copy-on-read.o
+block-obj-y += block-copy.o
 
 block-obj-y += crypto.o
+
+block-obj-y += aio_task.o
+block-obj-y += backup-top.o
 
 common-obj-y += stream.o
 
@@ -43,10 +56,13 @@ rbd.o-libs         := $(RBD_LIBS)
 gluster.o-cflags   := $(GLUSTERFS_CFLAGS)
 gluster.o-libs     := $(GLUSTERFS_LIBS)
 vxhs.o-libs        := $(VXHS_LIBS)
-ssh.o-cflags       := $(LIBSSH2_CFLAGS)
-ssh.o-libs         := $(LIBSSH2_LIBS)
-block-obj-$(if $(CONFIG_BZIP2),m,n) += dmg-bz2.o
+ssh.o-cflags       := $(LIBSSH_CFLAGS)
+ssh.o-libs         := $(LIBSSH_LIBS)
+block-obj-dmg-bz2-$(CONFIG_BZIP2) += dmg-bz2.o
+block-obj-$(if $(CONFIG_DMG),m,n) += $(block-obj-dmg-bz2-y)
 dmg-bz2.o-libs     := $(BZIP2_LIBS)
+block-obj-$(if $(CONFIG_LZFSE),m,n) += dmg-lzfse.o
+dmg-lzfse.o-libs   := $(LZFSE_LIBS)
 qcow.o-libs        := -lz
 linux-aio.o-libs   := -laio
 parallels.o-cflags := $(LIBXML2_CFLAGS)

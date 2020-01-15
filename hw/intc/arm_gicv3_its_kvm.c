@@ -20,8 +20,10 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/module.h"
 #include "hw/intc/arm_gicv3_its_common.h"
-#include "sysemu/sysemu.h"
+#include "hw/qdev-properties.h"
+#include "sysemu/runstate.h"
 #include "sysemu/kvm.h"
 #include "kvm_arm.h"
 #include "migration/blocker.h"
@@ -211,7 +213,7 @@ static void kvm_arm_its_reset(DeviceState *dev)
         return;
     }
 
-    error_report("ITS KVM: full reset is not supported by the host kernel");
+    warn_report("ITS KVM: full reset is not supported by the host kernel");
 
     if (!kvm_device_check_attr(s->dev_fd, KVM_DEV_ARM_VGIC_GRP_ITS_REGS,
                                GITS_CTLR)) {

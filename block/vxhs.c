@@ -17,10 +17,12 @@
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qstring.h"
 #include "trace.h"
+#include "qemu/module.h"
 #include "qemu/uri.h"
 #include "qapi/error.h"
 #include "qemu/uuid.h"
 #include "crypto/tlscredsx509.h"
+#include "sysemu/replay.h"
 
 #define VXHS_OPT_FILENAME           "filename"
 #define VXHS_OPT_VDISK_ID           "vdisk-id"
@@ -104,8 +106,8 @@ static void vxhs_iio_callback(void *ctx, uint32_t opcode, uint32_t error)
             trace_vxhs_iio_callback(error);
         }
 
-        aio_bh_schedule_oneshot(bdrv_get_aio_context(acb->common.bs),
-                                vxhs_complete_aio_bh, acb);
+        replay_bh_schedule_oneshot_event(bdrv_get_aio_context(acb->common.bs),
+                                         vxhs_complete_aio_bh, acb);
         break;
 
     default:
@@ -556,6 +558,16 @@ static int64_t vxhs_getlength(BlockDriverState *bs)
     return vdisk_size;
 }
 
+static const char *const vxhs_strong_runtime_opts[] = {
+    VXHS_OPT_VDISK_ID,
+    "tls-creds",
+    VXHS_OPT_HOST,
+    VXHS_OPT_PORT,
+    VXHS_OPT_SERVER".",
+
+    NULL
+};
+
 static BlockDriver bdrv_vxhs = {
     .format_name                  = "vxhs",
     .protocol_name                = "vxhs",
@@ -567,6 +579,7 @@ static BlockDriver bdrv_vxhs = {
     .bdrv_getlength               = vxhs_getlength,
     .bdrv_aio_preadv              = vxhs_aio_preadv,
     .bdrv_aio_pwritev             = vxhs_aio_pwritev,
+    .strong_runtime_opts          = vxhs_strong_runtime_opts,
 };
 
 static void bdrv_vxhs_init(void)

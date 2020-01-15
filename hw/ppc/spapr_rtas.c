@@ -24,15 +24,17 @@
  * THE SOFTWARE.
  *
  */
+
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "sysemu/sysemu.h"
-#include "hw/qdev.h"
 #include "sysemu/device_tree.h"
 #include "sysemu/cpus.h"
 #include "sysemu/hw_accel.h"
+#include "sysemu/runstate.h"
+#include "kvm_ppc.h"
 
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
@@ -49,13 +51,13 @@
 #include "target/ppc/mmu-hash64.h"
 #include "target/ppc/mmu-book3s-v3.h"
 
-static void rtas_display_character(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_display_character(PowerPCCPU *cpu, SpaprMachineState *spapr,
                                    uint32_t token, uint32_t nargs,
                                    target_ulong args,
                                    uint32_t nret, target_ulong rets)
 {
     uint8_t c = rtas_ld(args, 0);
-    VIOsPAPRDevice *sdev = vty_lookup(spapr, 0);
+    SpaprVioDevice *sdev = vty_lookup(spapr, 0);
 
     if (!sdev) {
         rtas_st(rets, 0, RTAS_OUT_HW_ERROR);
@@ -65,7 +67,7 @@ static void rtas_display_character(PowerPCCPU *cpu, sPAPRMachineState *spapr,
     }
 }
 
-static void rtas_power_off(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_power_off(PowerPCCPU *cpu, SpaprMachineState *spapr,
                            uint32_t token, uint32_t nargs, target_ulong args,
                            uint32_t nret, target_ulong rets)
 {
@@ -78,7 +80,7 @@ static void rtas_power_off(PowerPCCPU *cpu, sPAPRMachineState *spapr,
     rtas_st(rets, 0, RTAS_OUT_SUCCESS);
 }
 
-static void rtas_system_reboot(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_system_reboot(PowerPCCPU *cpu, SpaprMachineState *spapr,
                                uint32_t token, uint32_t nargs,
                                target_ulong args,
                                uint32_t nret, target_ulong rets)
@@ -92,7 +94,7 @@ static void rtas_system_reboot(PowerPCCPU *cpu, sPAPRMachineState *spapr,
 }
 
 static void rtas_query_cpu_stopped_state(PowerPCCPU *cpu_,
-                                         sPAPRMachineState *spapr,
+                                         SpaprMachineState *spapr,
                                          uint32_t token, uint32_t nargs,
                                          target_ulong args,
                                          uint32_t nret, target_ulong rets)
@@ -122,7 +124,7 @@ static void rtas_query_cpu_stopped_state(PowerPCCPU *cpu_,
     rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
 }
 
-static void rtas_start_cpu(PowerPCCPU *callcpu, sPAPRMachineState *spapr,
+static void rtas_start_cpu(PowerPCCPU *callcpu, SpaprMachineState *spapr,
                            uint32_t token, uint32_t nargs,
                            target_ulong args,
                            uint32_t nret, target_ulong rets)
@@ -171,11 +173,12 @@ static void rtas_start_cpu(PowerPCCPU *callcpu, sPAPRMachineState *spapr,
          * New cpus are expected to start in the same radix/hash mode
          * as the existing CPUs
          */
-        if (ppc64_radix_guest(callcpu)) {
-            lpcr |= LPCR_UPRT | LPCR_GTSE;
+        if (ppc64_v3_radix(callcpu)) {
+            lpcr |= LPCR_UPRT | LPCR_GTSE | LPCR_HR;
         } else {
-            lpcr &= ~(LPCR_UPRT | LPCR_GTSE);
+            lpcr &= ~(LPCR_UPRT | LPCR_GTSE | LPCR_HR);
         }
+        env->spr[SPR_PSSCR] &= ~PSSCR_EC;
     }
     ppc_store_lpcr(newcpu, lpcr);
 
@@ -193,7 +196,7 @@ static void rtas_start_cpu(PowerPCCPU *callcpu, sPAPRMachineState *spapr,
     rtas_st(rets, 0, RTAS_OUT_SUCCESS);
 }
 
-static void rtas_stop_self(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_stop_self(PowerPCCPU *cpu, SpaprMachineState *spapr,
                            uint32_t token, uint32_t nargs,
                            target_ulong args,
                            uint32_t nret, target_ulong rets)
@@ -204,10 +207,44 @@ static void rtas_stop_self(PowerPCCPU *cpu, sPAPRMachineState *spapr,
 
     /* Disable Power-saving mode Exit Cause exceptions for the CPU.
      * This could deliver an interrupt on a dying CPU and crash the
-     * guest */
+     * guest.
+     * For the same reason, set PSSCR_EC.
+     */
     ppc_store_lpcr(cpu, env->spr[SPR_LPCR] & ~pcc->lpcr_pm);
+    env->spr[SPR_PSSCR] |= PSSCR_EC;
     cs->halted = 1;
+    kvmppc_set_reg_ppc_online(cpu, 0);
     qemu_cpu_kick(cs);
+}
+
+static void rtas_ibm_suspend_me(PowerPCCPU *cpu, SpaprMachineState *spapr,
+                           uint32_t token, uint32_t nargs,
+                           target_ulong args,
+                           uint32_t nret, target_ulong rets)
+{
+    CPUState *cs;
+
+    if (nargs != 0 || nret != 1) {
+        rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+        return;
+    }
+
+    CPU_FOREACH(cs) {
+        PowerPCCPU *c = POWERPC_CPU(cs);
+        CPUPPCState *e = &c->env;
+        if (c == cpu) {
+            continue;
+        }
+
+        /* See h_join */
+        if (!cs->halted || (e->msr & (1ULL << MSR_EE))) {
+            rtas_st(rets, 0, H_MULTI_THREADS_ACTIVE);
+            return;
+        }
+    }
+
+    qemu_system_suspend_request();
+    rtas_st(rets, 0, RTAS_OUT_SUCCESS);
 }
 
 static inline int sysparm_st(target_ulong addr, target_ulong len,
@@ -224,11 +261,14 @@ static inline int sysparm_st(target_ulong addr, target_ulong len,
 }
 
 static void rtas_ibm_get_system_parameter(PowerPCCPU *cpu,
-                                          sPAPRMachineState *spapr,
+                                          SpaprMachineState *spapr,
                                           uint32_t token, uint32_t nargs,
                                           target_ulong args,
                                           uint32_t nret, target_ulong rets)
 {
+    PowerPCCPUClass *pcc = POWERPC_CPU_GET_CLASS(cpu);
+    MachineState *ms = MACHINE(qdev_get_machine());
+    unsigned int max_cpus = ms->smp.max_cpus;
     target_ulong parameter = rtas_ld(args, 0);
     target_ulong buffer = rtas_ld(args, 1);
     target_ulong length = rtas_ld(args, 2);
@@ -242,8 +282,22 @@ static void rtas_ibm_get_system_parameter(PowerPCCPU *cpu,
                                           "MaxPlatProcs=%d",
                                           max_cpus,
                                           current_machine->ram_size / MiB,
-                                          smp_cpus,
+                                          ms->smp.cpus,
                                           max_cpus);
+        if (pcc->n_host_threads > 0) {
+            char *hostthr_val, *old = param_val;
+
+            /*
+             * Add HostThrs property. This property is not present in PAPR but
+             * is expected by some guests to communicate the number of physical
+             * host threads per core on the system so that they can scale
+             * information which varies based on the thread configuration.
+             */
+            hostthr_val = g_strdup_printf(",HostThrs=%d", pcc->n_host_threads);
+            param_val = g_strconcat(param_val, hostthr_val, NULL);
+            g_free(hostthr_val);
+            g_free(old);
+        }
         ret = sysparm_st(buffer, length, param_val, strlen(param_val) + 1);
         g_free(param_val);
         break;
@@ -266,7 +320,7 @@ static void rtas_ibm_get_system_parameter(PowerPCCPU *cpu,
 }
 
 static void rtas_ibm_set_system_parameter(PowerPCCPU *cpu,
-                                          sPAPRMachineState *spapr,
+                                          SpaprMachineState *spapr,
                                           uint32_t token, uint32_t nargs,
                                           target_ulong args,
                                           uint32_t nret, target_ulong rets)
@@ -286,7 +340,7 @@ static void rtas_ibm_set_system_parameter(PowerPCCPU *cpu,
 }
 
 static void rtas_ibm_os_term(PowerPCCPU *cpu,
-                            sPAPRMachineState *spapr,
+                            SpaprMachineState *spapr,
                             uint32_t token, uint32_t nargs,
                             target_ulong args,
                             uint32_t nret, target_ulong rets)
@@ -296,7 +350,7 @@ static void rtas_ibm_os_term(PowerPCCPU *cpu,
     rtas_st(rets, 0, RTAS_OUT_SUCCESS);
 }
 
-static void rtas_set_power_level(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_set_power_level(PowerPCCPU *cpu, SpaprMachineState *spapr,
                                  uint32_t token, uint32_t nargs,
                                  target_ulong args, uint32_t nret,
                                  target_ulong rets)
@@ -321,7 +375,7 @@ static void rtas_set_power_level(PowerPCCPU *cpu, sPAPRMachineState *spapr,
     rtas_st(rets, 1, 100);
 }
 
-static void rtas_get_power_level(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+static void rtas_get_power_level(PowerPCCPU *cpu, SpaprMachineState *spapr,
                                   uint32_t token, uint32_t nargs,
                                   target_ulong args, uint32_t nret,
                                   target_ulong rets)
@@ -351,7 +405,7 @@ static struct rtas_call {
     spapr_rtas_fn fn;
 } rtas_table[RTAS_TOKEN_MAX - RTAS_TOKEN_BASE];
 
-target_ulong spapr_rtas_call(PowerPCCPU *cpu, sPAPRMachineState *spapr,
+target_ulong spapr_rtas_call(PowerPCCPU *cpu, SpaprMachineState *spapr,
                              uint32_t token, uint32_t nargs, target_ulong args,
                              uint32_t nret, target_ulong rets)
 {
@@ -385,7 +439,7 @@ uint64_t qtest_rtas_call(char *cmd, uint32_t nargs, uint64_t args,
 
     for (token = 0; token < RTAS_TOKEN_MAX - RTAS_TOKEN_BASE; token++) {
         if (strcmp(cmd, rtas_table[token].name) == 0) {
-            sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
+            SpaprMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
             PowerPCCPU *cpu = POWERPC_CPU(first_cpu);
 
             rtas_table[token].fn(cpu, spapr, token + RTAS_TOKEN_BASE,
@@ -402,7 +456,7 @@ void spapr_rtas_register(int token, const char *name, spapr_rtas_fn fn)
 
     token -= RTAS_TOKEN_BASE;
 
-    assert(!rtas_table[token].name);
+    assert(!name || !rtas_table[token].name);
 
     rtas_table[token].name = name;
     rtas_table[token].fn = fn;
@@ -423,47 +477,6 @@ void spapr_dt_rtas_tokens(void *fdt, int rtas)
     }
 }
 
-void spapr_load_rtas(sPAPRMachineState *spapr, void *fdt, hwaddr addr)
-{
-    int rtas_node;
-    int ret;
-
-    /* Copy RTAS blob into guest RAM */
-    cpu_physical_memory_write(addr, spapr->rtas_blob, spapr->rtas_size);
-
-    ret = fdt_add_mem_rsv(fdt, addr, spapr->rtas_size);
-    if (ret < 0) {
-        error_report("Couldn't add RTAS reserve entry: %s",
-                     fdt_strerror(ret));
-        exit(1);
-    }
-
-    /* Update the device tree with the blob's location */
-    rtas_node = fdt_path_offset(fdt, "/rtas");
-    assert(rtas_node >= 0);
-
-    ret = fdt_setprop_cell(fdt, rtas_node, "linux,rtas-base", addr);
-    if (ret < 0) {
-        error_report("Couldn't add linux,rtas-base property: %s",
-                     fdt_strerror(ret));
-        exit(1);
-    }
-
-    ret = fdt_setprop_cell(fdt, rtas_node, "linux,rtas-entry", addr);
-    if (ret < 0) {
-        error_report("Couldn't add linux,rtas-entry property: %s",
-                     fdt_strerror(ret));
-        exit(1);
-    }
-
-    ret = fdt_setprop_cell(fdt, rtas_node, "rtas-size", spapr->rtas_size);
-    if (ret < 0) {
-        error_report("Couldn't add rtas-size property: %s",
-                     fdt_strerror(ret));
-        exit(1);
-    }
-}
-
 static void core_rtas_register_types(void)
 {
     spapr_rtas_register(RTAS_DISPLAY_CHARACTER, "display-character",
@@ -475,6 +488,8 @@ static void core_rtas_register_types(void)
                         rtas_query_cpu_stopped_state);
     spapr_rtas_register(RTAS_START_CPU, "start-cpu", rtas_start_cpu);
     spapr_rtas_register(RTAS_STOP_SELF, "stop-self", rtas_stop_self);
+    spapr_rtas_register(RTAS_IBM_SUSPEND_ME, "ibm,suspend-me",
+                        rtas_ibm_suspend_me);
     spapr_rtas_register(RTAS_IBM_GET_SYSTEM_PARAMETER,
                         "ibm,get-system-parameter",
                         rtas_ibm_get_system_parameter);

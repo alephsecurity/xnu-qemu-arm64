@@ -20,8 +20,11 @@
 
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "hw/i2c/aspeed_i2c.h"
+#include "hw/irq.h"
 
 /* I2C Global Register */
 
@@ -52,6 +55,13 @@
 #define I2CD_AC_TIMING_REG2     0x08       /* Clock and AC Timing Control #1 */
 #define I2CD_INTR_CTRL_REG      0x0c       /* I2CD Interrupt Control */
 #define I2CD_INTR_STS_REG       0x10       /* I2CD Interrupt Status */
+
+#define   I2CD_INTR_SLAVE_ADDR_MATCH       (0x1 << 31) /* 0: addr1 1: addr2 */
+#define   I2CD_INTR_SLAVE_ADDR_RX_PENDING  (0x1 << 30)
+/* bits[19-16] Reserved */
+
+/* All bits below are cleared by writing 1 */
+#define   I2CD_INTR_SLAVE_INACTIVE_TIMEOUT (0x1 << 15)
 #define   I2CD_INTR_SDA_DL_TIMEOUT         (0x1 << 14)
 #define   I2CD_INTR_BUS_RECOVER_DONE       (0x1 << 13)
 #define   I2CD_INTR_SMBUS_ALERT            (0x1 << 12) /* Bus [0-3] only */
@@ -59,7 +69,7 @@
 #define   I2CD_INTR_SMBUS_DEV_ALERT_ADDR   (0x1 << 10) /* Removed */
 #define   I2CD_INTR_SMBUS_DEF_ADDR         (0x1 << 9)  /* Removed */
 #define   I2CD_INTR_GCALL_ADDR             (0x1 << 8)  /* Removed */
-#define   I2CD_INTR_SLAVE_MATCH            (0x1 << 7)  /* use RX_DONE */
+#define   I2CD_INTR_SLAVE_ADDR_RX_MATCH    (0x1 << 7)  /* use RX_DONE */
 #define   I2CD_INTR_SCL_TIMEOUT            (0x1 << 6)
 #define   I2CD_INTR_ABNORMAL               (0x1 << 5)
 #define   I2CD_INTR_NORMAL_STOP            (0x1 << 4)
@@ -135,10 +145,12 @@ static inline bool aspeed_i2c_bus_is_enabled(AspeedI2CBus *bus)
 
 static inline void aspeed_i2c_bus_raise_interrupt(AspeedI2CBus *bus)
 {
+    AspeedI2CClass *aic = ASPEED_I2C_GET_CLASS(bus->controller);
+
     bus->intr_status &= bus->intr_ctrl;
     if (bus->intr_status) {
         bus->controller->intr_status |= 1 << bus->id;
-        qemu_irq_raise(bus->controller->irq);
+        qemu_irq_raise(aic->bus_get_irq(bus));
     }
 }
 
@@ -180,6 +192,21 @@ static uint8_t aspeed_i2c_get_state(AspeedI2CBus *bus)
     return (bus->cmd >> I2CD_TX_STATE_SHIFT) & I2CD_TX_STATE_MASK;
 }
 
+static void aspeed_i2c_handle_rx_cmd(AspeedI2CBus *bus)
+{
+    uint8_t ret;
+
+    aspeed_i2c_set_state(bus, I2CD_MRXD);
+    ret = i2c_recv(bus->bus);
+    bus->intr_status |= I2CD_INTR_RX_DONE;
+    bus->buf = (ret & I2CD_BYTE_BUF_RX_MASK) << I2CD_BYTE_BUF_RX_SHIFT;
+    if (bus->cmd & I2CD_M_S_RX_CMD_LAST) {
+        i2c_nack(bus->bus);
+    }
+    bus->cmd &= ~(I2CD_M_RX_CMD | I2CD_M_S_RX_CMD_LAST);
+    aspeed_i2c_set_state(bus, I2CD_MACTIVE);
+}
+
 /*
  * The state machine needs some refinement. It is only used to track
  * invalid STOP commands for the moment.
@@ -188,7 +215,6 @@ static void aspeed_i2c_bus_handle_cmd(AspeedI2CBus *bus, uint64_t value)
 {
     bus->cmd &= ~0xFFFF;
     bus->cmd |= value & 0xFFFF;
-    bus->intr_status = 0;
 
     if (bus->cmd & I2CD_M_START_CMD) {
         uint8_t state = aspeed_i2c_get_state(bus) & I2CD_MACTIVE ?
@@ -226,23 +252,9 @@ static void aspeed_i2c_bus_handle_cmd(AspeedI2CBus *bus, uint64_t value)
         aspeed_i2c_set_state(bus, I2CD_MACTIVE);
     }
 
-    if (bus->cmd & (I2CD_M_RX_CMD | I2CD_M_S_RX_CMD_LAST)) {
-        int ret;
-
-        aspeed_i2c_set_state(bus, I2CD_MRXD);
-        ret = i2c_recv(bus->bus);
-        if (ret < 0) {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s: read failed\n", __func__);
-            ret = 0xff;
-        } else {
-            bus->intr_status |= I2CD_INTR_RX_DONE;
-        }
-        bus->buf = (ret & I2CD_BYTE_BUF_RX_MASK) << I2CD_BYTE_BUF_RX_SHIFT;
-        if (bus->cmd & I2CD_M_S_RX_CMD_LAST) {
-            i2c_nack(bus->bus);
-        }
-        bus->cmd &= ~(I2CD_M_RX_CMD | I2CD_M_S_RX_CMD_LAST);
-        aspeed_i2c_set_state(bus, I2CD_MACTIVE);
+    if ((bus->cmd & (I2CD_M_RX_CMD | I2CD_M_S_RX_CMD_LAST)) &&
+        !(bus->intr_status & I2CD_INTR_RX_DONE)) {
+        aspeed_i2c_handle_rx_cmd(bus);
     }
 
     if (bus->cmd & I2CD_M_STOP_CMD) {
@@ -263,6 +275,8 @@ static void aspeed_i2c_bus_write(void *opaque, hwaddr offset,
                                  uint64_t value, unsigned size)
 {
     AspeedI2CBus *bus = opaque;
+    AspeedI2CClass *aic = ASPEED_I2C_GET_CLASS(bus->controller);
+    bool handle_rx;
 
     switch (offset) {
     case I2CD_FUN_CTRL_REG:
@@ -283,9 +297,17 @@ static void aspeed_i2c_bus_write(void *opaque, hwaddr offset,
         bus->intr_ctrl = value & 0x7FFF;
         break;
     case I2CD_INTR_STS_REG:
+        handle_rx = (bus->intr_status & I2CD_INTR_RX_DONE) &&
+                (value & I2CD_INTR_RX_DONE);
         bus->intr_status &= ~(value & 0x7FFF);
-        bus->controller->intr_status &= ~(1 << bus->id);
-        qemu_irq_lower(bus->controller->irq);
+        if (!bus->intr_status) {
+            bus->controller->intr_status &= ~(1 << bus->id);
+            qemu_irq_lower(aic->bus_get_irq(bus));
+        }
+        if (handle_rx && (bus->cmd & (I2CD_M_RX_CMD | I2CD_M_S_RX_CMD_LAST))) {
+            aspeed_i2c_handle_rx_cmd(bus);
+            aspeed_i2c_bus_raise_interrupt(bus);
+        }
         break;
     case I2CD_DEV_ADDR_REG:
         qemu_log_mask(LOG_UNIMP, "%s: slave mode not implemented\n",
@@ -389,10 +411,11 @@ static void aspeed_i2c_reset(DeviceState *dev)
 {
     int i;
     AspeedI2CState *s = ASPEED_I2C(dev);
+    AspeedI2CClass *aic = ASPEED_I2C_GET_CLASS(s);
 
     s->intr_status = 0;
 
-    for (i = 0; i < ASPEED_I2C_NR_BUSSES; i++) {
+    for (i = 0; i < aic->num_busses; i++) {
         s->busses[i].intr_ctrl = 0;
         s->busses[i].intr_status = 0;
         s->busses[i].cmd = 0;
@@ -402,7 +425,7 @@ static void aspeed_i2c_reset(DeviceState *dev)
 }
 
 /*
- * Address Definitions
+ * Address Definitions (AST2400 and AST2500)
  *
  *   0x000 ... 0x03F: Global Register
  *   0x040 ... 0x07F: Device 1
@@ -427,22 +450,26 @@ static void aspeed_i2c_realize(DeviceState *dev, Error **errp)
     int i;
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     AspeedI2CState *s = ASPEED_I2C(dev);
+    AspeedI2CClass *aic = ASPEED_I2C_GET_CLASS(s);
 
     sysbus_init_irq(sbd, &s->irq);
     memory_region_init_io(&s->iomem, OBJECT(s), &aspeed_i2c_ctrl_ops, s,
                           "aspeed.i2c", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
 
-    for (i = 0; i < ASPEED_I2C_NR_BUSSES; i++) {
-        char name[16];
-        int offset = i < 7 ? 1 : 5;
+    for (i = 0; i < aic->num_busses; i++) {
+        char name[32];
+        int offset = i < aic->gap ? 1 : 5;
+
+        sysbus_init_irq(sbd, &s->busses[i].irq);
         snprintf(name, sizeof(name), "aspeed.i2c.%d", i);
         s->busses[i].controller = s;
         s->busses[i].id = i;
         s->busses[i].bus = i2c_init_bus(dev, name);
         memory_region_init_io(&s->busses[i].mr, OBJECT(dev),
-                              &aspeed_i2c_bus_ops, &s->busses[i], name, 0x40);
-        memory_region_add_subregion(&s->iomem, 0x40 * (i + offset),
+                              &aspeed_i2c_bus_ops, &s->busses[i], name,
+                              aic->reg_size);
+        memory_region_add_subregion(&s->iomem, aic->reg_size * (i + offset),
                                     &s->busses[i].mr);
     }
 }
@@ -462,11 +489,88 @@ static const TypeInfo aspeed_i2c_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(AspeedI2CState),
     .class_init    = aspeed_i2c_class_init,
+    .class_size = sizeof(AspeedI2CClass),
+    .abstract   = true,
+};
+
+static qemu_irq aspeed_2400_i2c_bus_get_irq(AspeedI2CBus *bus)
+{
+    return bus->controller->irq;
+}
+
+static void aspeed_2400_i2c_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    AspeedI2CClass *aic = ASPEED_I2C_CLASS(klass);
+
+    dc->desc = "ASPEED 2400 I2C Controller";
+
+    aic->num_busses = 14;
+    aic->reg_size = 0x40;
+    aic->gap = 7;
+    aic->bus_get_irq = aspeed_2400_i2c_bus_get_irq;
+}
+
+static const TypeInfo aspeed_2400_i2c_info = {
+    .name = TYPE_ASPEED_2400_I2C,
+    .parent = TYPE_ASPEED_I2C,
+    .class_init = aspeed_2400_i2c_class_init,
+};
+
+static qemu_irq aspeed_2500_i2c_bus_get_irq(AspeedI2CBus *bus)
+{
+    return bus->controller->irq;
+}
+
+static void aspeed_2500_i2c_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    AspeedI2CClass *aic = ASPEED_I2C_CLASS(klass);
+
+    dc->desc = "ASPEED 2500 I2C Controller";
+
+    aic->num_busses = 14;
+    aic->reg_size = 0x40;
+    aic->gap = 7;
+    aic->bus_get_irq = aspeed_2500_i2c_bus_get_irq;
+}
+
+static const TypeInfo aspeed_2500_i2c_info = {
+    .name = TYPE_ASPEED_2500_I2C,
+    .parent = TYPE_ASPEED_I2C,
+    .class_init = aspeed_2500_i2c_class_init,
+};
+
+static qemu_irq aspeed_2600_i2c_bus_get_irq(AspeedI2CBus *bus)
+{
+    return bus->irq;
+}
+
+static void aspeed_2600_i2c_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    AspeedI2CClass *aic = ASPEED_I2C_CLASS(klass);
+
+    dc->desc = "ASPEED 2600 I2C Controller";
+
+    aic->num_busses = 16;
+    aic->reg_size = 0x80;
+    aic->gap = -1; /* no gap */
+    aic->bus_get_irq = aspeed_2600_i2c_bus_get_irq;
+}
+
+static const TypeInfo aspeed_2600_i2c_info = {
+    .name = TYPE_ASPEED_2600_I2C,
+    .parent = TYPE_ASPEED_I2C,
+    .class_init = aspeed_2600_i2c_class_init,
 };
 
 static void aspeed_i2c_register_types(void)
 {
     type_register_static(&aspeed_i2c_info);
+    type_register_static(&aspeed_2400_i2c_info);
+    type_register_static(&aspeed_2500_i2c_info);
+    type_register_static(&aspeed_2600_i2c_info);
 }
 
 type_init(aspeed_i2c_register_types)
@@ -475,9 +579,10 @@ type_init(aspeed_i2c_register_types)
 I2CBus *aspeed_i2c_get_bus(DeviceState *dev, int busnr)
 {
     AspeedI2CState *s = ASPEED_I2C(dev);
+    AspeedI2CClass *aic = ASPEED_I2C_GET_CLASS(s);
     I2CBus *bus = NULL;
 
-    if (busnr >= 0 && busnr < ASPEED_I2C_NR_BUSSES) {
+    if (busnr >= 0 && busnr < aic->num_busses) {
         bus = s->busses[busnr].bus;
     }
 

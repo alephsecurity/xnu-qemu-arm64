@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test qcow2 feature bits
 #
@@ -27,7 +27,6 @@ owner=stefanha@linux.vnet.ibm.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
@@ -44,7 +43,6 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 # This tests qcow2-specific low-level functionality
 _supported_fmt qcow2
 _supported_proto file
-_supported_os Linux
 
 # Only qcow2v3 and later supports feature bits
 IMGOPTS="compat=1.1"

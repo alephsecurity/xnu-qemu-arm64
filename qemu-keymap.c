@@ -10,7 +10,6 @@
  * See the COPYING file in the top-level directory.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/notify.h"
 #include "ui/input.h"
 
@@ -84,7 +83,7 @@ static void walk_map(struct xkb_keymap *map, xkb_keycode_t code, void *data)
     }
     fprintf(outfile, "# evdev %d (0x%x), QKeyCode \"%s\", number 0x%x\n",
             evdev, evdev,
-            QKeyCode_lookup.array[qcode],
+            QKeyCode_str(qcode),
             qcode_to_number(qcode));
 
     /*

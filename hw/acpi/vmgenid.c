@@ -13,11 +13,14 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-misc.h"
+#include "qemu/module.h"
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/aml-build.h"
 #include "hw/acpi/vmgenid.h"
 #include "hw/nvram/fw_cfg.h"
-#include "sysemu/sysemu.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "sysemu/reset.h"
 
 void vmgenid_build_acpi(VmGenIdState *vms, GArray *table_data, GArray *guid,
                         BIOSLinker *linker)
@@ -30,8 +33,7 @@ void vmgenid_build_acpi(VmGenIdState *vms, GArray *table_data, GArray *guid,
      * first, since that's what the guest expects
      */
     g_array_set_size(guid, VMGENID_FW_CFG_SIZE - ARRAY_SIZE(guid_le.data));
-    guid_le = vms->guid;
-    qemu_uuid_bswap(&guid_le);
+    guid_le = qemu_uuid_bswap(vms->guid);
     /* The GUID is written at a fixed offset into the fw_cfg file
      * in order to implement the "OVMF SDT Header probe suppressor"
      * see docs/specs/vmgenid.txt for more details
@@ -149,8 +151,7 @@ static void vmgenid_update_guest(VmGenIdState *vms)
              * however, will expect the fields to be little-endian.
              * Perform a byte swap immediately before writing.
              */
-            guid_le = vms->guid;
-            qemu_uuid_bswap(&guid_le);
+            guid_le = qemu_uuid_bswap(vms->guid);
             /* The GUID is written at a fixed offset into the fw_cfg file
              * in order to implement the "OVMF SDT Header probe suppressor"
              * see docs/specs/vmgenid.txt for more details.

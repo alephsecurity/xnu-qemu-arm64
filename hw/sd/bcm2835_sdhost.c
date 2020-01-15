@@ -13,8 +13,11 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "sysemu/blockdev.h"
+#include "hw/irq.h"
 #include "hw/sd/bcm2835_sdhost.h"
+#include "migration/vmstate.h"
 #include "trace.h"
 
 #define TYPE_BCM2835_SDHOST_BUS "bcm2835-sdhost-bus"
@@ -179,9 +182,11 @@ static void bcm2835_sdhost_fifo_run(BCM2835SDHostState *s)
     uint32_t value = 0;
     int n;
     int is_read;
+    int is_write;
 
     is_read = (s->cmd & SDCMD_READ_CMD) != 0;
-    if (s->datacnt != 0 && (!is_read || sdbus_data_ready(&s->sdbus))) {
+    is_write = (s->cmd & SDCMD_WRITE_CMD) != 0;
+    if (s->datacnt != 0 && (is_write || sdbus_data_ready(&s->sdbus))) {
         if (is_read) {
             n = 0;
             while (s->datacnt && s->fifo_len < BCM2835_SDHOST_FIFO_LEN) {
@@ -201,8 +206,11 @@ static void bcm2835_sdhost_fifo_run(BCM2835SDHostState *s)
             if (n != 0) {
                 bcm2835_sdhost_fifo_push(s, value);
                 s->status |= SDHSTS_DATA_FLAG;
+                if (s->config & SDHCFG_DATA_IRPT_EN) {
+                    s->status |= SDHSTS_SDIO_IRPT;
+                }
             }
-        } else { /* write */
+        } else if (is_write) { /* write */
             n = 0;
             while (s->datacnt > 0 && (s->fifo_len > 0 || n > 0)) {
                 if (n == 0) {
@@ -223,10 +231,17 @@ static void bcm2835_sdhost_fifo_run(BCM2835SDHostState *s)
             s->edm &= ~SDEDM_FSM_MASK;
             s->edm |= SDEDM_FSM_DATAMODE;
             trace_bcm2835_sdhost_edm_change("datacnt 0", s->edm);
-
-            if ((s->cmd & SDCMD_WRITE_CMD) &&
+        }
+        if (is_write) {
+            /* set block interrupt at end of each block transfer */
+            if (s->hbct && s->datacnt % s->hbct == 0 &&
                 (s->config & SDHCFG_BLOCK_IRPT_EN)) {
                 s->status |= SDHSTS_BLOCK_IRPT;
+            }
+            /* set data interrupt after each transfer */
+            s->status |= SDHSTS_DATA_FLAG;
+            if (s->config & SDHCFG_DATA_IRPT_EN) {
+                s->status |= SDHSTS_SDIO_IRPT;
             }
         }
     }

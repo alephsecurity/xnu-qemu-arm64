@@ -12,8 +12,9 @@
 
 #ifndef HW_S390X_CSS_BRIDGE_H
 #define HW_S390X_CSS_BRIDGE_H
+
 #include "qom/object.h"
-#include "hw/qdev-core.h"
+#include "hw/sysbus.h"
 
 /* virtual css bridge */
 typedef struct VirtualCssBridge {
@@ -28,7 +29,6 @@ typedef struct VirtualCssBridge {
 /* virtual css bus type */
 typedef struct VirtualCssBus {
     BusState parent_obj;
-    bool squash_mcss;
 } VirtualCssBus;
 
 #define TYPE_VIRTUAL_CSS_BUS "virtual-css-bus"

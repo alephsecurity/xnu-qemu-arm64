@@ -24,7 +24,7 @@ import iotests
 nsec_per_sec = 1000000000
 
 class ThrottleTestCase(iotests.QMPTestCase):
-    test_img = "null-aio://"
+    test_driver = "null-aio"
     max_drives = 3
 
     def blockstats(self, device):
@@ -35,10 +35,14 @@ class ThrottleTestCase(iotests.QMPTestCase):
                 return stat['rd_bytes'], stat['rd_operations'], stat['wr_bytes'], stat['wr_operations']
         raise Exception("Device not found for blockstats: %s" % device)
 
+    def required_drivers(self):
+        return [self.test_driver]
+
+    @iotests.skip_if_unsupported(required_drivers)
     def setUp(self):
         self.vm = iotests.VM()
         for i in range(0, self.max_drives):
-            self.vm.add_drive(self.test_img)
+            self.vm.add_drive(self.test_driver + "://", "file.read-zeroes=on")
         self.vm.launch()
 
     def tearDown(self):
@@ -69,18 +73,18 @@ class ThrottleTestCase(iotests.QMPTestCase):
         # in. The throttled requests won't be executed until we
         # advance the virtual clock.
         rq_size = 512
-        rd_nr = max(params['bps'] / rq_size / 2,
-                    params['bps_rd'] / rq_size,
-                    params['iops'] / 2,
+        rd_nr = max(params['bps'] // rq_size // 2,
+                    params['bps_rd'] // rq_size,
+                    params['iops'] // 2,
                     params['iops_rd'])
         rd_nr *= seconds * 2
-        rd_nr /= ndrives
-        wr_nr = max(params['bps'] / rq_size / 2,
-                    params['bps_wr'] / rq_size,
-                    params['iops'] / 2,
+        rd_nr //= ndrives
+        wr_nr = max(params['bps'] // rq_size // 2,
+                    params['bps_wr'] // rq_size,
+                    params['iops'] // 2,
                     params['iops_wr'])
         wr_nr *= seconds * 2
-        wr_nr /= ndrives
+        wr_nr //= ndrives
 
         # Send I/O requests to all drives
         for i in range(rd_nr):
@@ -196,7 +200,7 @@ class ThrottleTestCase(iotests.QMPTestCase):
             self.configure_throttle(ndrives, settings)
 
             # Wait for the bucket to empty so we can do bursts
-            wait_ns = nsec_per_sec * burst_length * burst_rate / rate
+            wait_ns = nsec_per_sec * burst_length * burst_rate // rate
             self.vm.qtest("clock_step %d" % wait_ns)
 
             # Test I/O at the max burst rate
@@ -208,17 +212,72 @@ class ThrottleTestCase(iotests.QMPTestCase):
             limits[tk] = rate
             self.do_test_throttle(ndrives, 5, limits)
 
+    # Test that removing a drive from a throttle group should not
+    # affect the remaining members of the group.
+    # https://bugzilla.redhat.com/show_bug.cgi?id=1535914
+    def test_remove_group_member(self):
+        # Create a throttle group with two drives
+        # and set a 4 KB/s read limit.
+        params = {"bps": 0,
+                  "bps_rd": 4096,
+                  "bps_wr": 0,
+                  "iops": 0,
+                  "iops_rd": 0,
+                  "iops_wr": 0 }
+        self.configure_throttle(2, params)
+
+        # Read 4KB from drive0. This is performed immediately.
+        self.vm.hmp_qemu_io("drive0", "aio_read 0 4096")
+
+        # Read 2KB. The I/O limit has been exceeded so this
+        # request is throttled and a timer is set to wake it up.
+        self.vm.hmp_qemu_io("drive0", "aio_read 0 2048")
+
+        # Read 2KB again. We're still over the I/O limit so this is
+        # request is also throttled, but no new timer is set since
+        # there's already one.
+        self.vm.hmp_qemu_io("drive0", "aio_read 0 2048")
+
+        # Read from drive1. This request is also throttled, and no
+        # timer is set in drive1 because there's already one in
+        # drive0.
+        self.vm.hmp_qemu_io("drive1", "aio_read 0 4096")
+
+        # At this point only the first 4KB have been read from drive0.
+        # The other requests are throttled.
+        self.assertEqual(self.blockstats('drive0')[0], 4096)
+        self.assertEqual(self.blockstats('drive1')[0], 0)
+
+        # Remove drive0 from the throttle group and disable its I/O limits.
+        # drive1 remains in the group with a throttled request.
+        params['bps_rd'] = 0
+        params['device'] = 'drive0'
+        result = self.vm.qmp("block_set_io_throttle", conv_keys=False, **params)
+        self.assert_qmp(result, 'return', {})
+
+        # Removing the I/O limits from drive0 drains its two pending requests.
+        # The read request in drive1 is still throttled.
+        self.assertEqual(self.blockstats('drive0')[0], 8192)
+        self.assertEqual(self.blockstats('drive1')[0], 0)
+
+        # Advance the clock 5 seconds. This completes the request in drive1
+        self.vm.qtest("clock_step %d" % (5 * nsec_per_sec))
+
+        # Now all requests have been processed.
+        self.assertEqual(self.blockstats('drive0')[0], 8192)
+        self.assertEqual(self.blockstats('drive1')[0], 4096)
+
 class ThrottleTestCoroutine(ThrottleTestCase):
-    test_img = "null-co://"
+    test_driver = "null-co"
 
 class ThrottleTestGroupNames(iotests.QMPTestCase):
-    test_img = "null-aio://"
     max_drives = 3
 
     def setUp(self):
         self.vm = iotests.VM()
         for i in range(0, self.max_drives):
-            self.vm.add_drive(self.test_img, "throttling.iops-total=100")
+            self.vm.add_drive("null-co://",
+                              "throttling.iops-total=100,file.read-zeroes=on")
         self.vm.launch()
 
     def tearDown(self):
@@ -311,10 +370,8 @@ class ThrottleTestGroupNames(iotests.QMPTestCase):
 class ThrottleTestRemovableMedia(iotests.QMPTestCase):
     def setUp(self):
         self.vm = iotests.VM()
-        if iotests.qemu_default_machine == 's390-ccw-virtio':
-            self.vm.add_device("virtio-scsi-ccw,id=virtio-scsi")
-        else:
-            self.vm.add_device("virtio-scsi-pci,id=virtio-scsi")
+        self.vm.add_device("{},id=virtio-scsi".format(
+            iotests.get_virtio_scsi_device()))
         self.vm.launch()
 
     def tearDown(self):
@@ -322,11 +379,11 @@ class ThrottleTestRemovableMedia(iotests.QMPTestCase):
 
     def test_removable_media(self):
         # Add a couple of dummy nodes named cd0 and cd1
-        result = self.vm.qmp("blockdev-add", driver="null-aio",
-                             node_name="cd0")
+        result = self.vm.qmp("blockdev-add", driver="null-co",
+                             read_zeroes=True, node_name="cd0")
         self.assert_qmp(result, 'return', {})
-        result = self.vm.qmp("blockdev-add", driver="null-aio",
-                             node_name="cd1")
+        result = self.vm.qmp("blockdev-add", driver="null-co",
+                             read_zeroes=True, node_name="cd1")
         self.assert_qmp(result, 'return', {})
 
         # Attach a CD drive with cd0 inserted
@@ -372,4 +429,6 @@ class ThrottleTestRemovableMedia(iotests.QMPTestCase):
 
 
 if __name__ == '__main__':
+    if 'null-co' not in iotests.supported_formats():
+        iotests.notrun('null-co driver support missing')
     iotests.main(supported_fmts=["raw"])

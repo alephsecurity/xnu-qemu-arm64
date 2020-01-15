@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "hw/arm/xnu_ptr_ntf.h"
 #include "hw/arm/xnu_remap_dev.h"
 #include "hw/arm/xnu_mem.h"

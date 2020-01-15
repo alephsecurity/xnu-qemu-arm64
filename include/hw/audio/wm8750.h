@@ -14,9 +14,9 @@
 #ifndef HW_DAC_WM8750_H
 #define HW_DAC_WM8750_H
 
-#include "hw/hw.h"
 
 #define TYPE_WM8750 "wm8750"
+#define TYPE_MV88W8618_AUDIO "mv88w8618_audio"
 
 typedef void data_req_cb(void *opaque, int free_out, int free_in);
 

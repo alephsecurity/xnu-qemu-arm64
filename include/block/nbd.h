@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2016-2017 Red Hat, Inc.
+ *  Copyright (C) 2016-2019 Red Hat, Inc.
  *  Copyright (C) 2005  Anthony Liguori <anthony@codemonkey.ws>
  *
  *  Network Block Device
@@ -23,6 +23,7 @@
 #include "qapi/qapi-types-block.h"
 #include "io/channel-socket.h"
 #include "crypto/tlscreds.h"
+#include "qapi/error.h"
 
 /* Handshake phase structs - this struct is passed on the wire */
 
@@ -126,16 +127,34 @@ typedef struct NBDExtent {
 
 /* Transmission (export) flags: sent from server to client during handshake,
    but describe what will happen during transmission */
-#define NBD_FLAG_HAS_FLAGS         (1 << 0) /* Flags are there */
-#define NBD_FLAG_READ_ONLY         (1 << 1) /* Device is read-only */
-#define NBD_FLAG_SEND_FLUSH        (1 << 2) /* Send FLUSH */
-#define NBD_FLAG_SEND_FUA          (1 << 3) /* Send FUA (Force Unit Access) */
-#define NBD_FLAG_ROTATIONAL        (1 << 4) /* Use elevator algorithm -
-                                               rotational media */
-#define NBD_FLAG_SEND_TRIM         (1 << 5) /* Send TRIM (discard) */
-#define NBD_FLAG_SEND_WRITE_ZEROES (1 << 6) /* Send WRITE_ZEROES */
-#define NBD_FLAG_SEND_DF           (1 << 7) /* Send DF (Do not Fragment) */
-#define NBD_FLAG_SEND_CACHE        (1 << 8) /* Send CACHE (prefetch) */
+enum {
+    NBD_FLAG_HAS_FLAGS_BIT          =  0, /* Flags are there */
+    NBD_FLAG_READ_ONLY_BIT          =  1, /* Device is read-only */
+    NBD_FLAG_SEND_FLUSH_BIT         =  2, /* Send FLUSH */
+    NBD_FLAG_SEND_FUA_BIT           =  3, /* Send FUA (Force Unit Access) */
+    NBD_FLAG_ROTATIONAL_BIT         =  4, /* Use elevator algorithm -
+                                             rotational media */
+    NBD_FLAG_SEND_TRIM_BIT          =  5, /* Send TRIM (discard) */
+    NBD_FLAG_SEND_WRITE_ZEROES_BIT  =  6, /* Send WRITE_ZEROES */
+    NBD_FLAG_SEND_DF_BIT            =  7, /* Send DF (Do not Fragment) */
+    NBD_FLAG_CAN_MULTI_CONN_BIT     =  8, /* Multi-client cache consistent */
+    NBD_FLAG_SEND_RESIZE_BIT        =  9, /* Send resize */
+    NBD_FLAG_SEND_CACHE_BIT         = 10, /* Send CACHE (prefetch) */
+    NBD_FLAG_SEND_FAST_ZERO_BIT     = 11, /* FAST_ZERO flag for WRITE_ZEROES */
+};
+
+#define NBD_FLAG_HAS_FLAGS         (1 << NBD_FLAG_HAS_FLAGS_BIT)
+#define NBD_FLAG_READ_ONLY         (1 << NBD_FLAG_READ_ONLY_BIT)
+#define NBD_FLAG_SEND_FLUSH        (1 << NBD_FLAG_SEND_FLUSH_BIT)
+#define NBD_FLAG_SEND_FUA          (1 << NBD_FLAG_SEND_FUA_BIT)
+#define NBD_FLAG_ROTATIONAL        (1 << NBD_FLAG_ROTATIONAL_BIT)
+#define NBD_FLAG_SEND_TRIM         (1 << NBD_FLAG_SEND_TRIM_BIT)
+#define NBD_FLAG_SEND_WRITE_ZEROES (1 << NBD_FLAG_SEND_WRITE_ZEROES_BIT)
+#define NBD_FLAG_SEND_DF           (1 << NBD_FLAG_SEND_DF_BIT)
+#define NBD_FLAG_CAN_MULTI_CONN    (1 << NBD_FLAG_CAN_MULTI_CONN_BIT)
+#define NBD_FLAG_SEND_RESIZE       (1 << NBD_FLAG_SEND_RESIZE_BIT)
+#define NBD_FLAG_SEND_CACHE        (1 << NBD_FLAG_SEND_CACHE_BIT)
+#define NBD_FLAG_SEND_FAST_ZERO    (1 << NBD_FLAG_SEND_FAST_ZERO_BIT)
 
 /* New-style handshake (global) flags, sent from server to client, and
    control what will happen during handshake phase. */
@@ -188,6 +207,7 @@ typedef struct NBDExtent {
 #define NBD_CMD_FLAG_DF         (1 << 2) /* don't fragment structured read */
 #define NBD_CMD_FLAG_REQ_ONE    (1 << 3) /* only one extent in BLOCK_STATUS
                                           * reply chunk */
+#define NBD_CMD_FLAG_FAST_ZERO  (1 << 4) /* fail if WRITE_ZEROES is not fast */
 
 /* Supported request types */
 enum {
@@ -206,12 +226,12 @@ enum {
 /* Maximum size of a single READ/WRITE data buffer */
 #define NBD_MAX_BUFFER_SIZE (32 * 1024 * 1024)
 
-/* Maximum size of an export name. The NBD spec requires 256 and
- * suggests that servers support up to 4096, but we stick to only the
- * required size so that we can stack-allocate the names, and because
- * going larger would require an audit of more code to make sure we
- * aren't overflowing some other buffer. */
-#define NBD_MAX_NAME_SIZE 256
+/*
+ * Maximum size of a protocol string (export name, meta context name,
+ * etc.).  Use malloc rather than stack allocation for storage of a
+ * string.
+ */
+#define NBD_MAX_STRING_SIZE 4096
 
 /* Two types of reply structures */
 #define NBD_SIMPLE_REPLY_MAGIC      0x67446698
@@ -253,6 +273,7 @@ static inline bool nbd_reply_type_is_error(int type)
 #define NBD_EINVAL     22
 #define NBD_ENOSPC     28
 #define NBD_EOVERFLOW  75
+#define NBD_ENOTSUP    95
 #define NBD_ESHUTDOWN  108
 
 /* Details collected by NBD_OPT_EXPORT_NAME and NBD_OPT_GO */
@@ -261,30 +282,45 @@ struct NBDExportInfo {
     bool request_sizes;
     char *x_dirty_bitmap;
 
+    /* Set by client before nbd_receive_negotiate(), or by server results
+     * during nbd_receive_export_list() */
+    char *name; /* must be non-NULL */
+
     /* In-out fields, set by client before nbd_receive_negotiate() and
      * updated by server results during nbd_receive_negotiate() */
     bool structured_reply;
     bool base_allocation; /* base:allocation context for NBD_CMD_BLOCK_STATUS */
 
-    /* Set by server results during nbd_receive_negotiate() */
+    /* Set by server results during nbd_receive_negotiate() and
+     * nbd_receive_export_list() */
     uint64_t size;
     uint16_t flags;
     uint32_t min_block;
     uint32_t opt_block;
     uint32_t max_block;
 
-    uint32_t meta_base_allocation_id;
+    uint32_t context_id;
+
+    /* Set by server results during nbd_receive_export_list() */
+    char *description;
+    int n_contexts;
+    char **contexts;
 };
 typedef struct NBDExportInfo NBDExportInfo;
 
-int nbd_receive_negotiate(QIOChannel *ioc, const char *name,
-                          QCryptoTLSCreds *tlscreds, const char *hostname,
-                          QIOChannel **outioc, NBDExportInfo *info,
-                          Error **errp);
+int nbd_receive_negotiate(AioContext *aio_context, QIOChannel *ioc,
+                          QCryptoTLSCreds *tlscreds,
+                          const char *hostname, QIOChannel **outioc,
+                          NBDExportInfo *info, Error **errp);
+void nbd_free_export_list(NBDExportInfo *info, int count);
+int nbd_receive_export_list(QIOChannel *ioc, QCryptoTLSCreds *tlscreds,
+                            const char *hostname, NBDExportInfo **info,
+                            Error **errp);
 int nbd_init(int fd, QIOChannelSocket *sioc, NBDExportInfo *info,
              Error **errp);
 int nbd_send_request(QIOChannel *ioc, NBDRequest *request);
-int nbd_receive_reply(QIOChannel *ioc, NBDReply *reply, Error **errp);
+int coroutine_fn nbd_receive_reply(BlockDriverState *bs, QIOChannel *ioc,
+                                   NBDReply *reply, Error **errp);
 int nbd_client(int fd);
 int nbd_disconnect(int fd);
 int nbd_errno_to_system_errno(int err);
@@ -292,10 +328,11 @@ int nbd_errno_to_system_errno(int err);
 typedef struct NBDExport NBDExport;
 typedef struct NBDClient NBDClient;
 
-NBDExport *nbd_export_new(BlockDriverState *bs, off_t dev_offset, off_t size,
-                          uint16_t nbdflags, void (*close)(NBDExport *),
-                          bool writethrough, BlockBackend *on_eject_blk,
-                          Error **errp);
+NBDExport *nbd_export_new(BlockDriverState *bs, uint64_t dev_offset,
+                          uint64_t size, const char *name, const char *desc,
+                          const char *bitmap, bool readonly, bool shared,
+                          void (*close)(NBDExport *), bool writethrough,
+                          BlockBackend *on_eject_blk, Error **errp);
 void nbd_export_close(NBDExport *exp);
 void nbd_export_remove(NBDExport *exp, NbdServerRemoveMode mode, Error **errp);
 void nbd_export_get(NBDExport *exp);
@@ -303,33 +340,55 @@ void nbd_export_put(NBDExport *exp);
 
 BlockBackend *nbd_export_get_blockdev(NBDExport *exp);
 
+AioContext *nbd_export_aio_context(NBDExport *exp);
 NBDExport *nbd_export_find(const char *name);
-void nbd_export_set_name(NBDExport *exp, const char *name);
-void nbd_export_set_description(NBDExport *exp, const char *description);
 void nbd_export_close_all(void);
 
-void nbd_client_new(NBDExport *exp,
-                    QIOChannelSocket *sioc,
+void nbd_client_new(QIOChannelSocket *sioc,
                     QCryptoTLSCreds *tlscreds,
-                    const char *tlsaclname,
+                    const char *tlsauthz,
                     void (*close_fn)(NBDClient *, bool));
 void nbd_client_get(NBDClient *client);
 void nbd_client_put(NBDClient *client);
 
 void nbd_server_start(SocketAddress *addr, const char *tls_creds,
-                      Error **errp);
-
-void nbd_export_bitmap(NBDExport *exp, const char *bitmap,
-                       const char *bitmap_export_name, Error **errp);
+                      const char *tls_authz, Error **errp);
 
 /* nbd_read
  * Reads @size bytes from @ioc. Returns 0 on success.
  */
 static inline int nbd_read(QIOChannel *ioc, void *buffer, size_t size,
-                           Error **errp)
+                           const char *desc, Error **errp)
 {
-    return qio_channel_read_all(ioc, buffer, size, errp) < 0 ? -EIO : 0;
+    int ret = qio_channel_read_all(ioc, buffer, size, errp) < 0 ? -EIO : 0;
+
+    if (ret < 0) {
+        if (desc) {
+            error_prepend(errp, "Failed to read %s: ", desc);
+        }
+        return -1;
+    }
+
+    return 0;
 }
+
+#define DEF_NBD_READ_N(bits)                                            \
+static inline int nbd_read##bits(QIOChannel *ioc,                       \
+                                 uint##bits##_t *val,                   \
+                                 const char *desc, Error **errp)        \
+{                                                                       \
+    if (nbd_read(ioc, val, sizeof(*val), desc, errp) < 0) {             \
+        return -1;                                                      \
+    }                                                                   \
+    *val = be##bits##_to_cpu(*val);                                     \
+    return 0;                                                           \
+}
+
+DEF_NBD_READ_N(16) /* Defines nbd_read16(). */
+DEF_NBD_READ_N(32) /* Defines nbd_read32(). */
+DEF_NBD_READ_N(64) /* Defines nbd_read64(). */
+
+#undef DEF_NBD_READ_N
 
 static inline bool nbd_reply_is_simple(NBDReply *reply)
 {
@@ -342,5 +401,10 @@ static inline bool nbd_reply_is_structured(NBDReply *reply)
 }
 
 const char *nbd_reply_type_lookup(uint16_t type);
+const char *nbd_opt_lookup(uint32_t opt);
+const char *nbd_rep_lookup(uint32_t rep);
+const char *nbd_info_lookup(uint16_t info);
+const char *nbd_cmd_lookup(uint16_t info);
+const char *nbd_err_lookup(int err);
 
 #endif

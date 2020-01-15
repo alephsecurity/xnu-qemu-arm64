@@ -14,9 +14,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/module.h"
 #include "hw/i2c/i2c.h"
-#include "hw/i2c/i2c-ddc.h"
+#include "migration/vmstate.h"
+#include "hw/display/i2c-ddc.h"
 #include "trace.h"
 
 #define SII9022_SYS_CTRL_DATA 0x1a
@@ -79,7 +80,7 @@ static int sii9022_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
-static int sii9022_rx(I2CSlave *i2c)
+static uint8_t sii9022_rx(I2CSlave *i2c)
 {
     sii9022_state *s = SII9022(i2c);
     uint8_t res = 0x00;

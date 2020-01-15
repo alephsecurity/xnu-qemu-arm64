@@ -30,7 +30,7 @@
 #include <netinet/tcp.h>
 
 
-#include "libqtest.h"
+#include "libqtest-single.h"
 #include "qemu-common.h"
 
 #define IPMI_IRQ        5
@@ -99,6 +99,7 @@ static void bt_wait_b_busy(void)
     unsigned int count = 1000;
     while (IPMI_BT_CTLREG_GET_B_BUSY() != 0) {
         g_assert(--count != 0);
+        usleep(100);
     }
 }
 
@@ -107,6 +108,7 @@ static void bt_wait_b2h_atn(void)
     unsigned int count = 1000;
     while (IPMI_BT_CTLREG_GET_B2H_ATN() == 0) {
         g_assert(--count != 0);
+        usleep(100);
     }
 }
 
@@ -240,13 +242,13 @@ static void emu_msg_handler(void)
         write_emu_msg(msg, msg_len);
     } else if ((msg[1] == set_bmc_globals_cmd[0]) &&
                (msg[2] == set_bmc_globals_cmd[1])) {
+        write_emu_msg(enable_irq_cmd, sizeof(enable_irq_cmd));
         memcpy(msg + 1, set_bmc_globals_rsp, sizeof(set_bmc_globals_rsp));
         msg_len = sizeof(set_bmc_globals_rsp) + 1;
         msg[msg_len] = -ipmb_checksum(msg, msg_len, 0);
         msg_len++;
         msg[msg_len++] = 0xa0;
         write_emu_msg(msg, msg_len);
-        write_emu_msg(enable_irq_cmd, sizeof(enable_irq_cmd));
     } else {
         g_assert(0);
     }
@@ -400,21 +402,14 @@ static void open_socket(void)
 
 int main(int argc, char **argv)
 {
-    const char *arch = qtest_get_arch();
     int ret;
-
-    /* Check architecture */
-    if (strcmp(arch, "i386") && strcmp(arch, "x86_64")) {
-        g_test_message("Skipping test for non-x86\n");
-        return 0;
-    }
 
     open_socket();
 
     /* Run the tests */
     g_test_init(&argc, &argv, NULL);
 
-    global_qtest = qtest_startf(
+    global_qtest = qtest_initf(
         " -chardev socket,id=ipmi0,host=localhost,port=%d,reconnect=10"
         " -device ipmi-bmc-extern,chardev=ipmi0,id=bmc0"
         " -device isa-ipmi-bt,bmc=bmc0", emu_port);

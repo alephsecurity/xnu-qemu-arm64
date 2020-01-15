@@ -8,12 +8,13 @@
  * published by the Free Software Foundation, or any later version.
  * See the COPYING file in the top-level directory.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/sysbus.h"
 
 #undef DEBUG_PUV3
 #include "hw/unicore32/puv3.h"
+#include "qemu/module.h"
 
 #define PUV3_DMA_CH_NR          (6)
 #define PUV3_DMA_CH_MASK        (0xff)
@@ -76,7 +77,7 @@ static const MemoryRegionOps puv3_dma_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static int puv3_dma_init(SysBusDevice *dev)
+static void puv3_dma_realize(DeviceState *dev, Error **errp)
 {
     PUV3DMAState *s = PUV3_DMA(dev);
     int i;
@@ -87,16 +88,14 @@ static int puv3_dma_init(SysBusDevice *dev)
 
     memory_region_init_io(&s->iomem, OBJECT(s), &puv3_dma_ops, s, "puv3_dma",
             PUV3_REGS_OFFSET);
-    sysbus_init_mmio(dev, &s->iomem);
-
-    return 0;
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
 static void puv3_dma_class_init(ObjectClass *klass, void *data)
 {
-    SysBusDeviceClass *sdc = SYS_BUS_DEVICE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
-    sdc->init = puv3_dma_init;
+    dc->realize = puv3_dma_realize;
 }
 
 static const TypeInfo puv3_dma_info = {

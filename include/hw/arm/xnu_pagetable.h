@@ -25,7 +25,7 @@
 #define HW_ARM_XNU_PAGETABLE_H
 
 #include "qemu-common.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "cpu.h"
 
 hwaddr pt_tte_el1(ARMCPU *cpu, AddressSpace *as, hwaddr va, bool make_exe);

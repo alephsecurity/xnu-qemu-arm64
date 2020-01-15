@@ -51,11 +51,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "libqtest.h"
+#include "qapi/qmp/qdict.h"
 #include "qemu/iov.h"
 #include "qemu/sockets.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+
+/* TODO actually test the results and get rid of this */
+#define qmp_discard_response(qs, ...) qobject_unref(qtest_qmp(qs, __VA_ARGS__))
 
 static const char *get_devstr(void)
 {
@@ -77,6 +82,7 @@ static void test_redirector_tx(void)
     char *recv_buf;
     uint32_t size = sizeof(send_buf);
     size = htonl(size);
+    QTestState *qts;
 
     ret = socketpair(PF_UNIX, SOCK_STREAM, 0, backend_sock);
     g_assert_cmpint(ret, !=, -1);
@@ -86,12 +92,12 @@ static void test_redirector_tx(void)
     ret = mkstemp(sock_path1);
     g_assert_cmpint(ret, !=, -1);
 
-    global_qtest = qtest_startf(
+    qts = qtest_initf(
         "-netdev socket,id=qtest-bn0,fd=%d "
         "-device %s,netdev=qtest-bn0,id=qtest-e0 "
         "-chardev socket,id=redirector0,path=%s,server,nowait "
         "-chardev socket,id=redirector1,path=%s,server,nowait "
-        "-chardev socket,id=redirector2,path=%s,nowait "
+        "-chardev socket,id=redirector2,path=%s "
         "-object filter-redirector,id=qtest-f0,netdev=qtest-bn0,"
         "queue=tx,outdev=redirector0 "
         "-object filter-redirector,id=qtest-f1,netdev=qtest-bn0,"
@@ -104,7 +110,7 @@ static void test_redirector_tx(void)
     g_assert_cmpint(recv_sock, !=, -1);
 
     /* send a qmp command to guarantee that 'connected' is setting to true. */
-    qmp_discard_response("{ 'execute' : 'query-status'}");
+    qmp_discard_response(qts, "{ 'execute' : 'query-status'}");
 
     struct iovec iov[] = {
         {
@@ -133,7 +139,7 @@ static void test_redirector_tx(void)
     close(recv_sock);
     unlink(sock_path0);
     unlink(sock_path1);
-    qtest_end();
+    qtest_quit(qts);
 }
 
 static void test_redirector_rx(void)
@@ -146,6 +152,7 @@ static void test_redirector_rx(void)
     char *recv_buf;
     uint32_t size = sizeof(send_buf);
     size = htonl(size);
+    QTestState *qts;
 
     ret = socketpair(PF_UNIX, SOCK_STREAM, 0, backend_sock);
     g_assert_cmpint(ret, !=, -1);
@@ -155,12 +162,12 @@ static void test_redirector_rx(void)
     ret = mkstemp(sock_path1);
     g_assert_cmpint(ret, !=, -1);
 
-    global_qtest = qtest_startf(
+    qts = qtest_initf(
         "-netdev socket,id=qtest-bn0,fd=%d "
         "-device %s,netdev=qtest-bn0,id=qtest-e0 "
         "-chardev socket,id=redirector0,path=%s,server,nowait "
         "-chardev socket,id=redirector1,path=%s,server,nowait "
-        "-chardev socket,id=redirector2,path=%s,nowait "
+        "-chardev socket,id=redirector2,path=%s "
         "-object filter-redirector,id=qtest-f0,netdev=qtest-bn0,"
         "queue=rx,indev=redirector0 "
         "-object filter-redirector,id=qtest-f1,netdev=qtest-bn0,"
@@ -182,7 +189,7 @@ static void test_redirector_rx(void)
     send_sock = unix_connect(sock_path1, NULL);
     g_assert_cmpint(send_sock, !=, -1);
     /* send a qmp command to guarantee that 'connected' is setting to true. */
-    qmp_discard_response("{ 'execute' : 'query-status'}");
+    qmp_discard_response(qts, "{ 'execute' : 'query-status'}");
 
     ret = iov_send(send_sock, iov, 2, 0, sizeof(size) + sizeof(send_buf));
     g_assert_cmpint(ret, ==, sizeof(send_buf) + sizeof(size));
@@ -200,7 +207,7 @@ static void test_redirector_rx(void)
     g_free(recv_buf);
     unlink(sock_path0);
     unlink(sock_path1);
-    qtest_end();
+    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)

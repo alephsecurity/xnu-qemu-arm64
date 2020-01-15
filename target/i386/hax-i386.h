@@ -10,13 +10,13 @@
  *
  */
 
-#ifndef _HAX_I386_H
-#define _HAX_I386_H
+#ifndef HAX_I386_H
+#define HAX_I386_H
 
 #include "cpu.h"
 #include "sysemu/hax.h"
 
-#ifdef CONFIG_DARWIN
+#ifdef CONFIG_POSIX
 typedef int hax_fd;
 #endif
 
@@ -82,8 +82,8 @@ hax_fd hax_mod_open(void);
 void hax_memory_init(void);
 
 
-#ifdef CONFIG_DARWIN
-#include "target/i386/hax-darwin.h"
+#ifdef CONFIG_POSIX
+#include "target/i386/hax-posix.h"
 #endif
 
 #ifdef CONFIG_WIN32

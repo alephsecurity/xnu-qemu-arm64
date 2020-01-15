@@ -1,25 +1,20 @@
 #include "qemu/osdep.h"
+
+#include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qerror.h"
 #include "qom/object_interfaces.h"
+#include "qemu/help_option.h"
 #include "qemu/module.h"
 #include "qemu/option.h"
 #include "qapi/opts-visitor.h"
 #include "qemu/config-file.h"
 
-void user_creatable_complete(Object *obj, Error **errp)
+void user_creatable_complete(UserCreatable *uc, Error **errp)
 {
+    UserCreatableClass *ucc = USER_CREATABLE_GET_CLASS(uc);
 
-    UserCreatableClass *ucc;
-    UserCreatable *uc =
-        (UserCreatable *)object_dynamic_cast(obj, TYPE_USER_CREATABLE);
-
-    if (!uc) {
-        return;
-    }
-
-    ucc = USER_CREATABLE_GET_CLASS(uc);
     if (ucc->complete) {
         ucc->complete(uc, errp);
     }
@@ -83,16 +78,20 @@ Object *user_creatable_add_type(const char *type, const char *id,
         goto out;
     }
 
-    object_property_add_child(object_get_objects_root(),
-                              id, obj, &local_err);
-    if (local_err) {
-        goto out;
+    if (id != NULL) {
+        object_property_add_child(object_get_objects_root(),
+                                  id, obj, &local_err);
+        if (local_err) {
+            goto out;
+        }
     }
 
-    user_creatable_complete(obj, &local_err);
+    user_creatable_complete(USER_CREATABLE(obj), &local_err);
     if (local_err) {
-        object_property_del(object_get_objects_root(),
-                            id, &error_abort);
+        if (id != NULL) {
+            object_property_del(object_get_objects_root(),
+                                id, &error_abort);
+        }
         goto out;
     }
 out:
@@ -141,26 +140,82 @@ Object *user_creatable_add_opts(QemuOpts *opts, Error **errp)
 
 int user_creatable_add_opts_foreach(void *opaque, QemuOpts *opts, Error **errp)
 {
-    bool (*type_predicate)(const char *) = opaque;
+    bool (*type_opt_predicate)(const char *, QemuOpts *) = opaque;
     Object *obj = NULL;
-    Error *err = NULL;
     const char *type;
 
     type = qemu_opt_get(opts, "qom-type");
-    if (type && type_predicate &&
-        !type_predicate(type)) {
+    if (type && type_opt_predicate &&
+        !type_opt_predicate(type, opts)) {
         return 0;
     }
 
-    obj = user_creatable_add_opts(opts, &err);
+    obj = user_creatable_add_opts(opts, errp);
     if (!obj) {
-        error_report_err(err);
         return -1;
     }
     object_unref(obj);
     return 0;
 }
 
+bool user_creatable_print_help(const char *type, QemuOpts *opts)
+{
+    ObjectClass *klass;
+
+    if (is_help_option(type)) {
+        GSList *l, *list;
+
+        printf("List of user creatable objects:\n");
+        list = object_class_get_list_sorted(TYPE_USER_CREATABLE, false);
+        for (l = list; l != NULL; l = l->next) {
+            ObjectClass *oc = OBJECT_CLASS(l->data);
+            printf("  %s\n", object_class_get_name(oc));
+        }
+        g_slist_free(list);
+        return true;
+    }
+
+    klass = object_class_by_name(type);
+    if (klass && qemu_opt_has_help_opt(opts)) {
+        ObjectPropertyIterator iter;
+        ObjectProperty *prop;
+        GPtrArray *array = g_ptr_array_new();
+        int i;
+
+        object_class_property_iter_init(&iter, klass);
+        while ((prop = object_property_iter_next(&iter))) {
+            GString *str;
+
+            if (!prop->set) {
+                continue;
+            }
+
+            str = g_string_new(NULL);
+            g_string_append_printf(str, "  %s=<%s>", prop->name, prop->type);
+            if (prop->description) {
+                if (str->len < 24) {
+                    g_string_append_printf(str, "%*s", 24 - (int)str->len, "");
+                }
+                g_string_append_printf(str, " - %s", prop->description);
+            }
+            g_ptr_array_add(array, g_string_free(str, false));
+        }
+        g_ptr_array_sort(array, (GCompareFunc)qemu_pstrcmp0);
+        if (array->len > 0) {
+            printf("%s options:\n", type);
+        } else {
+            printf("There are no options for %s.\n", type);
+        }
+        for (i = 0; i < array->len; i++) {
+            printf("%s\n", (char *)array->pdata[i]);
+        }
+        g_ptr_array_set_free_func(array, g_free);
+        g_ptr_array_free(array, true);
+        return true;
+    }
+
+    return false;
+}
 
 void user_creatable_del(const char *id, Error **errp)
 {
