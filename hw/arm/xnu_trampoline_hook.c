@@ -49,7 +49,7 @@
 #include "hw/semihosting/semihost.h"
 #include "sysemu/hw_accel.h"
 
-#define TRAMPOLINE_CODE_INSTS (200)
+#define TRAMPOLINE_CODE_INSTS (1024)
 #define TRAMPOLINE_CODE_SIZE (TRAMPOLINE_CODE_INSTS * 4)
 
 #define PAGE_4K_BITS (12)
