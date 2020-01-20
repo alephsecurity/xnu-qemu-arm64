@@ -350,6 +350,10 @@ static void n66_machine_init(MachineState *machine)
         nms->ktpp.hook.scratch_reg = 28;
     }
 
+    if (0 != nms->qc_file_0_filename[0]) {
+        qc_file_open(0, &nms->qc_file_0_filename[0]);
+    }
+
     n66_add_cpregs(nms);
 
     n66_create_s3c_uart(nms, serial_hd(0));
@@ -467,6 +471,20 @@ static char *n66_get_driver_filename(Object *obj, Error **errp)
     N66MachineState *nms = N66_MACHINE(obj);
     return g_strdup(nms->driver_filename);
 }
+static void n66_set_qc_file_0_filename(Object *obj, const char *value,
+                                       Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+
+    g_strlcpy(nms->qc_file_0_filename, value, sizeof(nms->qc_file_0_filename));
+}
+
+static char *n66_get_qc_file_0_filename(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    return g_strdup(nms->qc_file_0_filename);
+}
+
 
 static void n66_instance_init(Object *obj)
 {
@@ -510,6 +528,13 @@ static void n66_instance_init(Object *obj)
                             n66_set_driver_filename, NULL);
     object_property_set_description(obj, "driver-filename",
                                     "Set the driver filename to be loaded",
+                                    NULL);
+
+    object_property_add_str(obj, "qc-file-0-filename",
+                            n66_get_qc_file_0_filename,
+                            n66_set_qc_file_0_filename, NULL);
+    object_property_set_description(obj, "qc-file-0-filename",
+                                    "Set the qc file 0 filename to be loaded",
                                     NULL);
 }
 
