@@ -209,15 +209,20 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     phys_ptr = align_64k_high(vtop_static(kernel_high));
 
     //now account for the ramdisk
-    nms->ramdisk_file_dev.pa = phys_ptr;
-    xnu_file_mmio_dev_create(sysmem, &nms->ramdisk_file_dev,
-                             "ramdisk_file_mmio_dev", nms->ramdisk_filename);
-    phys_ptr += align_64k_high(nms->ramdisk_file_dev.size);
+    nms->ramdisk_file_dev.pa = 0;
+    hwaddr ramdisk_size = 0;
+    if (0 != nms->ramdisk_filename[0]) {
+        nms->ramdisk_file_dev.pa = phys_ptr;
+        xnu_file_mmio_dev_create(sysmem, &nms->ramdisk_file_dev,
+                               "ramdisk_file_mmio_dev", nms->ramdisk_filename);
+        ramdisk_size = nms->ramdisk_file_dev.size;
+        phys_ptr += align_64k_high(nms->ramdisk_file_dev.size);
+    }
 
     //now account for device tree
     macho_load_dtb(nms->dtb_filename, nsas, sysmem, "dtb.n66", phys_ptr,
                    &dtb_size, nms->ramdisk_file_dev.pa,
-                   nms->ramdisk_file_dev.size, nms->tc_file_dev.pa,
+                   ramdisk_size, nms->tc_file_dev.pa,
                    nms->tc_file_dev.size, &nms->uart_mmio_pa);
     dtb_va = ptov_static(phys_ptr);
     phys_ptr += align_64k_high(dtb_size);

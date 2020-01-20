@@ -222,10 +222,16 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         if (NULL == child) {
             abort();
         }
+
         uint64_t memmap[2] = {0};
-        memmap[0] = ramdisk_addr;
-        memmap[1] = ramdisk_size;
-        add_dtb_prop(child, "RAMDisk", sizeof(memmap), (uint8_t *)&memmap[0]);
+
+        if ((0 != ramdisk_addr) && (0 != ramdisk_size)) {
+            memmap[0] = ramdisk_addr;
+            memmap[1] = ramdisk_size;
+            add_dtb_prop(child, "RAMDisk", sizeof(memmap),
+                         (uint8_t *)&memmap[0]);
+        }
+
         memmap[0] = tc_addr;
         memmap[1] = tc_size;
         add_dtb_prop(child, "TrustCache", sizeof(memmap),
