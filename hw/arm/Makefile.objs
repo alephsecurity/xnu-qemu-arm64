@@ -1,4 +1,4 @@
-obj-y += boot.o xnu_trampoline_hook.o xnu_pagetable.o xnu_cpacr.o xnu_dtb.o xnu_file_mmio_dev.o xnu_fake_task_port.o xnu_mem.o xnu_remap_dev.o xnu_ptr_ntf.o xnu.o n66_iphone6splus.o guest-services.o guest-socket.o guest-fds.o
+obj-y += boot.o xnu_trampoline_hook.o xnu_pagetable.o xnu_cpacr.o xnu_dtb.o xnu_file_mmio_dev.o xnu_fake_task_port.o xnu_mem.o xnu_remap_dev.o xnu_ptr_ntf.o xnu.o n66_iphone6splus.o guest-services.o guest-socket.o guest-fds.o guest-file.o
 obj-$(CONFIG_PLATFORM_BUS) += sysbus-fdt.o
 obj-$(CONFIG_ARM_VIRT) += virt.o
 obj-$(CONFIG_ACPI) += virt-acpi-build.o

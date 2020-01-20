@@ -27,6 +27,7 @@
 
 #include "hw/arm/guest-services/socket.h"
 #include "hw/arm/guest-services/fds.h"
+#include "hw/arm/guest-services/file.h"
 
 extern int32_t guest_svcs_errno;
 
@@ -43,6 +44,9 @@ typedef enum {
     QC_LISTEN,
     QC_RECV,
     QC_SEND,
+    QC_WRITE_FILE,
+    QC_READ_FILE,
+    QC_SIZE_FILE,
 } qemu_call_number_t;
 
 typedef struct __attribute__((packed)) {
@@ -60,6 +64,9 @@ typedef struct __attribute__((packed)) {
         qc_listen_args_t listen;
         qc_recv_args_t recv;
         qc_send_args_t send;
+        qc_write_file_args_t write_file;
+        qc_read_file_args_t read_file;
+        qc_size_file_args_t size_file;
     } args;
 
     // Response

@@ -108,6 +108,22 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
                                           qcall.args.send.buffer,
                                           qcall.args.send.length,
                                           qcall.args.send.flags);
+        case QC_WRITE_FILE:
+            qcall.retval = qc_handle_write_file(cpu,
+                                       qcall.args.write_file.buffer_guest_ptr,
+                                       qcall.args.write_file.length,
+                                       qcall.args.write_file.offset,
+                                       qcall.args.write_file.index);
+            break;
+        case QC_READ_FILE:
+            qcall.retval = qc_handle_read_file(cpu,
+                                       qcall.args.read_file.buffer_guest_ptr,
+                                       qcall.args.read_file.length,
+                                       qcall.args.read_file.offset,
+                                       qcall.args.read_file.index);
+            break;
+        case QC_SIZE_FILE:
+            qcall.retval = qc_handle_size_file(qcall.args.size_file.index);
             break;
         default:
             // TODO: handle unknown call numbers
