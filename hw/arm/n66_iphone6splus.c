@@ -50,10 +50,22 @@
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
 //yet mounted.
-//we hook 8 bytes (2 instructions) after the beginning of the function
-//so that x28 is already saved in the stack and we can use it as a scratch
-//reg
-#define IOFINDBSDROOT_8_VADDR_16B92 (0xfffffff00759a748)
+//We chose this place in the beginning of ubc_init() inlined in bsd_init()
+//because enough things are up and running for our driver to properly setup,
+//This means that global IOKIT locks and dictionaries are already initialized
+//and in general, the IOKIT system is already initialized.
+//We are now able to initialize our driver and attach it to an existing
+//IOReg object.
+//On the other hand, no mounting of any FS happened yet so we have a chance
+//for our block device driver to present a new block device that will be
+//mounted on the root mount.
+//We need to choose the hook location carefully.
+//We need 3 instructions in a row that we overwrite that are not location
+//dependant (such as adr, adrp and branching) as we are going to execute
+//them elsewhere.
+//We also need a register to use as a scratch register that its value is
+//disregarded right after the hook and does not affect anything.
+#define UBC_INIT_VADDR_16B92 (0xfffffff0073dec10)
 
 #define N66_CPREG_FUNCS(name) \
 static uint64_t n66_cpreg_read_##name(CPUARMState *env, \
@@ -337,17 +349,15 @@ static void n66_machine_init(MachineState *machine)
                                  &size, NULL)) {
             abort();
         }
-        nms->ktpp.hook.va = IOFINDBSDROOT_8_VADDR_16B92;
-        nms->ktpp.hook.pa = vtop_static(IOFINDBSDROOT_8_VADDR_16B92);
+        nms->ktpp.hook.va = UBC_INIT_VADDR_16B92;
+        nms->ktpp.hook.pa = vtop_static(UBC_INIT_VADDR_16B92);
         nms->ktpp.hook.buf_va =
                         ptov_static((hwaddr)&allocated_data->hook_code[0]);
         nms->ktpp.hook.buf_pa = (hwaddr)&allocated_data->hook_code[0];
         nms->ktpp.hook.buf_size = HOOK_CODE_ALLOC_SIZE;
         nms->ktpp.hook.code = (uint8_t *)code;
         nms->ktpp.hook.code_size = size;
-        //we hook the function after x28 is already saved on the stack so
-        //we can use it as a scratch reg
-        nms->ktpp.hook.scratch_reg = 28;
+        nms->ktpp.hook.scratch_reg = 2;
     }
 
     if (0 != nms->qc_file_0_filename[0]) {
