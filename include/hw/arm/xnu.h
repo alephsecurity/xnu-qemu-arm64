@@ -35,6 +35,7 @@
 #include "hw/arm/xnu_cpacr.h"
 #include "hw/arm/xnu_pagetable.h"
 #include "hw/arm/xnu_trampoline_hook.h"
+#include "hw/arm/xnu_ios_fb_dev.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
@@ -75,14 +76,14 @@ struct load_command {
     uint32_t cmdsize;   /* total size of command in bytes */
 };
 
-struct xnu_arm64_Boot_Video {
+typedef struct xnu_arm64_Boot_Video {
     unsigned long v_baseAddr; /* Base address of video memory */
     unsigned long v_display;  /* Display Code (if Applicable */
     unsigned long v_rowBytes; /* Number of bytes per pixel row */
     unsigned long v_width;    /* Width */
     unsigned long v_height;   /* Height */
     unsigned long v_depth;    /* Pixel Depth and other parameters */
-};
+}video_boot_args;
 
 typedef struct xnu_arm64_monitor_boot_args {
 	uint64_t	version;                        /* structure version - this is version 2 */
@@ -126,7 +127,8 @@ void macho_setup_bootargs(const char *name, AddressSpace *as,
                           MemoryRegion *mem, hwaddr bootargs_pa,
                           hwaddr virt_base, hwaddr phys_base, hwaddr mem_size,
                           hwaddr top_of_kernel_data_pa, hwaddr dtb_va,
-                          hwaddr dtb_size, char *kern_args);
+                          hwaddr dtb_size, video_boot_args v_bootargs,
+                          char *kern_args);
 
 void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr phys_base, hwaddr virt_base,

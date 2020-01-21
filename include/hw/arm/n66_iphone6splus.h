@@ -88,6 +88,7 @@ typedef struct {
     uint8_t fake_port[FAKE_PORT_ALLOC_SIZE];
     uint8_t kernel_task[KERNEL_TASK_ALLOC_SIZE];
     uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
+    uint8_t ramfb[RAMFB_SIZE];
 } __attribute__((packed)) AllocatedData;
 
 #endif

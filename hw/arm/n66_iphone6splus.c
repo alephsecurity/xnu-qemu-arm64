@@ -180,6 +180,8 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr allocated_ram_pa;
     hwaddr phys_ptr;
     hwaddr phys_pc;
+    hwaddr ramfb_pa;
+    video_boot_args v_bootargs;
     N66MachineState *nms = N66_MACHINE(machine);
 
     //setup the memory layout:
@@ -247,6 +249,11 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     phys_ptr += align_64k_high(sizeof(struct xnu_arm64_boot_args));
     nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
+     
+    ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]) ;
+    xnu_define_ramfb_device(nsas,ramfb_pa);
+    xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
+
     phys_ptr += align_64k_high(sizeof(AllocatedData));
     top_of_kernel_data_pa = phys_ptr;
     remaining_mem_size = machine->ram_size - used_ram_for_blobs;
@@ -254,7 +261,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     macho_setup_bootargs("k_bootargs.n66", nsas, sysmem, kbootargs_pa,
                          virt_base, N66_PHYS_BASE, mem_size,
                          top_of_kernel_data_pa, dtb_va, dtb_size,
-                         nms->kern_args);
+                         v_bootargs, nms->kern_args);
 
     allocate_ram(sysmem, "n66.ram", allocated_ram_pa, remaining_mem_size);
 }
