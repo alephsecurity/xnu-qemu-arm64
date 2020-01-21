@@ -33,12 +33,6 @@
 #include "hw/arm/xnu_ramfb.h"
 #include "include/hw/qdev-properties.h"
 
-#define V_DEPTH     16
-#define V_HEIGHT    800
-#define V_WIDTH     600
-#define V_DISPLAY   0
-#define V_LINESIZE  V_WIDTH * 3
-
 void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa){
 
     DeviceState *fb_dev;

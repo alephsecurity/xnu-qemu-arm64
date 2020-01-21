@@ -5,6 +5,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/isa/isa.h"
 #include "hw/arm/xnu_ramfb.h"
+#include "hw/arm/xnu_ios_fb_dev.h"
 #include "ui/console.h"
 
 #define XNU_RAMFB(obj) OBJECT_CHECK(xnu_ramfb_state, (obj), TYPE_XNU_RAMFB_DEVICE)
@@ -63,9 +64,9 @@ void xnu_ramfb_setup(xnu_ramfb_state* xnu_fb_state)
 {
     uint8_t* fb_ptr;
     xnu_fb_state->display_cfg.format = PIXMAN_LE_r8g8b8;
-    xnu_fb_state->display_cfg.width = 600;
-    xnu_fb_state->display_cfg.height = 800;
-    xnu_fb_state->display_cfg.linesize = xnu_fb_state->display_cfg.width * 3;
+    xnu_fb_state->display_cfg.width = V_WIDTH;
+    xnu_fb_state->display_cfg.height = V_HEIGHT;
+    xnu_fb_state->display_cfg.linesize = V_LINESIZE;
 
     if (xnu_fb_state->fb_size == 0){
         fprintf(stderr,
