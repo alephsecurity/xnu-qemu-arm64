@@ -65,6 +65,7 @@ typedef struct {
     char tc_filename[1024];
     char driver_filename[1024];
     char qc_file_0_filename[1024];
+    char qc_file_1_filename[1024];
     char kern_args[1024];
     uint16_t tunnel_port;
     FileMmioDev raw_kernel_file_dev;
