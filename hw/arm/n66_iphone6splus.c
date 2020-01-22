@@ -603,7 +603,7 @@ static void n66_instance_init(Object *obj)
                             n66_get_xnu_ramfb,
                             n66_set_xnu_ramfb, NULL);
     object_property_set_description(obj, "xnu-ramfb",
-                                    "Set the display frame buffer to be turned on",
+                                    "Turn on the display framebuffer",
                                     NULL);
 
 }

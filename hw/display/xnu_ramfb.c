@@ -4,9 +4,10 @@
 #include "hw/display/xnu_ramfb.h"
 #include "ui/console.h"
 
-#define XNU_RAMFB(obj) OBJECT_CHECK(xnu_ramfb_state, (obj), TYPE_XNU_RAMFB_DEVICE)
+#define XNU_RAMFB(obj) \
+    OBJECT_CHECK(xnu_ramfb_state, (obj), TYPE_XNU_RAMFB_DEVICE)
 
-typedef struct dispaly_cfg{
+typedef struct display_cfg{
     uint32_t format;
     uint32_t width;
     uint32_t height;
@@ -51,7 +52,8 @@ void xnu_ramfb_display_update(void *opaque)
 }
 
 void xnu_display_prolog(xnu_ramfb_state* xnu_fb_state){
-    
+    //currently empty
+    return;
 }
 
 void xnu_ramfb_setup(xnu_ramfb_state* xnu_fb_state)
@@ -101,9 +103,12 @@ static Property xnu_ramfb_properties[] = {
     DEFINE_PROP_UINT64("as", xnu_ramfb_state, as, 0),
     DEFINE_PROP_UINT64("fb_pa", xnu_ramfb_state, fb_pa, 0),
     DEFINE_PROP_UINT32("fb_size", xnu_ramfb_state, fb_size, 0),
-    DEFINE_PROP_UINT32("display_cfg.width", xnu_ramfb_state, display_cfg.width, 0),
-    DEFINE_PROP_UINT32("display_cfg.height", xnu_ramfb_state, display_cfg.height, 0),
-    DEFINE_PROP_UINT32("display_cfg.linesize", xnu_ramfb_state, display_cfg.linesize, 0),
+    DEFINE_PROP_UINT32("display_cfg.width", xnu_ramfb_state, 
+                display_cfg.width, 0),
+    DEFINE_PROP_UINT32("display_cfg.height", xnu_ramfb_state, 
+                display_cfg.height, 0),
+    DEFINE_PROP_UINT32("display_cfg.linesize", xnu_ramfb_state, 
+                display_cfg.linesize, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 
