@@ -180,8 +180,8 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr allocated_ram_pa;
     hwaddr phys_ptr;
     hwaddr phys_pc;
-    hwaddr ramfb_pa;
-    video_boot_args v_bootargs;
+    hwaddr ramfb_pa = 0;
+    video_boot_args v_bootargs = {0};
     N66MachineState *nms = N66_MACHINE(machine);
 
     //setup the memory layout:
@@ -250,9 +250,11 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
      
-    ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]) ;
-    xnu_define_ramfb_device(nsas,ramfb_pa);
-    xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
+    if (nms->use_ramfb){
+        ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]) ;
+        xnu_define_ramfb_device(nsas,ramfb_pa);
+        xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
+    }
 
     phys_ptr += align_64k_high(sizeof(AllocatedData));
     top_of_kernel_data_pa = phys_ptr;
@@ -520,6 +522,25 @@ static char *n66_get_qc_file_1_filename(Object *obj, Error **errp)
     return g_strdup(nms->qc_file_1_filename);
 }
 
+static void n66_set_xnu_ramfb(Object *obj, const char *value,
+                                       Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    if (strcmp(value,"on") == 0)
+        nms->use_ramfb = true;
+    else 
+        nms->use_ramfb = false;
+}
+
+static char* n66_get_xnu_ramfb(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    if (nms->use_ramfb)
+        return g_strdup("on");
+    else 
+        return g_strdup("off");
+}
+
 static void n66_instance_init(Object *obj)
 {
     object_property_add_str(obj, "ramdisk-filename", n66_get_ramdisk_filename,
@@ -577,6 +598,14 @@ static void n66_instance_init(Object *obj)
     object_property_set_description(obj, "qc-file-1-filename",
                                     "Set the qc file 1 filename to be loaded",
                                     NULL);
+
+    object_property_add_str(obj, "xnu-ramfb",
+                            n66_get_xnu_ramfb,
+                            n66_set_xnu_ramfb, NULL);
+    object_property_set_description(obj, "xnu-ramfb",
+                                    "Set the display frame buffer to be turned on",
+                                    NULL);
+
 }
 
 static void n66_machine_class_init(ObjectClass *klass, void *data)
