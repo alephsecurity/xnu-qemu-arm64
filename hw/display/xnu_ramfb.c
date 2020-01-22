@@ -1,9 +1,6 @@
 #include "qemu/osdep.h"
-#include "qapi/error.h"
-#include "qemu/module.h"
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
-#include "hw/isa/isa.h"
 #include "hw/display/xnu_ramfb.h"
 #include "ui/console.h"
 

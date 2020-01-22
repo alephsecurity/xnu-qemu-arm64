@@ -1,5 +1,7 @@
-#ifndef HW_ARM_XNU_IOS_RAMFB_H
-#define HW_ARM_XNU_IOS_RAMFB_H
+#ifndef HW_ARM_XNU_RAMFB_CFG_H
+#define HW_ARM_XNU_RAMFB_CFG_H
+
+#include "qemu/osdep.h"
 
 #define RAMFB_SIZE 0x2D4C00
 

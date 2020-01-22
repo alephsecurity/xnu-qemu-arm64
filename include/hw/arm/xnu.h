@@ -35,7 +35,7 @@
 #include "hw/arm/xnu_cpacr.h"
 #include "hw/arm/xnu_pagetable.h"
 #include "hw/arm/xnu_trampoline_hook.h"
-#include "hw/arm/xnu_ios_fb_dev.h"
+#include "hw/arm/xnu_fb_cfg.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
