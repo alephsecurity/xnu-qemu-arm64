@@ -30,7 +30,7 @@
 #include "hw/arm/xnu.h"
 #include "hw/loader.h"
 #include "hw/arm/xnu_file_mmio_dev.h"
-#include "hw/arm/xnu_ramfb.h"
+#include "hw/display/xnu_ramfb.h"
 #include "include/hw/qdev-properties.h"
 
 void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa){
@@ -40,8 +40,8 @@ void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa){
     qdev_prop_set_uint64(fb_dev, "as", (hwaddr)as);
     qdev_prop_set_uint64(fb_dev, "fb_pa", ramfb_pa);
     qdev_prop_set_uint32(fb_dev, "fb_size", RAMFB_SIZE);
-    qdev_prop_set_uint32(fb_dev, "display_cfg.height", V_WIDTH);
-    qdev_prop_set_uint32(fb_dev, "display_cfg.width", V_HEIGHT);
+    qdev_prop_set_uint32(fb_dev, "display_cfg.height", V_HEIGHT);
+    qdev_prop_set_uint32(fb_dev, "display_cfg.width", V_WIDTH);
     qdev_prop_set_uint32(fb_dev, "display_cfg.linesize", V_LINESIZE);
     qdev_init_nofail(fb_dev);
 }

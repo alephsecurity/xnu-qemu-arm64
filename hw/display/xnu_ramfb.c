@@ -4,8 +4,7 @@
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
 #include "hw/isa/isa.h"
-#include "hw/arm/xnu_ramfb.h"
-#include "hw/arm/xnu_ios_fb_dev.h"
+#include "hw/display/xnu_ramfb.h"
 #include "ui/console.h"
 
 #define XNU_RAMFB(obj) OBJECT_CHECK(xnu_ramfb_state, (obj), TYPE_XNU_RAMFB_DEVICE)
@@ -44,8 +43,6 @@ void xnu_ramfb_display_update(void *opaque)
     assert(qemu_fb_ptr != 0);
     assert(fb_pa != 0);
 
-    memset(qemu_fb_ptr,0,fb_size);// Not sure that needed
-
     address_space_rw((AddressSpace*) as, fb_pa, MEMTXATTRS_UNSPECIFIED,
                 qemu_fb_ptr, fb_size, FALSE);
     ds = qemu_create_displaysurface_from(
@@ -64,9 +61,6 @@ void xnu_ramfb_setup(xnu_ramfb_state* xnu_fb_state)
 {
     uint8_t* fb_ptr;
     xnu_fb_state->display_cfg.format = PIXMAN_LE_r8g8b8;
-    xnu_fb_state->display_cfg.width = V_WIDTH;
-    xnu_fb_state->display_cfg.height = V_HEIGHT;
-    xnu_fb_state->display_cfg.linesize = V_LINESIZE;
 
     if (xnu_fb_state->fb_size == 0){
         fprintf(stderr,
