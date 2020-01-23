@@ -108,6 +108,7 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
                                           qcall.args.send.buffer,
                                           qcall.args.send.length,
                                           qcall.args.send.flags);
+            break;
         case QC_WRITE_FILE:
             qcall.retval = qc_handle_write_file(cpu,
                                        qcall.args.write_file.buffer_guest_ptr,
