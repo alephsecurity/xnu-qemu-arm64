@@ -528,8 +528,12 @@ static void n66_set_xnu_ramfb(Object *obj, const char *value,
     N66MachineState *nms = N66_MACHINE(obj);
     if (strcmp(value,"on") == 0)
         nms->use_ramfb = true;
-    else 
+    else {
+        if (strcmp(value,"off") != 0)
+            fprintf(stderr,"NOTE: the value of xnu-ramfb is not valid,\
+the framebuffer will be disabled.\n");
         nms->use_ramfb = false;
+    }
 }
 
 static char* n66_get_xnu_ramfb(Object *obj, Error **errp)

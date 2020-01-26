@@ -76,14 +76,14 @@ struct load_command {
     uint32_t cmdsize;   /* total size of command in bytes */
 };
 
-typedef struct xnu_arm64_Boot_Video {
+typedef struct xnu_arm64_video_boot_args {
     unsigned long v_baseAddr; /* Base address of video memory */
     unsigned long v_display;  /* Display Code (if Applicable */
     unsigned long v_rowBytes; /* Number of bytes per pixel row */
     unsigned long v_width;    /* Width */
     unsigned long v_height;   /* Height */
     unsigned long v_depth;    /* Pixel Depth and other parameters */
-}video_boot_args;
+} video_boot_args;
 
 typedef struct xnu_arm64_monitor_boot_args {
 	uint64_t	version;                        /* structure version - this is version 2 */
@@ -98,19 +98,19 @@ typedef struct xnu_arm64_monitor_boot_args {
 } monitor_boot_args;
 
 struct xnu_arm64_boot_args {
-    uint16_t                    Revision;                                   /* Revision of boot_args structure */
-    uint16_t                    Version;                                    /* Version of boot_args structure */
-    uint64_t                    virtBase;                                   /* Virtual base of memory */
-    uint64_t                    physBase;                                   /* Physical base of memory */
-    uint64_t                    memSize;                                    /* Size of memory */
-    uint64_t                    topOfKernelData;                            /* Highest physical address used in kernel data area */
-    struct xnu_arm64_Boot_Video Video;                                      /* Video Information */
-    uint32_t                    machineType;                                /* Machine Type */
-    uint64_t                    deviceTreeP;                                /* Base of flattened device tree */
-    uint32_t                    deviceTreeLength;                           /* Length of flattened tree */
-    char                        CommandLine[xnu_arm64_BOOT_LINE_LENGTH];    /* Passed in command line */
-    uint64_t                    bootFlags;                                  /* Additional flags specified by the bootloader */
-    uint64_t                    memSizeActual;                              /* Actual size of memory */
+    uint16_t           Revision;                                   /* Revision of boot_args structure */
+    uint16_t           Version;                                    /* Version of boot_args structure */
+    uint64_t           virtBase;                                   /* Virtual base of memory */
+    uint64_t           physBase;                                   /* Physical base of memory */
+    uint64_t           memSize;                                    /* Size of memory */
+    uint64_t           topOfKernelData;                            /* Highest physical address used in kernel data area */
+    video_boot_args    Video;                                      /* Video Information */
+    uint32_t           machineType;                                /* Machine Type */
+    uint64_t           deviceTreeP;                                /* Base of flattened device tree */
+    uint32_t           deviceTreeLength;                           /* Length of flattened tree */
+    char               CommandLine[xnu_arm64_BOOT_LINE_LENGTH];    /* Passed in command line */
+    uint64_t           bootFlags;                                  /* Additional flags specified by the bootloader */
+    uint64_t           memSizeActual;                              /* Actual size of memory */
 };
 
 void macho_file_highest_lowest_base(const char *filename, hwaddr phys_base,
