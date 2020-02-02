@@ -33,7 +33,8 @@
 #include "hw/display/xnu_ramfb.h"
 #include "include/hw/qdev-properties.h"
 
-void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa){
+void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa)
+{
 
     DeviceState *fb_dev;
     fb_dev = qdev_create(NULL, TYPE_XNU_RAMFB_DEVICE);
@@ -46,9 +47,10 @@ void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa){
     qdev_init_nofail(fb_dev);
 }
 
-void  xnu_get_video_bootargs(void *opaque, hwaddr ramfb_pa){
+void  xnu_get_video_bootargs(void *opaque, hwaddr ramfb_pa)
+{
 
-    video_boot_args* v_bootargs = (video_boot_args*)opaque ;
+    video_boot_args* v_bootargs = (video_boot_args*)opaque;
     v_bootargs->v_baseAddr = ramfb_pa;
     v_bootargs->v_depth = V_DEPTH;
     v_bootargs->v_display = V_DISPLAY;

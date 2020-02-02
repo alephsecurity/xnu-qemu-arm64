@@ -249,9 +249,9 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     phys_ptr += align_64k_high(sizeof(struct xnu_arm64_boot_args));
     nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
-     
+
     if (nms->use_ramfb){
-        ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]) ;
+        ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]);
         xnu_define_ramfb_device(nsas,ramfb_pa);
         xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
     }
