@@ -8,8 +8,8 @@ The goal of this project is to enable fully functional iOS being booted on QEMU.
 The project is under active development, follow [@alephsecurity](https://twitter.com/alephsecurity)  and [@JonathanAfek](https://twitter.com/JonathanAfek) for updates.
 
 For technical information about the research, follow our blog:
-[Running iOS in QEMU to an interactive bash shell (1)](https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/)
-[Running iOS in QEMU to an interactive bash shell (2)](https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/)
+- [Running iOS in QEMU to an interactive bash shell (1)](https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/)
+- [Running iOS in QEMU to an interactive bash shell (2)](https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/)
 
 
 Help is wanted!
