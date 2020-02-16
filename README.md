@@ -32,7 +32,7 @@ $ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools-private.git
 Extract the ASN1 encoded kernel image ([pyasn1] should be installed first):
 ```
 $ pip install pyasn1
-$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
+$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
 This decoded image now includes the lzss compressed kernel.
@@ -44,7 +44,7 @@ $ python2 xnu-qemu-arm64-tools/bootstrap_scripts/decompress_lzss.py kernelcache.
 
 Extract the device tree from the ASN1 encoded file:
 ```
-$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
+$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
 ```
 
 ## Create the Disk Devices for iOS system
@@ -61,7 +61,7 @@ Follow the instructions [here][Block Device Driver] to create the driver. Then c
 
 Next, decode the ramdisk and resize it. Attach the ramdisk device and the main disk image to the research computer.
 ```
-$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
+$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
 $ cp ./048-32651-104.dmg.out ./hfs.main
 $ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.main
 $ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.main
@@ -300,7 +300,7 @@ $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/tun
 ```
 Now we can  create the static trust cache blob:
 ```
-$ python xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
+$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
 **General changes**
 
