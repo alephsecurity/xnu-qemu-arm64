@@ -423,5 +423,5 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 [Running iOS in QEMU to an interactive bash shell (2)]: https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/
 [@alephsecurity]: https://twitter.com/alephsecurity
 [@JonathanAfek]: https://twitter.com/JonathanAfek
-[pyasn]: https://pypi.org/project/pyasn1/
+[pyasn1]: https://pypi.org/project/pyasn1/
 [lzss]: https://opensource.apple.com/source/BootX/BootX-75/bootx.tproj/sl.subproj/lzss.c
