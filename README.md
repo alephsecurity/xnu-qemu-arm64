@@ -347,6 +347,11 @@ Sign the binary with jtool and keep its identity.
 ```
 $ sudo jtool --sign --ent ent.xml --ident com.apple.xpc.launchd --inplace /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd
 ```
+Do not forget to ddd its hash to `tchashes`.
+```
+$ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
+```
+
 Now the disks can be ejected - we've done!
 ```
 $ hdiutil detach /Volumes/PeaceB16B92.arm64UpdateRamDisk
