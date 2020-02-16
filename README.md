@@ -334,7 +334,7 @@ Patch the instruction at `0x10002fb18` from `cset w20,ne` to `mov w20,#0x01`
 
 ![](https://user-images.githubusercontent.com/9990629/74609221-b8249600-50f0-11ea-8c83-851e554bf961.png)
 
-Export the binary
+Save and export the binary
 
 ![](https://user-images.githubusercontent.com/9990629/74609220-b78bff80-50f0-11ea-9826-b999f0a319f6.png)
 
