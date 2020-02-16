@@ -1,24 +1,23 @@
 
+
 # iOS on QEMU
 
 This project is a fork of the official QEMU repository. Please refer this [README](https://github.com/qemu/qemu/blob/master/README.rst) for information about QEMU project.
 
 The goal of this project is to enable fully functional iOS being booted on QEMU.
 
-The project is under active development, follow [@alephsecurity](https://twitter.com/alephsecurity)  and [@JonathanAfek](https://twitter.com/JonathanAfek) for updates.
+*The project is under active development, follow [@alephsecurity] and [@JonathanAfek] for updates.*
 
 For technical information about the research, follow our blog:
-- [Running iOS in QEMU to an interactive bash shell (1)](https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/)
-- [Running iOS in QEMU to an interactive bash shell (2)](https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/)
+- [Running iOS in QEMU to an interactive bash shell (1)]
+- [Running iOS in QEMU to an interactive bash shell (2)]
 
-
-Help is wanted!
+**Help is wanted!**
 If you passionate about iOS and kernel exploitation and want to help us make the magic happen please refer the open issues in this repo and just PR to us with your awesome code :)
 
-## Run iOS on QEMU ##
-
-To start the process we first need to prepare a kernel image, a device tree, a static trust cache, and ram disk images.
-To get the images we first need to get the update file from Apple: [iOS 12.1 update file].
+---
+To start the process we first need to prepare a kernel image, a device tree, a static trust cache, the main and the secondary disk images.
+To get the all that we first need to get the update file from Apple: [iOS 12.1 update file].
 This is actually a zip file which we can extract:
 ```
 $ unzip iPhone_5.5_12.1_16B92_Restore.ipsw
@@ -28,86 +27,209 @@ Next, we need to clone the supporting scripts repository:
 ```
 $ git clone git@github.com:alephsecurity/xnu-qemu-arm64-tools.git
 ```
-
+**Get the Kernel image**
 And extract the ASN1 encoded kernel image:
 ```
 $ python xnu-qemu-arm64-tools/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
-This decoded image now includes the compressed kernel and the secure monitor image. To extract both of them:
+This decoded image now includes the compressed kernel. To extract it:
 ```
 $ python xnu-qemu-arm64-tools/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
 ```
-
-Now let's prepare a device tree which we can boot with (more details about the device tree in the second post).
-First, extract it from the ASN1 encoded file:
+**Get the divice tree**
+Extract the device tree from the ASN1 encoded file:
 ```
 $ python xnu-qemu-arm64-tools/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
 ```
 
-Now we have to set up the ram disk. First, ASN1 decode it:
+## Create the Disk Devices for iOS system
+
+Some tweaks should be done to use the all currently implemented capabilities; bash, many familiar binary tools, all iOS's launchd services, r/w secondary disk device and SSH. 
+
+The following instructions will describe how to create the disk devices and what changes should be made within them to enable the system start with all the functionality mentioned above.
+
+### Create the primary disk device
+To create a block device that will run on the system we will use ramdisk device available in the [iOS 12.1 update file]. 
+
+The disk devices will be attached to the iOS system by *custom* block device driver.
+Follow the instructions [here][Block Device Driver] to create the driver. Then copy the driver `aleph_bdev_drv.bin` to your work directory.
+
+Next, decode the ramdisk and resize it. Attach the ramdisk device and the main disk image to the research computer.
 ```
 $ python xnu-qemu-arm64-tools/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
+$ cp ./048-32651-104.dmg.out ./hfs.main
+$ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.main
+$ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.main
+$ hdiutil attach ./048-31952-103.dmg 		//main disk image
+```
+Remove all contents of the ramdisk and sync the ramdisk with the main disk image (the latter will take some time).
+```
+$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
+$ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS /Volumes/PeaceB16B92.arm64UpdateRamDisk
+```
+Remove contents of `/private/var`. We will put it to a secondary disk later.
+```
+$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/*
 ```
 
-Next, resize it so it has room for the [dynamic loader cache file][dyld-cache] (needed by bash and other executables), mount it, and force usage of file permissions on it:
-```
-$ hdiutil resize -size 1.5G -imagekey diskimage-class=CRawDiskImage 048-32651-104.dmg.out
-$ hdiutil attach -imagekey diskimage-class=CRawDiskImage 048-32651-104.dmg.out
-$ sudo diskutil enableownership /Volumes/PeaceB16B92.arm64UpdateRamDisk/
-```
+**Get pre-compiled binaries**
 
-Now let's mount the regular update disk image by double clicking on it: `048-31952-103.dmg`
-
-Create a directory for the dynamic loader cache in the ram disk, copy the cache from the update image and chown it to root:
-```
-$ sudo mkdir -p /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/Caches/com.apple.dyld/
-$ sudo cp /Volumes/PeaceB16B92.N56N66OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64 /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/Caches/com.apple.dyld/
-$ sudo chown root /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64
-```
-
-Get precompiled user mode tools for iOS, including bash, from [rootlessJB][rootlessJB] and/or [iOSBinaries][iOSBinaries]. Alternatively, compile your own iOS console binaries as described [here][azad-console-bin].
+We will use [rootlessJB] for pre-compiled binary tools (you can use any other project of your choice).
 ```
 $ git clone https://github.com/jakeajames/rootlessJB
 $ cd rootlessJB/rootlessJB/bootstrap/tars/
 $ tar xvf iosbinpack.tar
 $ sudo cp -R iosbinpack64 /Volumes/PeaceB16B92.arm64UpdateRamDisk/
-$ cd -
 ```
+**Add programs to be executed at system start**
 
-Configure launchd to not execute any services:
-```
-$ sudo rm /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/*
-```
+Four executables will be added to ״Launch Daemons״ directory and start at the system load.
+ 
+1) **bash** - run bash
 
-And now, configure it to launch the interactive bash shell by creating a new file under `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/com.apple.bash.plist` with the following contents:
+Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/bash.plist` 
+
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-        <key>EnablePressuredExit</key>
-        <false/>
-        <key>Label</key>
-        <string>com.apple.bash</string>
-        <key>POSIXSpawnType</key>
-        <string>Interactive</string>
-        <key>ProgramArguments</key>
-        <array>
-                <string>/iosbinpack64/bin/bash</string>
-        </array>
-        <key>RunAtLoad</key>
-        <true/>
-        <key>StandardErrorPath</key>
-        <string>/dev/console</string>
-        <key>StandardInPath</key>
-        <string>/dev/console</string>
-        <key>StandardOutPath</key>
-        <string>/dev/console</string>
-        <key>Umask</key>
-        <integer>0</integer>
-        <key>UserName</key>
-        <string>root</string>
+	<key>EnablePressuredExit</key>
+	<false/>
+	<key>Label</key>
+	<string>com.apple.bash</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/iosbinpack64/bin/bash</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/dev/console</string>
+	<key>StandardInPath</key>
+	<string>/dev/console</string>
+	<key>StandardOutPath</key>
+	<string>/dev/console</string>
+	<key>Umask</key>
+	<integer>0</integer>
+	<key>UserName</key>
+	<string>root</string>
+</dict>
+</plist>
+```
+
+1) **mount_sec** - mount the secondary block device (disk1) to primary block device (disk0).
+   
+Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist` 
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.mount_sec</string>
+	<key>EnablePressuredExit</key>
+	<false/>
+	<key>EnableTransactions</key>
+	<false/>
+	<key>HighPriorityIO</key>
+	<true/>
+	<key>Label</key>
+	<string>mount_sec</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/sbin/mount</string>
+		<string>/private/var</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>Umask</key>
+	<integer>0</integer>
+	<key>UserName</key>
+	<string>root</string>
+</dict>
+</plist>
+
+```
+  3) [tcptunnel] - opens TCP Tunnel on port 2222 between the host and the guest. SSH will run above this tunnel.
+
+Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.tcptunnel</string>
+	<key>EnablePressuredExit</key>
+	<false/>
+	<key>EnableTransactions</key>
+	<false/>
+	<key>HighPriorityIO</key>
+	<false/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>TcpTunnel</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/tunnel</string>
+		<string>2222:127.0.0.1:22</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>Umask</key>
+	<integer>0</integer>
+	<key>UserName</key>
+	<string>root</string>
+</dict>
+</plist>
+
+```
+4) [dropbear] - will be used as SSH server.
+
+Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.apple.dropbear</string>
+	<key>EnablePressuredExit</key>
+	<false/>
+	<key>EnableTransactions</key>
+	<false/>
+	<key>HighPriorityIO</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>Dropbear</string>
+	<key>POSIXSpawnType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/iosbinpack64/usr/local/bin/dropbear</string>
+		<string>--shell</string>
+		<string>/iosbinpack64/bin/bash</string>
+		<string>-R</string>
+		<string>-E</string>
+		<string>-F</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>Umask</key>
+	<integer>0</integer>
+	<key>UserName</key>
+	<string>root</string>
 </dict>
 </plist>
 ```
@@ -118,10 +240,20 @@ $ plutil -convert xml1 file.plist
 $ vim file.plist
 $ plutil -convert binary1 file.plist
 ```
-
 For launch daemon, iOS accepts both xml and binary plist files.
 
-Since the new binaries are signed, but not by Apple, they need to be trusted by the static trust cache that we will create. To do this, we need to get [jtool][jtool] (also available via [Homebrew][homebrew]: `brew cask install jtool`). Once we have the tool, we have to run it on every binary we wish to be trusted, extract the first 40 characters of its CDHash, and put it in a new file named `tchashes`. A sample execution of jtool looks like this:
+Now we need to make sure that we have all the binaries in the system according to their path in `ProgramArguments`.
+
+`/iosbinpack64/bin/bash` - *part of the iosbinpack64*
+
+`/sbin/mount` - *part of the iOS system* 
+
+`/bin/tunnel` - *follow [this][tcptunnel] tutorial to get the binary and copy it to* `/bin`
+
+`/iosbinpack64/usr/local/bin/dropbear` - *part of the iosbinpack64*
+
+**Create the static Trust Cache**
+Since the new binaries are signed, but not by Apple, they need to be trusted by the static trust cache that we will create. To do this, we need to get [jtool]. We have to run it on every binary we wish to be trusted, extract the first 40 characters of its CDHash, and put it in a new file named `tchashes`. A sample execution of jtool looks like this:
 ```
 $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/bash
 Blob at offset: 1308032 (10912 bytes) is an embedded signature
@@ -135,18 +267,109 @@ Code Directory (10566 bytes)
 				Hashes @326 size: 32 Type: SHA-256
  Empty requirement set (12 bytes)
  ```
-In the above case, we need to write down `7ad4d4c517938b6fdc0f5241cd300d17fbb52418` in `tchashes`.
-For convenience, the following command will extract the correct part of the hash from each of the binaries we put in the image:
+In the above case, we need to write down `7ad4d4c517938b6fdc0f5241cd300d17fbb52418` in `tchashes` file.
+For convenience, the following command will extract the needed part of the hash from each of the binaries in *iosbinpack64*:
 ```
-$ for filename in $(find /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64 -type f); do jtool --sig --ent $filename 2&>/dev/null; done | grep CDHash | cut -d' ' -f6 | cut -c 1-40
+$ touch ./tchashes
+$ for filename in $(find /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64 -type f); do jtool --sig --ent $filename 2&>/dev/null; done | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
 ```
-
-The output of above command should be saved in `tchashes`, and then we can  create the static trust cache blob:
+Note that the `/bin/tunnel` that we've created before is not signed yet. Sign it with jtool.
+```
+$ sudo jtool --sign --ent ent.xml --inplace /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin/tunnel
+```
+Example of `ent.xml` that will work in most cases:
+```
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+	<dict>
+		<key>platform-application</key>
+		<true/>
+		<key>com.apple.private.security.container-required</key>
+		<false/>
+	</dict>
+</plist>
+```
+Add its hash to `tchashes` as well.
+```
+$ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/tunnel | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
+```
+Now we can  create the static trust cache blob:
 ```
 $ python xnu-qemu-arm64-tools/create_trustcache.py tchashes static_tc
 ```
+**General changes**
 
-Now is a good time to unmount both volumes.
+1. *Replace the* `fstab` *file*
+```
+$ sudo cp /Volumes/PeaceB16B92.arm64UpdateRamDisk/etc/fstab /Volumes/PeaceB16B92.arm64UpdateRamDisk/etc/fstab_orig
+$ sudo vi /Volumes/PeaceB16B92.arm64UpdateRamDisk/etc/fstab
+```
+Remove the content from the file and copy the following
+```
+/dev/disk0 / hfs ro 0 1
+/dev/disk1 /private/var hfs rw,nosuid,nodev 0 2
+```
+2. *Prevent from* `keybagd` *daemon to run on system launch*
+```
+$ sudo rm /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/com.apple.mobile.keybagd.plist
+```
+**Patch the launchd binary**
+To get the `launchd` load the programs we had added before, instead of looking at the instructions in `xpcd_cache.dylib`, we need to patch the binary file.
+
+We will demonstrate the patch on [Ghidra] (you can use any other disassembler of your choice).
+
+Import the binary file `/Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd` 
+
+![](https://user-images.githubusercontent.com/9990629/74609174-37659a00-50f0-11ea-9633-a85b32375092.png)
+
+Patch the instruction at `0x10002fb18` from `cset w20,ne` to `mov w20,#0x01`
+
+![](https://user-images.githubusercontent.com/9990629/74609219-b4910f00-50f0-11ea-8818-6c3ea3c41bd3.png)
+
+![](https://user-images.githubusercontent.com/9990629/74609221-b8249600-50f0-11ea-8c83-851e554bf961.png)
+
+Export the binary
+
+![](https://user-images.githubusercontent.com/9990629/74609220-b78bff80-50f0-11ea-9826-b999f0a319f6.png)
+
+Replace the original `launchd` with the patched binary
+```
+$ sudo mv /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd.orig
+$ sudo cp exported.bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd
+```
+Sign the binary with jtool and keep its identity.
+```
+$ sudo jtool --sign --ent ent.xml --ident com.apple.xpc.launchd --inplace /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd
+```
+Now the disks can be ejected - we've done!
+```
+$ hdiutil detach /Volumes/PeaceB16B92.arm64UpdateRamDisk
+$ hdiutil detach /Volumes/PeaceB16B92.N56N66OS
+```
+
+### Create the secondary disk device
+As with the main disk let us use the ramdisk structure as well.
+```
+$ cp ./048-32651-104.dmg.out ./hfs.sec
+$ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.sec
+$ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.sec
+$ hdiutil attach ./048-31952-103.dmg
+```
+Remove all contents of the ramdisk and sync the ramdisk with `/private/var` directory from the main disk image.
+```
+$ rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
+$ rsync -av /Volumes/PeaceB16B92.N56N66OS/private/var /Volumes/PeaceB16B92.arm64UpdateRamDisk/
+```
+Create a directory for the dropbear
+```
+$ sudo mkdir /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/dropbear
+```
+Eject the disks
+```
+$ hdiutil detach /Volumes/PeaceB16B92.arm64UpdateRamDisk
+$ hdiutil detach /Volumes/PeaceB16B92.N56N66OS
+```
+---
 We now have all the images and files prepared. Let's get the modified QEMU code (more detailed info on the work done in QEMU will be in the second post in the series):
 ```
 $ git clone git@github.com:alephsecurity/xnu-qemu-arm64.git
@@ -155,17 +378,21 @@ $ git clone git@github.com:alephsecurity/xnu-qemu-arm64.git
 and compile it:
 ```
 $ cd xnu-qemu-arm64
-$ ./configure --target-list=aarch64-softmmu --disable-capstone
+$ ./configure --target-list=aarch64-softmmu --disable-capstone --disable-pie --disable-slirp
 $ make -j16
 $ cd -
 ```
 
 And all there's left to do is execute:
 ```
-$ ./xnu-qemu-arm64/aarch64-softmmu/qemu-system-aarch64 -M iPhone6splus-n66-s8000,kernel-filename=kernelcache.release.n66.out,dtb-filename=Firmware/all_flash/DeviceTree.n66ap.im4p.out,ramdisk-filename=048-32651-104.dmg.out,tc-filename=static_tc,kern-cmd-args="debug=0x8 kextlog=0xfff cpus=1 rd=md0 serial=2" -cpu max -m 6G -serial mon:stdio
+$ xnu-qemu-arm64/aarch64-softmmu/qemu-system-aarch64 -M iPhone6splus-n66-s8000,kernel-filename=kernelcache.release.n66.out,dtb-filename=Firmware/all_flash/DeviceTree.n66ap.im4p.out,driver-filename=aleph_bdev_drv.bin,qc-file-0-filename=hfs.main,qc-file-1-filename=hfs.sec,tc-filename=static_tc,kern-cmd-args="debug=0x8 kextlog=0xfff cpus=1 rd=disk0 serial=2",xnu-ramfb=off -cpu max -m 6G -serial mon:stdio
 ```
 
-And we have an interactive bash shell! :)
+And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
+
+\* `xnu-ramfb=on` for textual framebuffer
+
+\* SSH password - `alpine`
 
 [zhuowei-tutorial]: https://worthdoingbadly.com/xnuqemu2/
 [qemu-aleph-git]: https://github.com/alephsecurity/xnu-qemu-arm64
@@ -179,3 +406,11 @@ And we have an interactive bash shell! :)
 [homebrew]: https://brew.sh/
 [macports]: https://www.macports.org
 [dyld-cache]: http://iphonedevwiki.net/index.php/Dyld_shared_cache
+[Block Device Driver]: https://github.com/alephsecurity/xnu-qemu-arm64-tools-private/tree/master/aleph_bdev_drv
+[tcptunnel]: https://github.com/alephsecurity/xnu-qemu-arm64-tools-private/tree/master/tcp-tunnel
+[dropbear]: https://github.com/mkj/dropbear
+[Ghidra]: https://ghidra-sre.org/
+[Running iOS in QEMU to an interactive bash shell (1)]: https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/
+[Running iOS in QEMU to an interactive bash shell (2)]: https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/
+[@alephsecurity]: https://twitter.com/alephsecurity
+[@JonathanAfek]: https://twitter.com/JonathanAfek
