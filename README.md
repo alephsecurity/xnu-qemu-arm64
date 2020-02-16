@@ -298,7 +298,7 @@ Add its hash to `tchashes` as well.
 ```
 $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin/tunnel | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
 ```
-Now we can  create the static trust cache blob:
+Now we can create the static trust cache blob:
 ```
 $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
@@ -350,6 +350,10 @@ $ sudo jtool --sign --ent ent.xml --ident com.apple.xpc.launchd --inplace /Volum
 Do not forget to ddd its hash to `tchashes`.
 ```
 $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
+```
+Update static_tc file:
+```
+$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
 
 Now the disks can be ejected - we've done!
