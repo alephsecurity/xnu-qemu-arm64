@@ -396,9 +396,12 @@ $ xnu-qemu-arm64/aarch64-softmmu/qemu-system-aarch64 -M iPhone6splus-n66-s8000,k
 
 And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
+
 \* `xnu-ramfb=on` for textual framebuffer
 
 \* SSH password - `alpine`
+
+:heavy_exclamation_mark: When exiting ensure to remount the `hfs.sec` (on the research computer), otherwise it won't be mounted next run and will fail to load
 
 [zhuowei-tutorial]: https://worthdoingbadly.com/xnuqemu2/
 [qemu-aleph-git]: https://github.com/alephsecurity/xnu-qemu-arm64
