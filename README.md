@@ -403,6 +403,10 @@ And all there's left to do is execute:
 $ xnu-qemu-arm64/aarch64-softmmu/qemu-system-aarch64 -M iPhone6splus-n66-s8000,kernel-filename=kernelcache.release.n66.out,dtb-filename=Firmware/all_flash/DeviceTree.n66ap.im4p.out,driver-filename=aleph_bdev_drv.bin,qc-file-0-filename=hfs.main,qc-file-1-filename=hfs.sec,tc-filename=static_tc,kern-cmd-args="debug=0x8 kextlog=0xfff cpus=1 rd=disk0 serial=2",xnu-ramfb=off -cpu max -m 6G -serial mon:stdio
 ```
 
+To use the binaries in the `iosbinpack64` update the `PATH`
+```
+export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin:/iosbinpack64/sbin 
+```
 And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 
