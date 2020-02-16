@@ -401,7 +401,7 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 \* SSH password - `alpine`
 
-:heavy_exclamation_mark: When exiting ensure to remount the `hfs.sec` (on the research computer), otherwise it won't be mounted next run and will fail to load
+:heavy_exclamation_mark: When exiting QEMU ensure to remount the `hfs.sec` (on the research computer), otherwise it won't be mounted on the next run and will fail to load
 
 [zhuowei-tutorial]: https://worthdoingbadly.com/xnuqemu2/
 [qemu-aleph-git]: https://github.com/alephsecurity/xnu-qemu-arm64
