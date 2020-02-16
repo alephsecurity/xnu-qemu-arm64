@@ -36,12 +36,12 @@ $ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.
 
 This decoded image now includes the compressed kernel. To extract it:
 ```
-$ python xnu-qemu-arm64-tools/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
+$ python xnu-qemu-arm64-tools/bootstrap_script/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
 ```
 **Get the divice tree**
 Extract the device tree from the ASN1 encoded file:
 ```
-$ python xnu-qemu-arm64-tools/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
+$ python xnu-qemu-arm64-tools/bootstrap_script/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
 ```
 
 ## Create the Disk Devices for iOS system
@@ -58,7 +58,7 @@ Follow the instructions [here][Block Device Driver] to create the driver. Then c
 
 Next, decode the ramdisk and resize it. Attach the ramdisk device and the main disk image to the research computer.
 ```
-$ python xnu-qemu-arm64-tools/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
+$ python xnu-qemu-arm64-tools/bootstrap_script/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
 $ cp ./048-32651-104.dmg.out ./hfs.main
 $ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.main
 $ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.main
@@ -297,7 +297,7 @@ $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/tun
 ```
 Now we can  create the static trust cache blob:
 ```
-$ python xnu-qemu-arm64-tools/create_trustcache.py tchashes static_tc
+$ python xnu-qemu-arm64-tools/bootstrap_script/create_trustcache.py tchashes static_tc
 ```
 **General changes**
 
