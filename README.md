@@ -35,7 +35,8 @@ $ pip install pyasn1
 $ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
-This decoded image now includes the compressed kernel. To extract it:
+This decoded image now includes the lzss compressed kernel.
+You can use [this][lzss] code to decompress it or use this translated code with python*2*.
 ```
 $ python xnu-qemu-arm64-tools/bootstrap_scripts/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
 ```
@@ -419,3 +420,4 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 [@alephsecurity]: https://twitter.com/alephsecurity
 [@JonathanAfek]: https://twitter.com/JonathanAfek
 [pyasn]: https://pypi.org/project/pyasn1/
+[lzss]: https://opensource.apple.com/source/BootX/BootX-75/bootx.tproj/sl.subproj/lzss.c
