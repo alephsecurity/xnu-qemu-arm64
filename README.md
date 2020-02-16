@@ -41,6 +41,7 @@ You can use [this][lzss] code to decompress it or use this translated code with 
 $ python2 xnu-qemu-arm64-tools/bootstrap_scripts/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
 ```
 **Get the divice tree**
+
 Extract the device tree from the ASN1 encoded file:
 ```
 $ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
