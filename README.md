@@ -347,11 +347,11 @@ Sign the binary with jtool and keep its identity.
 ```
 $ sudo jtool --sign --ent ent.xml --ident com.apple.xpc.launchd --inplace /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd
 ```
-Do not forget to ddd its hash to `tchashes`.
+Do not forget to ddd its hash to the `tchashes`.
 ```
 $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
 ```
-Update static_tc file:
+Update the static_tc file:
 ```
 $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
