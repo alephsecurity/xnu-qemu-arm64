@@ -368,7 +368,7 @@ $ sudo rsync -avhW --compress-level=0 --progress /Volumes/PeaceB16B92.N56N66OS/p
 ```
 Create a directory for the dropbear
 ```
-$ sudo mkdir /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/dropbear
+$ sudo mkdir /Volumes/PeaceB16B92.arm64UpdateRamDisk/dropbear
 ```
 Eject the disks
 ```
