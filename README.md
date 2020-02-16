@@ -296,7 +296,7 @@ Example of `ent.xml` that will work in most cases:
 ```
 Add its hash to `tchashes` as well.
 ```
-$ jtool --sig --ent ent.xml /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/tunnel | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
+$ sudo jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/tunnel | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
 ```
 Now we can  create the static trust cache blob:
 ```
