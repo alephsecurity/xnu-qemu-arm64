@@ -13,6 +13,7 @@ For technical information about the research, follow our blog:
 - [Running iOS in QEMU to an interactive bash shell (2)]
 
 **Help is wanted!**
+
 If you passionate about iOS and kernel exploitation and want to help us make the magic happen please refer the open issues in this repo and just PR to us with your awesome code :)
 
 ---
