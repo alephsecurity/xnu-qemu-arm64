@@ -324,7 +324,7 @@ To get the `launchd` load the programs we had added before, instead of looking a
 
 We will demonstrate the patch on [Ghidra] (you can use any other disassembler of your choice).
 
-Import the binary file `/Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd` 
+Import the binary file `/Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd` and analyze it.
 
 ![](https://user-images.githubusercontent.com/9990629/74609174-37659a00-50f0-11ea-9633-a85b32375092.png)
 
