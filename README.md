@@ -253,6 +253,7 @@ Now we need to make sure that we have all the binaries in the system according t
 `/iosbinpack64/usr/local/bin/dropbear` - *part of the iosbinpack64*
 
 **Create the static Trust Cache**
+
 Since the new binaries are signed, but not by Apple, they need to be trusted by the static trust cache that we will create. To do this, we need to get [jtool]. We have to run it on every binary we wish to be trusted, extract the first 40 characters of its CDHash, and put it in a new file named `tchashes`. A sample execution of jtool looks like this:
 ```
 $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin/bash
@@ -314,6 +315,7 @@ Remove the content from the file and copy the following
 $ sudo rm /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/com.apple.mobile.keybagd.plist
 ```
 **Patch the launchd binary**
+
 To get the `launchd` load the programs we had added before, instead of looking at the instructions in `xpcd_cache.dylib`, we need to patch the binary file.
 
 We will demonstrate the patch on [Ghidra] (you can use any other disassembler of your choice).
