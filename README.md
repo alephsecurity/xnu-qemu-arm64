@@ -30,7 +30,7 @@ $ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools-private.git
 **Get the Kernel image**
 And extract the ASN1 encoded kernel image:
 ```
-$ python xnu-qemu-arm64-tools/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
 This decoded image now includes the compressed kernel. To extract it:
