@@ -199,7 +199,7 @@ Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/
 ```
 4) [dropbear] - will be used as SSH server.
 
-Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/dropbear.plist` 
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
