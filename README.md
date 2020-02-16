@@ -28,8 +28,9 @@ Next, we need to clone the supporting scripts repository:
 $ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools-private.git
 ```
 **Get the Kernel image**
-And extract the ASN1 encoded kernel image:
+Extract the ASN1 encoded kernel image ([pyasn1] should be installed first):
 ```
+$ pip install pyasn1
 $ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
@@ -416,3 +417,4 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 [Running iOS in QEMU to an interactive bash shell (2)]: https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/
 [@alephsecurity]: https://twitter.com/alephsecurity
 [@JonathanAfek]: https://twitter.com/JonathanAfek
+[pyasn]: https://pypi.org/project/pyasn1/
