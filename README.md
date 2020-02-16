@@ -92,7 +92,7 @@ Four executables will be added to ״Launch Daemons״ directory and start at the 
  
 1) **bash** - run bash
 
-Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/bash.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/bash.plist` 
 
 ```
 <?xml version="1.0" encoding="UTF-8"?>
@@ -127,7 +127,7 @@ Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/S
 
 1) **mount_sec** - mount the secondary block device (disk1) to primary block device (disk0).
    
-Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist` 
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -162,7 +162,7 @@ Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/S
 ```
   3) [tcptunnel] - opens TCP Tunnel on port 2222 between the host and the guest. SSH will run above this tunnel.
 
-Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -199,7 +199,7 @@ Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/S
 ```
 4) [dropbear] - will be used as SSH server.
 
-Create the `plist` file and save it as `Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
