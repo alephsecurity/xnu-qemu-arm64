@@ -364,7 +364,7 @@ $ hdiutil attach ./048-31952-103.dmg
 Remove all contents of the ramdisk and sync the ramdisk with `/private/var` directory from the main disk image.
 ```
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
-$ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/private/var /Volumes/PeaceB16B92.arm64UpdateRamDisk/
+$ sudo rsync -avhW --compress-level=0 --progress /Volumes/PeaceB16B92.N56N66OS/private/var /Volumes/PeaceB16B92.arm64UpdateRamDisk/
 ```
 Create a directory for the dropbear
 ```
