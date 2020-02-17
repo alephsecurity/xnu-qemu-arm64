@@ -32,7 +32,10 @@
 #include "sys/socket.h"
 #endif
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 extern int32_t guest_svcs_errno;
+#pragma GCC diagnostic pop
 
 #define MAX_BUF_SIZE (4096)
 

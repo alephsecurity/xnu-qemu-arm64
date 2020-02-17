@@ -29,7 +29,10 @@
 #include "hw/arm/guest-services/fds.h"
 #include "hw/arm/guest-services/file.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 extern int32_t guest_svcs_errno;
+#pragma GCC diagnostic pop
 
 typedef enum {
     // File Descriptors API
