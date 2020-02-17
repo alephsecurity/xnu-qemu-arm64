@@ -2,9 +2,9 @@
 
 # iOS on QEMU
 
-This project is a fork of the official QEMU repository. Please refer this [README](https://github.com/qemu/qemu/blob/master/README.rst) for information about QEMU project.
+This project is a fork of the official QEMU repository. Please refer to this [README](https://github.com/qemu/qemu/blob/master/README.rst) for information about the QEMU project.
 
-The goal of this project is to enable fully functional iOS being booted on QEMU.
+The goal of this project is to boot a fully functional iOS system on QEMU.
 
 *The project is under active development, follow [@alephsecurity] and [@JonathanAfek] for updates.*
 
@@ -14,7 +14,7 @@ For technical information about the research, follow our blog:
 
 **Help is wanted!**
 
-If you passionate about iOS and kernel exploitation and want to help us make the magic happen please refer the open issues in this repo and just PR to us with your awesome code :)
+If you are passionate about iOS and kernel exploitation and want to help us make the magic happen, please refer to the open issues in this repo and just PR to us with your awesome code and/or contact us :)
 
 ---
 To start the process we first need to prepare a kernel image, a device tree, a static trust cache, the main and the secondary disk images.
@@ -26,7 +26,7 @@ $ unzip iPhone_5.5_12.1_16B92_Restore.ipsw
 
 Next, we need to clone the supporting scripts repository:
 ```
-$ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools-private.git
+$ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools.git
 ```
 **Get the Kernel image**
 Extract the ASN1 encoded kernel image ([pyasn1] should be installed first):
@@ -70,11 +70,14 @@ $ hdiutil attach ./048-31952-103.dmg 		//main disk image
 Remove all contents of the ramdisk and sync the ramdisk with the main disk image (the latter will take some time).
 ```
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
+$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/.*
 $ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/* /Volumes/PeaceB16B92.arm64UpdateRamDisk/
+$ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/.* /Volumes/PeaceB16B92.arm64UpdateRamDisk/
 ```
 Remove contents of `/private/var`. We will put it to a secondary disk later.
 ```
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/*
+$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/.*
 ```
 
 **Get pre-compiled binaries**
@@ -125,7 +128,7 @@ Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/
 </plist>
 ```
 
-1) **mount_sec** - mount the secondary block device (disk1) to primary block device (disk0).
+1) **mount_sec** - mount the secondary block device (disk1).
    
 Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist` 
 ```
@@ -244,7 +247,7 @@ $ plutil -convert xml1 file.plist
 $ vim file.plist
 $ plutil -convert binary1 file.plist
 ```
-For launch daemon, iOS accepts both xml and binary plist files.
+For launch daemons, iOS accepts both xml and binary plist files.
 
 Now we need to make sure that we have all the binaries in the system according to their path in `ProgramArguments`.
 
@@ -356,7 +359,7 @@ Update the static_tc file:
 $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
 
-Now the disks can be ejected - we've done!
+Now the disks can be ejected - we're done!
 ```
 $ hdiutil detach /Volumes/PeaceB16B92.arm64UpdateRamDisk
 $ hdiutil detach /Volumes/PeaceB16B92.N56N66OS
@@ -416,7 +419,7 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 \* `xnu-ramfb=on` for textual framebuffer
 
-\* SSH password - `alpine`
+\* SSH password - `alpine` // just a reminder:) 
 
 :heavy_exclamation_mark: When exiting QEMU ensure to remount the `hfs.sec` (on the research computer), otherwise it won't be mounted on the next run and will fail to load
 
