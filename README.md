@@ -410,11 +410,11 @@ export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin
 
 Instead of updating the `PATH` every boot, you can also create a soft links to `bin` folders:
 ```
-$ ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin
-$ ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin
-$ ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/bin
-$ ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/local/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/local/bin
-$ ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/sbin
+$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin
+$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin
+$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/bin
+$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/local/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/local/bin
+$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/sbin
 ```
 And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
