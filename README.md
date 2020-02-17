@@ -408,7 +408,7 @@ To use the binaries in the `iosbinpack64` update the `PATH`
 export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin:/iosbinpack64/sbin 
 ```
 
-*For an easier workflow, it's worth to symlink the binaries from `iosbinpack64/bin`, `iosbinpack64/usr/bin`, etc. into the corresponding /bin, /usr/bin, etc. directories. It is, in fact, a requirement for executing `scp`, since it doesn't respect the `PATH` enviornment variable when spawned.*
+*For an easier workflow, it's worth to symlink the binaries from `iosbinpack64/bin`, `iosbinpack64/usr/bin`, etc. into the corresponding `/bin`, `/usr/bin`, etc. directories. It is, in fact, a requirement for executing `scp`, since it doesn't respect the `PATH` enviornment variable when spawned.*
 
 
 And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
