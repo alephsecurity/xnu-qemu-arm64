@@ -29,7 +29,7 @@
 
 #define SOCKET_TIMEOUT_USECS (10)
 
-static int32_t find_free_socket() {
+static int32_t find_free_socket(void) {
     for (int i = 0; i < MAX_FD_COUNT; ++i) {
         if (-1 == guest_svcs_fds[i]) {
             return i;
