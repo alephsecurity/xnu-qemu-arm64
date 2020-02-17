@@ -34,7 +34,10 @@
 #define MAX_FILE_FDS (8)
 #define MAX_FILE_TRANSACTION_LEN (0x2000)
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 extern int32_t guest_svcs_errno;
+#pragma GCC diagnostic pop
 
 typedef struct __attribute__((packed)) {
     uint64_t buffer_guest_ptr;
