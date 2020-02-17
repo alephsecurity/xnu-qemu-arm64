@@ -408,14 +408,9 @@ To use the binaries in the `iosbinpack64` update the `PATH`
 export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin:/iosbinpack64/sbin 
 ```
 
-Instead of updating the `PATH` every boot, you can also create a soft links to `bin` folders:
-```
-$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin
-$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin
-$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/bin
-$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/local/bin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/local/bin
-$ sudo ln -s /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64/usr/sbin /Volumes/PeaceB16B92.arm64UpdateRamDisk/usr/sbin
-```
+*For an easier workflow, it's worth to symlink the binaries from `iosbinpack64/bin`, `iosbinpack64/usr/bin`, etc. into the corresponding /bin, /usr/bin, etc. directories. It is, in fact, a requirement for executing `scp`, since it doesn't respect the `PATH` enviornment variable when spawned.*
+
+
 And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 
