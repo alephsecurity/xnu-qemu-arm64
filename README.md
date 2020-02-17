@@ -26,7 +26,7 @@ $ unzip iPhone_5.5_12.1_16B92_Restore.ipsw
 
 Next, we need to clone the supporting scripts repository:
 ```
-$ git clone https://github.com/alephsecurity/xnu-qemu-arm64-tools.git
+$ git clone git@github.com:alephsecurity/xnu-qemu-arm64-tools.git
 ```
 **Get the Kernel image**
 Extract the ASN1 encoded kernel image ([pyasn1] should be installed first):
