@@ -435,8 +435,8 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 [homebrew]: https://brew.sh/
 [macports]: https://www.macports.org
 [dyld-cache]: http://iphonedevwiki.net/index.php/Dyld_shared_cache
-[Block Device Driver]: https://github.com/alephsecurity/xnu-qemu-arm64-tools-private/tree/master/aleph_bdev_drv
-[tcptunnel]: https://github.com/alephsecurity/xnu-qemu-arm64-tools-private/tree/master/tcp-tunnel
+[Block Device Driver]: https://github.com/alephsecurity/xnu-qemu-arm64-tools/tree/master/aleph_bdev_drv
+[tcptunnel]: https://github.com/alephsecurity/xnu-qemu-arm64-tools/tree/master/tcp-tunnel
 [dropbear]: https://github.com/mkj/dropbear
 [Ghidra]: https://ghidra-sre.org/
 [Running iOS in QEMU to an interactive bash shell (1)]: https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/
