@@ -70,14 +70,11 @@ $ hdiutil attach ./048-31952-103.dmg 		//main disk image
 Remove all contents of the ramdisk and sync the ramdisk with the main disk image (the latter will take some time).
 ```
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
-$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/.*
 $ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/* /Volumes/PeaceB16B92.arm64UpdateRamDisk/
-$ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/.* /Volumes/PeaceB16B92.arm64UpdateRamDisk/
 ```
 Remove contents of `/private/var`. We will put it to a secondary disk later.
 ```
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/*
-$ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/private/var/.*
 ```
 
 **Get pre-compiled binaries**
