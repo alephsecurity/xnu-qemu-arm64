@@ -276,7 +276,7 @@ In the above case, we need to write down `7ad4d4c517938b6fdc0f5241cd300d17fbb524
 For convenience, the following command will extract the needed part of the hash from each of the binaries in *iosbinpack64*:
 ```
 $ touch ./tchashes
-$ for filename in $(find /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64 -type f); do jtool --sig --ent $filename 2&>/dev/null; done | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
+$ for filename in $(find /Volumes/PeaceB16B92.arm64UpdateRamDisk/iosbinpack64 -type f); do jtool --sig --ent $filename 2>/dev/null; done | grep CDHash | cut -d' ' -f6 | cut -c 1-40 >> ./tchashes
 ```
 Note that the `/bin/tunnel` that we've created before is not signed yet. Sign it with jtool.
 ```
