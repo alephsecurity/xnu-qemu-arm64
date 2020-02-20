@@ -69,8 +69,10 @@ $ hdiutil attach ./048-31952-103.dmg 		//main disk image
 ```
 Remove all contents of the ramdisk and sync the ramdisk with the main disk image (the latter will take some time).
 ```
+$ sudo diskutil enableownership /Volumes/PeaceB16B92.arm64UpdateRamDisk/
 $ sudo rm -rf /Volumes/PeaceB16B92.arm64UpdateRamDisk/*
 $ sudo rsync -av /Volumes/PeaceB16B92.N56N66OS/* /Volumes/PeaceB16B92.arm64UpdateRamDisk/
+$ sudo chown root /Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64
 ```
 Remove contents of `/private/var`. We will put it to a secondary disk later.
 ```
