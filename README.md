@@ -420,7 +420,13 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 \* SSH password - `alpine` // just a reminder:) 
 
-:heavy_exclamation_mark: When exiting QEMU ensure to remount the `hfs.sec` (on the research computer), otherwise it won't be mounted on the next run and will fail to load
+:heavy_exclamation_mark:Because there is no graceful shutdown of the system, the `hfs.sec` which is mounted to the iOS, will fail to be mounted again after the QEMU is killed.
+
+When the system is restarted (QEMU is killed to be started again) we need to mount and unmount the disk on the the mac.
+```
+$ hdiutil attach -imagekey diskimage-class=CRawDiskImage hfs.sec
+$ hdiutil detach /Volumes/PeaceB16B92.arm64UpdateRamDisk
+```
 
 [zhuowei-tutorial]: https://worthdoingbadly.com/xnuqemu2/
 [qemu-aleph-git]: https://github.com/alephsecurity/xnu-qemu-arm64
