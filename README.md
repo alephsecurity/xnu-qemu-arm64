@@ -16,7 +16,7 @@ If you are passionate about iOS and kernel exploitation and want to help us make
 
 ---
 To start the process we first need to prepare a kernel image, a device tree, a static trust cache, the main and the secondary disk images.
-To get the all that, we first need to get the update file from Apple: [iOS 12.1 update file].
+To get all that, we first need to get the update file from Apple: [iOS 12.1 update file].
 This is actually a zip file which we can extract:
 ```
 $ unzip iPhone_5.5_12.1_16B92_Restore.ipsw
@@ -47,7 +47,7 @@ $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_
 
 ## Create the Disk Devices for iOS system
 
-Some tweaks should be done to use the all currently implemented capabilities; bash, many familiar binary tools, all iOS's launchd services, r/w secondary disk device and SSH.
+Some tweaks should be done to use all currently implemented capabilities: bash, many familiar binary tools, all iOS's launchd services, r/w secondary disk device and SSH.
 
 The following instructions will describe how to create the disk devices and what changes should be made within them to enable the system start with all the functionality mentioned above.
 
