@@ -1,5 +1,3 @@
-
-
 # iOS on QEMU
 
 This project is a fork of the official QEMU repository. Please refer to this [README](https://github.com/qemu/qemu/blob/master/README.rst) for information about the QEMU project.
@@ -18,7 +16,7 @@ If you are passionate about iOS and kernel exploitation and want to help us make
 
 ---
 To start the process we first need to prepare a kernel image, a device tree, a static trust cache, the main and the secondary disk images.
-To get the all that we first need to get the update file from Apple: [iOS 12.1 update file].
+To get all that, we first need to get the update file from Apple: [iOS 12.1 update file].
 This is actually a zip file which we can extract:
 ```
 $ unzip iPhone_5.5_12.1_16B92_Restore.ipsw
@@ -49,15 +47,19 @@ $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_
 
 ## Create the Disk Devices for iOS system
 
-Some tweaks should be done to use the all currently implemented capabilities; bash, many familiar binary tools, all iOS's launchd services, r/w secondary disk device and SSH. 
+Some tweaks should be done to use all currently implemented capabilities: bash, many familiar binary tools, all iOS's launchd services, r/w secondary disk device and SSH.
 
 The following instructions will describe how to create the disk devices and what changes should be made within them to enable the system start with all the functionality mentioned above.
 
 ### Create the primary disk device
-To create a block device that will run on the system we will use ramdisk device available in the [iOS 12.1 update file]. 
+To create a block device that will run on the system we will use ramdisk device available in the [iOS 12.1 update file].
 
 The disk devices will be attached to the iOS system by *custom* block device driver.
-Follow the instructions [here][Block Device Driver] to create the driver. Then copy the driver `aleph_bdev_drv.bin` to your work directory.
+Follow the instructions [here][Block Device Driver] to create the driver.
+Then copy the driver `aleph_bdev_drv.bin` to your work directory.
+```
+$ cp ./xnu-qemu-arm64-tools/aleph_bdev_drv/bin/aleph_bdev_drv.bin ./
+```
 
 Next, decode the ramdisk and resize it. Attach the ramdisk device and the main disk image to the research computer.
 ```
@@ -65,7 +67,7 @@ $ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py ./048-32651-1
 $ cp ./048-32651-104.dmg.out ./hfs.main
 $ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.main
 $ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.main
-$ hdiutil attach ./048-31952-103.dmg 		//main disk image
+$ hdiutil attach ./048-31952-103.dmg
 ```
 Remove all contents of the ramdisk and sync the ramdisk with the main disk image (the latter will take some time).
 ```
@@ -87,15 +89,15 @@ $ git clone https://github.com/jakeajames/rootlessJB
 $ cd rootlessJB/rootlessJB/bootstrap/tars/
 $ tar xvf iosbinpack.tar
 $ sudo cp -R iosbinpack64 /Volumes/PeaceB16B92.arm64UpdateRamDisk/
+$ cd -
 ```
 **Add programs to be executed at system start**
 
 Four executables will be added to ״Launch Daemons״ directory and start at the system load.
- 
+
 1) **bash** - run bash
 
-Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/bash.plist` 
-
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/bash.plist`
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -127,9 +129,9 @@ Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/
 </plist>
 ```
 
-1) **mount_sec** - mount the secondary block device (disk1).
-   
-Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist` 
+2) **mount_sec** - mount the secondary block device (disk1).
+
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/mount_sec.plist`
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -160,11 +162,11 @@ Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/
 	<string>root</string>
 </dict>
 </plist>
-
 ```
-  3) [tcptunnel] - opens TCP Tunnel on port 2222 between the host and the guest. SSH will run above this tunnel.
 
-Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist` 
+3) [tcptunnel] - opens TCP Tunnel on port 2222 between the host and the guest. SSH will run above this tunnel.
+
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/tcptunnel.plist`
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -197,11 +199,11 @@ Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/
 	<string>root</string>
 </dict>
 </plist>
-
 ```
+
 4) [dropbear] - will be used as SSH server.
 
-Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/dropbear.plist` 
+Create the `plist` file and save it as `/Volumes/PeaceB16B92.arm64UpdateRamDisk/System/Library/LaunchDaemons/dropbear.plist`
 ```
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -252,7 +254,7 @@ Now we need to make sure that we have all the binaries in the system according t
 
 `/iosbinpack64/bin/bash` - *part of the iosbinpack64*
 
-`/sbin/mount` - *part of the iOS system* 
+`/sbin/mount` - *part of the iOS system*
 
 `/bin/tunnel` - *follow [this][tcptunnel] tutorial to get the binary and copy it to* `/bin`
 
@@ -407,7 +409,7 @@ $ xnu-qemu-arm64/aarch64-softmmu/qemu-system-aarch64 -M iPhone6splus-n66-s8000,k
 
 To use the binaries in the `iosbinpack64` update the `PATH`
 ```
-export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin:/iosbinpack64/sbin 
+export PATH=$PATH:/iosbinpack64/usr/bin:/iosbinpack64/bin:/iosbinpack64/usr/sbin:/iosbinpack64/sbin
 ```
 
 *For an easier workflow, it's worth to symlink the binaries from `iosbinpack64/bin`, `iosbinpack64/usr/bin`, etc. into the corresponding `/bin`, `/usr/bin`, etc. directories. It is, in fact, a requirement for executing `scp`, since it doesn't respect the `PATH` enviornment variable when spawned.*
@@ -418,7 +420,7 @@ And we have an interactive bash shell with mounted r/w disk and SSH enabled!!
 
 \* `xnu-ramfb=on` for textual framebuffer
 
-\* SSH password - `alpine` // just a reminder:) 
+\* SSH password - `alpine` // just a reminder:)
 
 :heavy_exclamation_mark:Because there is no graceful shutdown of the system, the `hfs.sec` which is mounted to the iOS, will fail to be mounted again after the QEMU is killed.
 
