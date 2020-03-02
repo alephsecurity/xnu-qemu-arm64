@@ -211,6 +211,24 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         remove_dtb_prop(child, prop);
         add_dtb_prop(child, "random-seed", sizeof(seed), (uint8_t *)&seed[0]);
 
+        //update the display parameters
+        uint32_t display_rotation = 0;
+        prop = get_dtb_prop(child, "display-rotation");
+        if (NULL == prop) {
+            abort();
+        }
+        remove_dtb_prop(child, prop);
+        add_dtb_prop(child, "display-rotation", sizeof(display_rotation),
+                     (uint8_t *)&display_rotation);
+        uint32_t display_scale = 1;
+        prop = get_dtb_prop(child, "display-scale");
+        if (NULL == prop) {
+            abort();
+        }
+        remove_dtb_prop(child, prop);
+        add_dtb_prop(child, "display-scale", sizeof(display_scale),
+                     (uint8_t *)&display_scale);
+
         //these are needed by the image4 parser module$
         uint32_t data = 0;
         add_dtb_prop(child, "security-domain", sizeof(data), (uint8_t *)&data);
