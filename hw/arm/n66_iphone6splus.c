@@ -45,7 +45,11 @@
 //compiled nop instruction: mov x0, x0
 #define NOP_INST (0xaa0003e0)
 
+//compiled  instruction: mov w7, #0
+#define W7_ZERO_INST (0x52800007)
+
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
+#define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
@@ -127,6 +131,7 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
 };
 
 static uint32_t g_nop_inst = NOP_INST;
+static uint32_t g_w7_zero_inst = W7_ZERO_INST;
 
 static void n66_add_cpregs(N66MachineState *nms)
 {
@@ -219,6 +224,12 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
                      sizeof(g_nop_inst), 1);
+
+    //patch the slide set instruction when creating a new process
+    //in parse_machfile() in order to disable aslr for user mode apps
+    address_space_rw(nsas, vtop_static(SLIDE_SET_INST_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_w7_zero_inst,
+                     sizeof(g_w7_zero_inst), 1);
 
     phys_ptr = align_64k_high(vtop_static(kernel_high));
 
