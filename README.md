@@ -30,19 +30,19 @@ $ git clone git@github.com:alephsecurity/xnu-qemu-arm64-tools.git
 Extract the ASN1 encoded kernel image ([pyasn1] should be installed first):
 ```
 $ pip install pyasn1
-$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1kerneldecode.py kernelcache.release.n66 kernelcache.release.n66.asn1decoded
 ```
 
 This decoded image now includes the lzss compressed kernel.
-You can use [this][lzss] code to decompress it or use this translated code with python*2*.
+Let us decompress it:
 ```
-$ python2 xnu-qemu-arm64-tools/bootstrap_scripts/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/decompress_lzss.py kernelcache.release.n66.asn1decoded kernelcache.release.n66.out
 ```
 **Get the divice tree**
 
 Extract the device tree from the ASN1 encoded file:
 ```
-$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1dtredecode.py Firmware/all_flash/DeviceTree.n66ap.im4p Firmware/all_flash/DeviceTree.n66ap.im4p.out
 ```
 
 ## Create the Disk Devices for iOS system
@@ -63,7 +63,7 @@ $ cp ./xnu-qemu-arm64-tools/aleph_bdev_drv/bin/aleph_bdev_drv.bin ./
 
 Next, decode the ramdisk and resize it. Attach the ramdisk device and the main disk image to the research computer.
 ```
-$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py ./048-32651-104.dmg ./048-32651-104.dmg.out
 $ cp ./048-32651-104.dmg.out ./hfs.main
 $ hdiutil resize -size 6G -imagekey diskimage-class=CRawDiskImage ./hfs.main
 $ hdiutil attach -imagekey diskimage-class=CRawDiskImage ./hfs.main
@@ -304,7 +304,7 @@ $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/bin/tunnel | grep CD
 ```
 Now we can create the static trust cache blob:
 ```
-$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
 **General changes**
 
@@ -357,7 +357,7 @@ $ jtool --sig --ent /Volumes/PeaceB16B92.arm64UpdateRamDisk/sbin/launchd | grep 
 ```
 Update the static_tc file:
 ```
-$ python3 xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
+$ python xnu-qemu-arm64-tools/bootstrap_scripts/create_trustcache.py tchashes static_tc
 ```
 
 Now the disks can be ejected - we're done!
