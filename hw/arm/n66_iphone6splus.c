@@ -260,8 +260,9 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr ramdisk_size = 0;
     if (0 != nms->ramdisk_filename[0]) {
         nms->ramdisk_file_dev.pa = phys_ptr;
-        xnu_file_mmio_dev_create(sysmem, &nms->ramdisk_file_dev,
-                               "ramdisk_file_mmio_dev", nms->ramdisk_filename);
+        macho_map_raw_file(nms->ramdisk_filename, nsas, sysmem,
+                           "ramdisk_raw_file.n66", nms->ramdisk_file_dev.pa,
+                           &nms->ramdisk_file_dev.size);
         ramdisk_size = nms->ramdisk_file_dev.size;
         phys_ptr += align_64k_high(nms->ramdisk_file_dev.size);
     }
