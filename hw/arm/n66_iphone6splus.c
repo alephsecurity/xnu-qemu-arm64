@@ -48,6 +48,7 @@
 //compiled  instruction: mov w7, #0
 #define W7_ZERO_INST (0x52800007)
 
+#define INITIAL_BRANCH_VADDR_16B92 (0xfffffff0070a5098)
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 #define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
 
@@ -132,6 +133,9 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
 
 static uint32_t g_nop_inst = NOP_INST;
 static uint32_t g_w7_zero_inst = W7_ZERO_INST;
+static uint32_t g_set_cpacr_and_branch_inst[] = {
+    0x91400c21, 0xd378dc21, 0xd5181041, 0xaa1f03e1, 0x140007ec
+};
 
 static void n66_add_cpregs(N66MachineState *nms)
 {
@@ -171,6 +175,11 @@ static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
 
 static void n66_patch_kernel(AddressSpace *nsas)
 {
+    //patch the initial branch with instructions that set up CPACR
+    address_space_rw(nsas, vtop_static(INITIAL_BRANCH_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_set_cpacr_and_branch_inst,
+                     sizeof(g_set_cpacr_and_branch_inst), 1);
+
     //patch the smc instruction to nop since we no longer use a secure
     //monitor because we disabled KPP this way
     address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
@@ -313,9 +322,6 @@ static void n66_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
     object_property_set_bool(cpuobj, true, "realized", &error_fatal);
 
     *nsas = cpu_get_address_space(cs, ARMASIdx_NS);
-
-    //disable exceptions on FP operations
-    xnu_cpacr_intercept_write_const_val(*cpu, 0x300000);
 
     object_unref(cpuobj);
     //currently support only a single CPU and thus
