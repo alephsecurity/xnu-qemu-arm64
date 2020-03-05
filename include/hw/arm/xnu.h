@@ -134,7 +134,10 @@ void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr phys_base, hwaddr virt_base,
                     hwaddr low_virt_addr, hwaddr high_virt_addr, hwaddr *pc);
 
-void macho_load_raw_file(char *filename, AddressSpace *as, MemoryRegion *mem,
+void macho_map_raw_file(const char *filename, AddressSpace *as, MemoryRegion *mem,
+                         const char *name, hwaddr file_pa, uint64_t *size);
+
+void macho_load_raw_file(const char *filename, AddressSpace *as, MemoryRegion *mem,
                          const char *name, hwaddr file_pa, uint64_t *size);
 
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
