@@ -49,6 +49,7 @@
 #define W7_ZERO_INST (0x52800007)
 
 #define INITIAL_BRANCH_VADDR_16B92 (0xfffffff0070a5098)
+#define BZERO_COND_BRANCH_VADDR_16B92 (0xfffffff0070996d8)
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 #define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
 
@@ -136,6 +137,7 @@ static uint32_t g_w7_zero_inst = W7_ZERO_INST;
 static uint32_t g_set_cpacr_and_branch_inst[] = {
     0x91400c21, 0xd378dc21, 0xd5181041, 0xaa1f03e1, 0x140007ec
 };
+static uint32_t g_bzero_branch_unconditionally_inst = 0x14000039;
 
 static void n66_add_cpregs(N66MachineState *nms)
 {
@@ -179,6 +181,12 @@ static void n66_patch_kernel(AddressSpace *nsas)
     address_space_rw(nsas, vtop_static(INITIAL_BRANCH_VADDR_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_set_cpacr_and_branch_inst,
                      sizeof(g_set_cpacr_and_branch_inst), 1);
+
+    //patch bzero to avoid "dc zva", which zeroes out different amount of bytes
+    //under different CPUs
+    address_space_rw(nsas, vtop_static(BZERO_COND_BRANCH_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_bzero_branch_unconditionally_inst,
+                     sizeof(g_bzero_branch_unconditionally_inst), 1);
 
     //patch the smc instruction to nop since we no longer use a secure
     //monitor because we disabled KPP this way
