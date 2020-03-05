@@ -169,6 +169,21 @@ static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
     }
 }
 
+static void n66_patch_kernel(AddressSpace *nsas)
+{
+    //patch the smc instruction to nop since we no longer use a secure
+    //monitor because we disabled KPP this way
+    address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+
+    //patch the slide set instruction when creating a new process
+    //in parse_machfile() in order to disable aslr for user mode apps
+    address_space_rw(nsas, vtop_static(SLIDE_SET_INST_VADDR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_w7_zero_inst,
+                     sizeof(g_w7_zero_inst), 1);
+}
+
 static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
                                 AddressSpace *nsas)
 {
@@ -219,17 +234,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     nms->kpc_pa = phys_pc;
     used_ram_for_blobs += (align_64k_high(kernel_high) - kernel_low);
 
-    //patch the smc instruction to nop since we no longer use a secure
-    //monitor because we disabled KPP this way
-    address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-                     sizeof(g_nop_inst), 1);
-
-    //patch the slide set instruction when creating a new process
-    //in parse_machfile() in order to disable aslr for user mode apps
-    address_space_rw(nsas, vtop_static(SLIDE_SET_INST_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_w7_zero_inst,
-                     sizeof(g_w7_zero_inst), 1);
+    n66_patch_kernel(nsas);
 
     phys_ptr = align_64k_high(vtop_static(kernel_high));
 
