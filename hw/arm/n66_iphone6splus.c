@@ -418,12 +418,6 @@ static void n66_machine_init(MachineState *machine)
 
     n66_bootargs_setup(machine);
 
-    nms->ptr_ntf.pa = vtop_static(KERNEL_TASK_PTR_16B92);
-    nms->ptr_ntf.as = nsas;
-    nms->ptr_ntf.cb = setup_fake_task_port;
-    nms->ptr_ntf.cb_opaque = (void *)&nms->ktpp;
-    xnu_dev_ptr_ntf_create(sysmem, &nms->ptr_ntf, "kernel_task_dev");
-
     qemu_register_reset(n66_cpu_reset, nms);
 }
 
