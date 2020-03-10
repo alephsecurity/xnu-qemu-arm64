@@ -492,6 +492,13 @@ int kvm_arch_remove_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
     return -EINVAL;
 }
 
+bool kvm_arm_handle_idsr(CPUState *cs, struct kvm_run *run)
+{
+    qemu_log_mask(LOG_UNIMP, "%s: implementation-defined system registers not yet"
+                             " implemented\n", __func__);
+    return false;
+}
+
 bool kvm_arm_handle_debug(CPUState *cs, struct kvm_debug_exit_arch *debug_exit)
 {
     qemu_log_mask(LOG_UNIMP, "%s: guest debug not yet implemented\n", __func__);

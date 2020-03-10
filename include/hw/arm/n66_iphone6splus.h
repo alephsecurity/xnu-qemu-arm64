@@ -83,6 +83,7 @@ typedef struct {
     N66_CPREG_VAR_DEF(PMC1);
     N66_CPREG_VAR_DEF(PMCR1);
     N66_CPREG_VAR_DEF(PMSR);
+    N66_CPREG_VAR_DEF(L2ACTLR_EL1);
 } N66MachineState;
 
 typedef struct {
