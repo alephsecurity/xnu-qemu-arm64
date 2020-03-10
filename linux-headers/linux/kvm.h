@@ -236,6 +236,7 @@ struct kvm_hyperv_exit {
 #define KVM_EXIT_IOAPIC_EOI       26
 #define KVM_EXIT_HYPERV           27
 #define KVM_EXIT_ARM_NISV         28
+#define KVM_EXIT_ARM_IDSR         29
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -400,6 +401,18 @@ struct kvm_run {
 			__u64 esr_iss;
 			__u64 fault_ipa;
 		} arm_nisv;
+		/* KVM_EXIT_ARM_IDSR */
+		struct /* sys_reg_params */ {
+			__u8 Op0;
+			__u8 Op1;
+			__u8 CRn;
+			__u8 CRm;
+			__u8 Op2;
+			__u64 regval;
+			__u8 is_write;
+			__u8 is_needed; /* Set by kvm on exit */
+			__u8 is_handled; /* Set by user space on entry */
+		} arm_idsr;
 		/* Fix the size of the union. */
 		char padding[256];
 	};
@@ -1010,6 +1023,7 @@ struct kvm_ppc_resize_hpt {
 #define KVM_CAP_ARM_NISV_TO_USER 177
 #define KVM_CAP_ARM_INJECT_EXT_DABT 178
 #define KVM_CAP_S390_VCPU_RESETS 179
+#define KVM_CAP_ARM_IDSR_TO_USER 180
 
 #ifdef KVM_CAP_IRQ_ROUTING
 

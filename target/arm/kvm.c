@@ -218,6 +218,12 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
         ret = -EINVAL;
     }
 
+    if (kvm_check_extension(s, KVM_CAP_ARM_IDSR_TO_USER)) {
+        if (kvm_vm_enable_cap(s, KVM_CAP_ARM_IDSR_TO_USER, 0)) {
+            warn_report("Failed to enable IDSR cap");
+        }
+    }
+
     return ret;
 }
 
@@ -700,6 +706,13 @@ int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
         if (kvm_arm_handle_debug(cs, &run->debug.arch)) {
             ret = EXCP_DEBUG;
         } /* otherwise return to guest */
+        break;
+    case KVM_EXIT_ARM_IDSR:
+        if (kvm_arm_handle_idsr(cs, run)) {
+            /* TODO: mark the system register access as handled */
+        } else {
+            /* TODO: mark the system register access as unhandled */
+        }
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: un-handled exit reason %d\n",

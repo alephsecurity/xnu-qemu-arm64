@@ -1329,6 +1329,33 @@ int kvm_arch_remove_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
     }
 }
 
+bool kvm_arm_handle_idsr(CPUState *cs, struct kvm_run *run)
+{
+    ARMCPU *cpu = ARM_CPU(cs);
+    const ARMCPRegInfo *ri;
+
+    /* Ensure PC is synchronised */
+    kvm_cpu_synchronize_state(cs);
+
+    uint32_t key = ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP,
+                                      run->arm_idsr.CRn, run->arm_idsr.CRm,
+                                      run->arm_idsr.Op0, run->arm_idsr.Op1,
+                                      run->arm_idsr.Op2);
+    ri = get_arm_cp_reginfo(cpu->cp_regs, key);
+
+    if (ri) {
+        if (run->arm_idsr.is_write) {
+            write_raw_cp_reg(&cpu->env, ri, run->arm_idsr.regval);
+        } else {
+            run->arm_idsr.regval = read_raw_cp_reg(&cpu->env, ri);
+        }
+        run->arm_idsr.is_handled = true;
+        return true;
+    }
+
+    return false;
+}
+
 /* See v8 ARM ARM D7.2.27 ESR_ELx, Exception Syndrome Register
  *
  * To minimise translating between kernel and user-space the kernel

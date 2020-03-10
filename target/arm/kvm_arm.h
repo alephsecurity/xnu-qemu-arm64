@@ -363,6 +363,16 @@ static inline const char *gicv3_class_name(void)
 }
 
 /**
+ * kvm_arm_handle_idsr:
+ * @cs: CPUState
+ * @run: KVM exit structure
+ *
+ * Returns: TRUE if the implementation-defined system register access was handled.
+ */
+bool kvm_arm_handle_idsr(CPUState *cs, struct kvm_run *run);
+
+
+/**
  * kvm_arm_handle_debug:
  * @cs: CPUState
  * @debug_exit: debug part of the KVM exit structure

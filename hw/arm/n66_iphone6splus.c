@@ -105,6 +105,7 @@ N66_CPREG_FUNCS(PMC0)
 N66_CPREG_FUNCS(PMC1)
 N66_CPREG_FUNCS(PMCR1)
 N66_CPREG_FUNCS(PMSR)
+N66_CPREG_FUNCS(L2ACTLR_EL1)
 
 static const ARMCPRegInfo n66_cp_reginfo[] = {
     // Apple-specific registers
@@ -119,6 +120,7 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
     N66_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
     N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
     N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
+    N66_CPREG_DEF(L2ACTLR_EL1, 3, 1, 15, 0, 0, PL1_RW),
 
     // Aleph-specific registers for communicating with QEMU
 
@@ -153,6 +155,7 @@ static void n66_add_cpregs(N66MachineState *nms)
     nms->N66_CPREG_VAR_NAME(PMC1) = 0;
     nms->N66_CPREG_VAR_NAME(PMCR1) = 0;
     nms->N66_CPREG_VAR_NAME(PMSR) = 0;
+    nms->N66_CPREG_VAR_NAME(L2ACTLR_EL1) = 0;
     define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
 }
 
