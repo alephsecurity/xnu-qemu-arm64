@@ -34,6 +34,7 @@
 
 #include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/general.h"
+#include "hw/arm/xnu_trampoline_hook.h"
 
 int32_t guest_svcs_errno = 0;
 
@@ -47,6 +48,31 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     CPUState *cpu = qemu_get_cpu(0);
     qemu_call_t qcall;
+
+    if (!value) {
+        // Special case: not a regular QEMU call. This is used by our
+        // kernel task port patch to notify of the readiness for the
+        // hook installation.
+
+        N66MachineState *nms = N66_MACHINE(qdev_get_machine());
+        KernelTaskPortParams *ktpp = &nms->ktpp;
+
+        if (0 != ktpp->hook.va) {
+            //install the hook here because we need the MMU to be already
+            //configured and all the memory mapped before installing the hook
+            xnu_hook_tr_copy_install(ktpp->hook.va, ktpp->hook.pa,
+                                     ktpp->hook.buf_va, ktpp->hook.buf_pa,
+                                     ktpp->hook.code, ktpp->hook.code_size,
+                                     ktpp->hook.buf_size, ktpp->hook.scratch_reg);
+
+        }
+
+        //emulate original opcode: str x20, [x23]
+        value = env->xregs[20];
+        cpu_memory_rw_debug(cpu, env->xregs[23], (uint8_t*) &value, sizeof(value), 1);
+
+        return;
+    }
 
     // Read the request
     cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 0);
