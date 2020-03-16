@@ -52,6 +52,7 @@
 #define BZERO_COND_BRANCH_VADDR_16B92 (0xfffffff0070996d8)
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 #define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
+#define NOTIFY_KERNEL_TASK_PTR_16B92 (0xfffffff0070f4d90)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
@@ -175,6 +176,7 @@ static uint32_t g_set_cpacr_and_branch_inst[] = {
     0x91400c21, 0xd378dc21, 0xd5181041, 0xaa1f03e1, 0x140007ec
 };
 static uint32_t g_bzero_branch_unconditionally_inst = 0x14000039;
+static uint32_t g_qemu_call = 0xd51bff1f;
 
 static void n66_add_cpregs(N66MachineState *nms)
 {
@@ -242,6 +244,12 @@ static void n66_patch_kernel(AddressSpace *nsas)
     address_space_rw(nsas, vtop_static(SLIDE_SET_INST_VADDR_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_w7_zero_inst,
                      sizeof(g_w7_zero_inst), 1);
+
+    //patch the instruction that writes the kernel task port pointer
+    //in task_create_internal so we can catch it without MMIO
+    address_space_rw(nsas, vtop_static(NOTIFY_KERNEL_TASK_PTR_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_qemu_call,
+                     sizeof(g_qemu_call), 1);
 }
 
 static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
