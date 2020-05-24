@@ -137,6 +137,11 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
 static uint32_t g_nop_inst = NOP_INST;
 static uint32_t g_w7_zero_inst = W7_ZERO_INST;
 static uint32_t g_set_cpacr_and_branch_inst[] = {
+    //  91400c21       add x1, x1, 3, lsl 12    # x1 = x1 + 0x3000
+    //  d378dc21       lsl x1, x1, 8            # x1 = x1 * 0x100 (x1 = 0x300000)
+    //  d5181041       msr cpacr_el1, x1        # cpacr_el1 = x1 (enable FP)
+    //  aa1f03e1       mov x1, xzr              # x1 = 0
+    //  140007ec       b 0x1fc0                 # branch to regular start
     0x91400c21, 0xd378dc21, 0xd5181041, 0xaa1f03e1, 0x140007ec
 };
 static uint32_t g_bzero_branch_unconditionally_inst = 0x14000039;
