@@ -107,7 +107,7 @@ N66_CPREG_FUNCS(PMCR1)
 N66_CPREG_FUNCS(PMSR)
 N66_CPREG_FUNCS(L2ACTLR_EL1)
 
-static const ARMCPRegInfo n66_cp_reginfo[] = {
+static const ARMCPRegInfo n66_cp_reginfo_kvm[] = {
     // Apple-specific registers
     N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
     N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
@@ -121,6 +121,36 @@ static const ARMCPRegInfo n66_cp_reginfo[] = {
     N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
     N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
     N66_CPREG_DEF(L2ACTLR_EL1, 3, 1, 15, 0, 0, PL1_RW),
+
+    // Aleph-specific registers for communicating with QEMU
+
+    // REG_QEMU_CALL:
+    { .cp = CP_REG_ARM64_SYSREG_CP, .name = "REG_QEMU_CALL",
+      .opc0 = 3, .opc1 = 3, .crn = 15, .crm = 15, .opc2 = 0,
+      .access = PL0_RW, .type = ARM_CP_IO, .state = ARM_CP_STATE_AA64,
+      .readfn = qemu_call_status,
+      .writefn = qemu_call },
+
+    REGINFO_SENTINEL,
+};
+
+// This is the same as the array for kvm, but without
+// the L2ACTLR_EL1, which is already defined in TCG.
+// Duplicating this list isn't a perfect solution,
+// but it's quick and reliable.
+static const ARMCPRegInfo n66_cp_reginfo_tcg[] = {
+    // Apple-specific registers
+    N66_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID4, 3, 0, 15, 4, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID8, 3, 0, 15, 8, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_HID7, 3, 0, 15, 7, 0, PL1_RW),
+    N66_CPREG_DEF(ARM64_REG_LSU_ERR_STS, 3, 3, 15, 0, 0, PL1_RW),
+    N66_CPREG_DEF(PMC0, 3, 2, 15, 0, 0, PL1_RW),
+    N66_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
+    N66_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
+    N66_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
 
     // Aleph-specific registers for communicating with QEMU
 
@@ -161,7 +191,12 @@ static void n66_add_cpregs(N66MachineState *nms)
     nms->N66_CPREG_VAR_NAME(PMCR1) = 0;
     nms->N66_CPREG_VAR_NAME(PMSR) = 0;
     nms->N66_CPREG_VAR_NAME(L2ACTLR_EL1) = 0;
-    define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo, nms);
+
+    if (kvm_enabled()) {
+        define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo_kvm, nms);
+    } else {
+        define_arm_cp_regs_with_opaque(cpu, n66_cp_reginfo_tcg, nms);
+    }
 }
 
 static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
