@@ -44,7 +44,8 @@
 
 //compiled nop instruction: mov x0, x0
 #define NOP_INST (0xaa0003e0)
-
+#define MOV_W0_01_INST (0x52800020)
+#define CMP_X9_x9_INST (0xeb09013f)
 //compiled  instruction: mov w7, #0
 #define W7_ZERO_INST (0x52800007)
 
@@ -53,6 +54,9 @@
 #define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
 #define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
 #define NOTIFY_KERNEL_TASK_PTR_16B92 (0xfffffff0070f4d90)
+#define CORE_TRUST_CHECK_16B92 (0xfffffff0061e136c)
+#define TFP0_TASK_FOR_PID_16B92 (0xfffffff0074a27bc)
+#define TFP0_CNVRT_PORT_TO_TASK_16B92 (0xfffffff0070d7cb8)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
@@ -166,6 +170,8 @@ static const ARMCPRegInfo n66_cp_reginfo_tcg[] = {
 };
 
 static uint32_t g_nop_inst = NOP_INST;
+static uint32_t g_mov_w0_01_inst = MOV_W0_01_INST;
+static uint32_t g_compare_true_inst = CMP_X9_x9_INST;
 static uint32_t g_w7_zero_inst = W7_ZERO_INST;
 static uint32_t g_set_cpacr_and_branch_inst[] = {
     //  91400c21       add x1, x1, 3, lsl 12    # x1 = x1 + 0x3000
@@ -250,6 +256,15 @@ static void n66_patch_kernel(AddressSpace *nsas)
     address_space_rw(nsas, vtop_static(NOTIFY_KERNEL_TASK_PTR_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_qemu_call,
                      sizeof(g_qemu_call), 1);
+    address_space_rw(nsas, vtop_static(TFP0_TASK_FOR_PID_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);                      
+    address_space_rw(nsas, vtop_static(TFP0_CNVRT_PORT_TO_TASK_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
+                     sizeof(g_compare_true_inst), 1); 
+    address_space_rw(nsas, vtop_static(CORE_TRUST_CHECK_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w0_01_inst,
+                     sizeof(g_mov_w0_01_inst), 1);
 }
 
 static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
