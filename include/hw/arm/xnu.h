@@ -142,6 +142,6 @@ void macho_load_raw_file(const char *filename, AddressSpace *as, MemoryRegion *m
 
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
-                    hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
-                    hwaddr tc_size, hwaddr *uart_mmio_pa);
+                    hwaddr ramdisk_addr, hwaddr ramdisk_size,
+                    hwaddr *uart_mmio_pa);
 #endif

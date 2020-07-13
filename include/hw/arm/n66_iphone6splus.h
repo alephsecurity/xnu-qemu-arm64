@@ -62,7 +62,6 @@ typedef struct {
     char kernel_filename[1024];
     char secmon_filename[1024];
     char dtb_filename[1024];
-    char tc_filename[1024];
     char driver_filename[1024];
     char qc_file_0_filename[1024];
     char qc_file_1_filename[1024];
@@ -70,7 +69,6 @@ typedef struct {
     uint16_t tunnel_port;
     FileMmioDev raw_kernel_file_dev;
     FileMmioDev ramdisk_file_dev;
-    FileMmioDev tc_file_dev;
     bool use_ramfb;
     N66_CPREG_VAR_DEF(ARM64_REG_HID11);
     N66_CPREG_VAR_DEF(ARM64_REG_HID3);

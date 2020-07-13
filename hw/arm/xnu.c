@@ -126,8 +126,8 @@ static void macho_dtb_node_process(DTBNode *node)
 
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
-                    hwaddr ramdisk_addr, hwaddr ramdisk_size, hwaddr tc_addr,
-                    hwaddr tc_size, hwaddr *uart_mmio_pa)
+                    hwaddr ramdisk_addr, hwaddr ramdisk_size,
+                    hwaddr *uart_mmio_pa)
 {
     uint8_t *file_data = NULL;
     unsigned long fsize;
@@ -249,11 +249,6 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
             add_dtb_prop(child, "RAMDisk", sizeof(memmap),
                          (uint8_t *)&memmap[0]);
         }
-
-        memmap[0] = tc_addr;
-        memmap[1] = tc_size;
-        add_dtb_prop(child, "TrustCache", sizeof(memmap),
-                     (uint8_t *)&memmap[0]);
 
         macho_dtb_node_process(root);
 
