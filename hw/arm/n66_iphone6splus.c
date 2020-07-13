@@ -40,7 +40,6 @@
 
 #define N66_SECURE_RAM_SIZE (0x100000)
 #define N66_PHYS_BASE (0x40000000)
-#define STATIC_TRUST_CACHE_OFFSET (0x2000000)
 
 //compiled nop instruction: mov x0, x0
 #define NOP_INST (0xaa0003e0)
@@ -316,12 +315,6 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     g_phys_base = N66_PHYS_BASE;
     phys_ptr = N66_PHYS_BASE;
 
-    //now account for the static trust cache
-    phys_ptr += align_64k_high(STATIC_TRUST_CACHE_OFFSET);
-    nms->tc_file_dev.pa = phys_ptr;
-    xnu_file_mmio_dev_create(sysmem, &nms->tc_file_dev,
-                             "tc_file_mmio_dev", nms->tc_filename);
-
     //now account for the loaded kernel
     arm_load_macho(nms->kernel_filename, nsas, sysmem, "kernel.n66",
                     N66_PHYS_BASE, virt_base, kernel_low,
@@ -348,8 +341,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     //now account for device tree
     macho_load_dtb(nms->dtb_filename, nsas, sysmem, "dtb.n66", phys_ptr,
                    &dtb_size, nms->ramdisk_file_dev.pa,
-                   ramdisk_size, nms->tc_file_dev.pa,
-                   nms->tc_file_dev.size, &nms->uart_mmio_pa);
+                   ramdisk_size, &nms->uart_mmio_pa);
     dtb_va = ptov_static(phys_ptr);
     phys_ptr += align_64k_high(dtb_size);
     used_ram_for_blobs += align_64k_high(dtb_size);
@@ -541,20 +533,6 @@ static char *n66_get_dtb_filename(Object *obj, Error **errp)
     return g_strdup(nms->dtb_filename);
 }
 
-static void n66_set_tc_filename(Object *obj, const char *value,
-                                Error **errp)
-{
-    N66MachineState *nms = N66_MACHINE(obj);
-
-    g_strlcpy(nms->tc_filename, value, sizeof(nms->tc_filename));
-}
-
-static char *n66_get_tc_filename(Object *obj, Error **errp)
-{
-    N66MachineState *nms = N66_MACHINE(obj);
-    return g_strdup(nms->tc_filename);
-}
-
 static void n66_set_kern_args(Object *obj, const char *value,
                                      Error **errp)
 {
@@ -666,12 +644,6 @@ static void n66_instance_init(Object *obj)
                             n66_set_dtb_filename, NULL);
     object_property_set_description(obj, "dtb-filename",
                                     "Set the dev tree filename to be loaded",
-                                    NULL);
-
-    object_property_add_str(obj, "tc-filename", n66_get_tc_filename,
-                            n66_set_tc_filename, NULL);
-    object_property_set_description(obj, "tc-filename",
-                                    "Set the trust cache filename to be loaded",
                                     NULL);
 
     object_property_add_str(obj, "kern-cmd-args", n66_get_kern_args,
