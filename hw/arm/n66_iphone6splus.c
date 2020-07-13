@@ -57,6 +57,9 @@
 #define CORE_TRUST_CHECK_16B92 (0xfffffff0061e136c)
 #define TFP0_TASK_FOR_PID_16B92 (0xfffffff0074a27bc)
 #define TFP0_CNVRT_PORT_TO_TASK_16B92 (0xfffffff0070d7cb8)
+#define TFP0_PORT_NAME_TO_TASK_16B92 (0xfffffff0070d82d8)
+#define TFP0_KERNEL_TASK_CMP_1_16B92 (0xfffffff0070d7b04)
+#define TFP0_KERNEL_TASK_CMP_2_16B92 (0xfffffff0070d810c)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
@@ -258,10 +261,19 @@ static void n66_patch_kernel(AddressSpace *nsas)
                      sizeof(g_qemu_call), 1);
     address_space_rw(nsas, vtop_static(TFP0_TASK_FOR_PID_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-                     sizeof(g_nop_inst), 1);                      
+                     sizeof(g_nop_inst), 1);
     address_space_rw(nsas, vtop_static(TFP0_CNVRT_PORT_TO_TASK_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
-                     sizeof(g_compare_true_inst), 1); 
+                     sizeof(g_compare_true_inst), 1);
+    address_space_rw(nsas, vtop_static(TFP0_PORT_NAME_TO_TASK_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
+                     sizeof(g_compare_true_inst), 1);
+    address_space_rw(nsas, vtop_static(TFP0_KERNEL_TASK_CMP_1_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
+                     sizeof(g_compare_true_inst), 1);
+    address_space_rw(nsas, vtop_static(TFP0_KERNEL_TASK_CMP_2_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
+                     sizeof(g_compare_true_inst), 1);
     address_space_rw(nsas, vtop_static(CORE_TRUST_CHECK_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w0_01_inst,
                      sizeof(g_mov_w0_01_inst), 1);
