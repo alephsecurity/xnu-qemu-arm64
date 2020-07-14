@@ -442,14 +442,9 @@ static void n66_machine_init(MachineState *machine)
 
     n66_memory_setup(machine, sysmem, secure_sysmem, nsas);
 
-    nms->ktpp.as = nsas;
-
     cpudev = DEVICE(cpu);
     cs = CPU(cpu);
-    nms->ktpp.cs = cs;
     AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
-    nms->ktpp.fake_port_pa = (hwaddr)&allocated_data->fake_port[0];
-    nms->ktpp.remap_kernel_task_pa = (hwaddr)&allocated_data->kernel_task[0];
 
     if (0 != nms->driver_filename[0]) {
         xnu_hook_tr_setup(nsas, cpu);
@@ -459,15 +454,15 @@ static void n66_machine_init(MachineState *machine)
                                  &size, NULL)) {
             abort();
         }
-        nms->ktpp.hook.va = UBC_INIT_VADDR_16B92;
-        nms->ktpp.hook.pa = vtop_static(UBC_INIT_VADDR_16B92);
-        nms->ktpp.hook.buf_va =
+        nms->hook.va = UBC_INIT_VADDR_16B92;
+        nms->hook.pa = vtop_static(UBC_INIT_VADDR_16B92);
+        nms->hook.buf_va =
                         ptov_static((hwaddr)&allocated_data->hook_code[0]);
-        nms->ktpp.hook.buf_pa = (hwaddr)&allocated_data->hook_code[0];
-        nms->ktpp.hook.buf_size = HOOK_CODE_ALLOC_SIZE;
-        nms->ktpp.hook.code = (uint8_t *)code;
-        nms->ktpp.hook.code_size = size;
-        nms->ktpp.hook.scratch_reg = 2;
+        nms->hook.buf_pa = (hwaddr)&allocated_data->hook_code[0];
+        nms->hook.buf_size = HOOK_CODE_ALLOC_SIZE;
+        nms->hook.code = (uint8_t *)code;
+        nms->hook.code_size = size;
+        nms->hook.scratch_reg = 2;
     }
 
     if (0 != nms->qc_file_0_filename[0]) {
