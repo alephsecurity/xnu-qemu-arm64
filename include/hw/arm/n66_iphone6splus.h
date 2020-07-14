@@ -55,19 +55,16 @@ typedef struct {
     hwaddr kbootargs_pa;
     hwaddr uart_mmio_pa;
     ARMCPU *cpu;
-    KernelTaskPortParams ktpp;
-    PtrNtfDev ptr_ntf;
+    KernelTrHookParams hook;
     struct arm_boot_info bootinfo;
     char ramdisk_filename[1024];
     char kernel_filename[1024];
-    char secmon_filename[1024];
     char dtb_filename[1024];
     char driver_filename[1024];
     char qc_file_0_filename[1024];
     char qc_file_1_filename[1024];
     char kern_args[1024];
     uint16_t tunnel_port;
-    FileMmioDev raw_kernel_file_dev;
     FileMmioDev ramdisk_file_dev;
     bool use_ramfb;
     N66_CPREG_VAR_DEF(ARM64_REG_HID11);
@@ -85,8 +82,6 @@ typedef struct {
 } N66MachineState;
 
 typedef struct {
-    uint8_t fake_port[FAKE_PORT_ALLOC_SIZE];
-    uint8_t kernel_task[KERNEL_TASK_ALLOC_SIZE];
     uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
     uint8_t ramfb[RAMFB_SIZE];
 } __attribute__((packed)) AllocatedData;

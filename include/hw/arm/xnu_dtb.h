@@ -26,11 +26,7 @@
 
 #include "qemu-common.h"
 #include "hw/arm/boot.h"
-#include "hw/arm/xnu_ptr_ntf.h"
-#include "hw/arm/xnu_remap_dev.h"
 #include "hw/arm/xnu_mem.h"
-#include "hw/arm/xnu_fake_task_port.h"
-#include "hw/arm/xnu_file_mmio_dev.h"
 
 #define DT_PROP_FLAG_PLACEHOLDER (0x80000000)
 
