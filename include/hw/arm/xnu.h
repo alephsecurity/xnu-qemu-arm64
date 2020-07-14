@@ -26,15 +26,13 @@
 
 #include "qemu-common.h"
 #include "hw/arm/boot.h"
-#include "hw/arm/xnu_ptr_ntf.h"
-#include "hw/arm/xnu_remap_dev.h"
 #include "hw/arm/xnu_mem.h"
-#include "hw/arm/xnu_fake_task_port.h"
-#include "hw/arm/xnu_file_mmio_dev.h"
+#include "hw/arm/xnu_trampoline_hook.h"
 #include "hw/arm/xnu_dtb.h"
 #include "hw/arm/xnu_cpacr.h"
 #include "hw/arm/xnu_pagetable.h"
 #include "hw/arm/xnu_trampoline_hook.h"
+#include "hw/arm/xnu_file_mmio_dev.h"
 #include "hw/arm/xnu_fb_cfg.h"
 
 // pexpert/pexpert/arm64/boot.h

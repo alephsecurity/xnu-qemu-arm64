@@ -55,15 +55,14 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
         // hook installation.
 
         N66MachineState *nms = N66_MACHINE(qdev_get_machine());
-        KernelTaskPortParams *ktpp = &nms->ktpp;
+        KernelTrHookParams *hook = &nms->hook;
 
-        if (0 != ktpp->hook.va) {
+        if (0 != hook->va) {
             //install the hook here because we need the MMU to be already
             //configured and all the memory mapped before installing the hook
-            xnu_hook_tr_copy_install(ktpp->hook.va, ktpp->hook.pa,
-                                     ktpp->hook.buf_va, ktpp->hook.buf_pa,
-                                     ktpp->hook.code, ktpp->hook.code_size,
-                                     ktpp->hook.buf_size, ktpp->hook.scratch_reg);
+            xnu_hook_tr_copy_install(hook->va, hook->pa, hook->buf_va,
+                                     hook->buf_pa, hook->code, hook->code_size,
+                                     hook->buf_size, hook->scratch_reg);
 
         }
 

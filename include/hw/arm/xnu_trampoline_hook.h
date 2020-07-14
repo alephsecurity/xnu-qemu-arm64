@@ -30,6 +30,17 @@
 
 #define HOOK_CODE_ALLOC_SIZE (1 << 20)
 
+typedef struct {
+    hwaddr va;
+    hwaddr pa;
+    hwaddr buf_va;
+    hwaddr buf_pa;
+    uint64_t buf_size;
+    uint8_t *code;
+    uint64_t code_size;
+    uint8_t scratch_reg;
+} KernelTrHookParams;
+
 void xnu_hook_tr_copy_install(hwaddr va, hwaddr pa, hwaddr buf_va,
                               hwaddr buf_pa, uint8_t *code, uint64_t code_size,
                               uint64_t buf_size, uint8_t scratch_reg);
