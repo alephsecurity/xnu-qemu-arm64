@@ -59,7 +59,7 @@ If you are passionate about iOS and kernel exploitation and want to help us push
 [Running iOS in QEMU to an interactive bash shell (1)]: https://alephsecurity.com/2019/06/17/xnu-qemu-arm64-1/
 [Running iOS in QEMU to an interactive bash shell (2)]: https://alephsecurity.com/2019/06/25/xnu-qemu-arm64-2/
 [Tunnelling TCP connections into iOS on QEMU]: https://alephsecurity.com/2020/03/29/xnu-qemu-tcp-tunnel/
-<!-- [Accelerating iOS on QEMU with hardware virtualization (KVM)]:  -->
+[Accelerating iOS on QEMU with hardware virtualization (KVM)]: https://alephsecurity.com/2020/07/19/xnu-qemu-kvm/
 [@alephsecurity]: https://twitter.com/alephsecurity
 [@JonathanAfek]: https://twitter.com/JonathanAfek
 
