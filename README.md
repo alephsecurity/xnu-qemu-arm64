@@ -1,5 +1,3 @@
-
-
 # iOS on QEMU
 
 This project is a fork of the official QEMU repository. Please refer to this [README](https://github.com/qemu/qemu/blob/master/README.rst) for information about the QEMU project.
@@ -62,4 +60,3 @@ If you are passionate about iOS and kernel exploitation and want to help us push
 [Accelerating iOS on QEMU with hardware virtualization (KVM)]: https://alephsecurity.com/2020/07/19/xnu-qemu-kvm/
 [@alephsecurity]: https://twitter.com/alephsecurity
 [@JonathanAfek]: https://twitter.com/JonathanAfek
-
