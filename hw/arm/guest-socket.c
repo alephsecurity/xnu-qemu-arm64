@@ -75,6 +75,7 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
     struct sockaddr_in addr;
     socklen_t addrlen;
 
+    addrlen = sizeof(addr);
     VERIFY_FD(sckt);
 
     int retval = find_free_socket();
@@ -104,7 +105,7 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
 	darwin_addr.sin_len	= sizeof(darwin_addr);
 	memset(&darwin_addr.sin_zero, 0, sizeof(darwin_addr.sin_zero));
 
-	darwin_addrlen		= sizeof(S_SOCKADDR);
+	darwin_addrlen		= sizeof(darwin_addr);
 #endif
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
                             sizeof(ADDR), 1);
@@ -138,7 +139,7 @@ int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
 	addr.sin_addr	= darwin_addr.sin_addr;
 	memset(addr.sin_zero, 0, sizeof(addr.sin_zero));
 
-	addrlen 	= sizeof(struct sockaddr_in);
+	addrlen 	= sizeof(addr);
 #endif
         if ((retval = bind(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                            addrlen)) < 0) {
@@ -182,7 +183,7 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
 	addr.sin_addr	= darwin_addr.sin_addr;
 	memset(&addr.sin_zero, 0, sizeof(addr.sin_zero));
 
-	addrlen		= sizeof(struct sockaddr_in);
+	addrlen		= sizeof(addr);
 #endif
         if ((retval = connect(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                             addrlen)) < 0) {
@@ -192,7 +193,7 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
 	darwin_addr.sin_family	= addr.sin_family;
 	darwin_addr.sin_port	= addr.sin_port;
 	darwin_addr.sin_addr	= addr.sin_addr;
-	darwin_addr.sin_len	= sizeof(S_SOCKADDR_IN);
+	darwin_addr.sin_len	= sizeof(darwin_addr);
 	memset(&darwin_addr.sin_zero, 0, sizeof(darwin_addr.sin_zero));
 #endif
             cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
