@@ -27,6 +27,16 @@
 #include "sys/socket.h"
 #include "cpu.h"
 
+#ifdef __APPLE__ // See guest-services/socket.h
+# define GNU 0
+# define ADDR addr
+# define ADDRLEN addrlen
+#else /* linux */
+# define GNU 1
+# define ADDR darwin_addr
+# define ADDRLEN darwin_addrlen
+#endif
+
 #define SOCKET_TIMEOUT_USECS (10)
 
 static int32_t find_free_socket(void) {
@@ -55,9 +65,13 @@ int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
     return retval;
 }
 
-int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                         socklen_t *g_addrlen)
+int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
+                         SOCKLEN_T *g_addrlen)
 {
+#if GNU
+    S_SOCKADDR_IN darwin_addr;
+    SOCKLEN_T darwin_addrlen;
+#endif
     struct sockaddr_in addr;
     socklen_t addrlen;
 
@@ -68,24 +82,45 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     // TODO: timeout
     if (retval < 0) {
         guest_svcs_errno = ENOTSOCK;
-    } else if ((guest_svcs_fds[retval] = accept(guest_svcs_fds[sckt],
+    } else if ((guest_svcs_fds[retval] =
+#if GNU
+                                         accept4(guest_svcs_fds[sckt],
                                          (struct sockaddr *) &addr,
-                                         &addrlen)) < 0) {
+                                         &addrlen, SOCK_NONBLOCK)) < 0)
+#else
+                                         accept(guest_svcs_fds[sckt],
+                                         (struct sockaddr *) &addr,
+                                         &addrlen)) < 0)
+#endif
+    {
         retval = -1;
         guest_svcs_errno = errno;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                            sizeof(addr), 1);
+
+#if GNU
+	darwin_addr.sin_family	= addr.sin_family;
+	darwin_addr.sin_port	= addr.sin_port;
+	darwin_addr.sin_addr	= addr.sin_addr;
+	darwin_addr.sin_len	= sizeof(darwin_addr);
+	memset(&darwin_addr.sin_zero, 0, sizeof(darwin_addr.sin_zero));
+
+	darwin_addrlen		= sizeof(S_SOCKADDR);
+#endif
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
+                            sizeof(ADDR), 1);
         cpu_memory_rw_debug(cpu, (target_ulong) g_addrlen,
-                            (uint8_t*) &addrlen, sizeof(addrlen), 1);
+                            (uint8_t*) &ADDRLEN, sizeof(ADDRLEN), 1);
     }
 
     return retval;
 }
 
-int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                       socklen_t addrlen)
+int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
+                       SOCKLEN_T addrlen)
 {
+#if GNU
+    S_SOCKADDR_IN darwin_addr;
+#endif
     struct sockaddr_in addr;
 
     VERIFY_FD(sckt);
@@ -95,24 +130,41 @@ int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     if (addrlen > sizeof(addr)) {
         guest_svcs_errno = ENOMEM;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                            sizeof(addr), 0);
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
+                            sizeof(ADDR), 0);
+#if GNU
+	addr.sin_family	= darwin_addr.sin_family;
+	addr.sin_port	= darwin_addr.sin_port;
+	addr.sin_addr	= darwin_addr.sin_addr;
+	memset(addr.sin_zero, 0, sizeof(addr.sin_zero));
 
+	addrlen 	= sizeof(struct sockaddr_in);
+#endif
         if ((retval = bind(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                            addrlen)) < 0) {
             guest_svcs_errno = errno;
         } else {
-            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                                sizeof(addr), 1);
+#if GNU
+	darwin_addr.sin_family	= addr.sin_family;
+	darwin_addr.sin_port	= addr.sin_port;
+	darwin_addr.sin_addr	= addr.sin_addr;
+	darwin_addr.sin_len	= sizeof(darwin_addr);
+	memset(&darwin_addr.sin_zero, 0, sizeof(darwin_addr.sin_zero));
+#endif
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
+                                sizeof(ADDR), 1);
         }
     }
 
     return retval;
 }
 
-int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
-                          socklen_t addrlen)
+int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
+                          SOCKLEN_T addrlen)
 {
+#if GNU
+    S_SOCKADDR_IN darwin_addr;
+#endif
     struct sockaddr_in addr;
 
     VERIFY_FD(sckt);
@@ -122,15 +174,29 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *g_addr,
     if (addrlen > sizeof(addr)) {
         guest_svcs_errno = ENOMEM;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                            sizeof(addr), 0);
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
+                            sizeof(ADDR), 0);
+#if GNU
+	addr.sin_family	= darwin_addr.sin_family;
+	addr.sin_port	= darwin_addr.sin_port;
+	addr.sin_addr	= darwin_addr.sin_addr;
+	memset(&addr.sin_zero, 0, sizeof(addr.sin_zero));
 
+	addrlen		= sizeof(struct sockaddr_in);
+#endif
         if ((retval = connect(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                             addrlen)) < 0) {
             guest_svcs_errno = errno;
         } else {
-            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
-                                sizeof(addr), 1);
+#if GNU
+	darwin_addr.sin_family	= addr.sin_family;
+	darwin_addr.sin_port	= addr.sin_port;
+	darwin_addr.sin_addr	= addr.sin_addr;
+	darwin_addr.sin_len	= sizeof(S_SOCKADDR_IN);
+	memset(&darwin_addr.sin_zero, 0, sizeof(darwin_addr.sin_zero));
+#endif
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
+                                sizeof(ADDR), 1);
         }
     }
 

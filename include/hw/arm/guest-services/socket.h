@@ -32,6 +32,39 @@
 #include "sys/socket.h"
 #endif
 
+#ifdef __APPLE__
+#define S_SOCKADDR	struct sockaddr
+#define S_SOCKADDR_IN	struct sockaddr_in
+#define SOCKLEN_T	socklen_t
+#else /* __linux__ */
+/* XXX: A lot of this is defined by the standard.
+	But doesn't hurt to ensure Darwin/BSD lengths.
+
+- in_addr_t should be uint32 on all systems:
+typedef unsigned int            in_addr_t;
+struct in_addr {
+	in_addr_t s_addr;
+};
+*/
+struct darwin_sockaddr {
+	unsigned char	sa_len;
+	unsigned char	sa_family;
+	char		sa_data[14];
+};
+struct darwin_sockaddr_in {
+	unsigned char   sin_len;
+	unsigned char   sin_family;
+	unsigned short	sin_port;
+	struct in_addr	sin_addr;
+	char		sin_zero[8];
+};
+typedef unsigned int darwin_socklen_t;
+
+#define S_SOCKADDR	struct darwin_sockaddr
+#define S_SOCKADDR_IN	struct darwin_sockaddr_in
+#define SOCKLEN_T	darwin_socklen_t
+#endif
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 extern int32_t guest_svcs_errno;
@@ -47,14 +80,14 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     int32_t socket;
-    struct sockaddr *addr;
-    socklen_t *addrlen;
+    S_SOCKADDR *addr;
+    SOCKLEN_T *addrlen;
 } qc_accept_args_t;
 
 typedef struct __attribute__((packed)) {
     int32_t socket;
-    struct sockaddr *addr;
-    socklen_t addrlen;
+    S_SOCKADDR *addr;
+    SOCKLEN_T addrlen;
 } qc_bind_args_t, qc_connect_args_t;
 
 typedef struct __attribute__((packed)) {
@@ -72,12 +105,12 @@ typedef struct __attribute__((packed)) {
 #ifndef OUT_OF_TREE_BUILD
 int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
                          int32_t protocol);
-int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
-                         socklen_t *addrlen);
-int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
-                       socklen_t addrlen);
-int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct sockaddr *addr,
-                          socklen_t addrlen);
+int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *addr,
+                         SOCKLEN_T *addrlen);
+int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, S_SOCKADDR *addr,
+                       SOCKLEN_T addrlen);
+int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *addr,
+                          SOCKLEN_T addrlen);
 int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog);
 int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *buffer,
                        size_t length, int32_t flags);
