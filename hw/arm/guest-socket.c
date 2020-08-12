@@ -41,23 +41,37 @@ static int32_t find_free_socket(void) {
 }
 
 
-/* NETWORK_HACK:
+#ifndef __APPLE__
+/* convert_sockaddr_from/to darwin:
     See `guest-services/socket.h`:
-    Darwin still uses `sin_len` in sockaddr,
-     causing errors when copying memory from iOS.
+    * Darwin still uses `sin_len` in sockaddr,
+        causing errors when copying memory from iOS.
 */
-#ifdef __APPLE__
-# define ADDR addr
-# undef NETWORK_HACK
-#else /* Linux, etc. */
-# define ADDR darwin_addr
-# define NETWORK_HACK 1
+static struct sockaddr_in convert_sockaddr_from_darwin(struct darwin_sockaddr_in from) {
+    return (struct sockaddr_in) {
+        from.sin_family,
+        from.sin_port,
+        from.sin_addr,
+        { [0 ... sizeof(from.sin_zero) - 1] = 0 } };
+}
+
+static struct darwin_sockaddr_in convert_sockaddr_to_darwin(struct sockaddr_in from) {
+    return (struct darwin_sockaddr_in) {
+        sizeof(from),
+        from.sin_family,
+        from.sin_port,
+        from.sin_addr,
+        { [0 ... sizeof(from.sin_zero) - 1] = 0 } };
+}
 #endif
 
-static int convert_error(int err) {
-#ifndef NETWORK_HACK
-     return err;
-#else /* linux */
+/* darwin_error:
+    At compile-time, redefine what errors mean to tcp-tunnel before sending them.
+*/
+static int darwin_error(int err) {
+#ifdef __APPLE__
+    return err;
+#else
     int result;
 
     switch(err) {
@@ -69,41 +83,12 @@ static int convert_error(int err) {
 /*      case EDEADLOCK: */
             result = 11;
             break;
-        /* case {...}: */
         default:
             result = err;
             break;
-   }
-   return result;
-#endif
-}
+       }
 
-static struct sockaddr_in convert_sockaddr_to(S_SOCKADDR_IN from) {
-#ifndef NETWORK_HACK
-    return from;
-#else
-    struct sockaddr_in to;
-    to.sin_family   = from.sin_family;
-    to.sin_port     = from.sin_port;
-    to.sin_addr     = from.sin_addr;
-    memset(&to.sin_zero, 0, sizeof(to.sin_zero));
-
-    return to;
-#endif
-}
-
-static S_SOCKADDR_IN convert_sockaddr_from(struct sockaddr_in from) {
-#ifndef NETWORK_HACK
-    return from;
-#else
-    S_SOCKADDR_IN to;
-    to.sin_family   = from.sin_family;
-    to.sin_port     = from.sin_port;
-    to.sin_addr     = from.sin_addr;
-    to.sin_len      = sizeof(to);
-    memset(&to.sin_zero, 0, sizeof(to.sin_zero));
-
-    return to;
+    return result;
 #endif
 }
 
@@ -117,19 +102,18 @@ int32_t qc_handle_socket(CPUState *cpu, int32_t domain, int32_t type,
         guest_svcs_errno = ENOTSOCK;
     } else if ((guest_svcs_fds[retval] = socket(domain, type, protocol)) < 0) {
         retval = -1;
-        guest_svcs_errno = convert_error(errno);
+        guest_svcs_errno = darwin_error(errno);
     }
 
     return retval;
 }
 
-int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
-                         SOCKLEN_T *g_addrlen)
+int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct SOCKADDR *g_addr,
+                         socklen_t *g_addrlen)
 {
     struct sockaddr_in addr;
-    SOCKLEN_T addrlen;
+    socklen_t addrlen = sizeof(addr);
 
-    addrlen = sizeof(addr);
     VERIFY_FD(sckt);
 
     int retval = find_free_socket();
@@ -138,7 +122,7 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
     if (retval < 0) {
         guest_svcs_errno = ENOTSOCK;
     } else if ((guest_svcs_fds[retval] =
-#ifdef NETWORK_HACK
+#ifndef __APPLE__
                                          accept4(guest_svcs_fds[sckt],
                                          (struct sockaddr *) &addr,
                                          &addrlen, SOCK_NONBLOCK)) < 0)
@@ -149,13 +133,15 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
 #endif
     {
         retval = -1;
-        guest_svcs_errno = convert_error(errno);
+        guest_svcs_errno = darwin_error(errno);
     } else {
-#ifdef NETWORK_HACK
-        S_SOCKADDR_IN ADDR = convert_sockaddr_from(addr);
+#ifndef __APPLE__
+        struct darwin_sockaddr_in darwin_addr = convert_sockaddr_to_darwin(addr);
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
+                                    sizeof(darwin_addr), 1);
 #endif
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
-                            sizeof(ADDR), 1);
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                            sizeof(addr), 1);
         cpu_memory_rw_debug(cpu, (target_ulong) g_addrlen,
                             (uint8_t*) &addrlen, sizeof(addrlen), 1);
     }
@@ -163,12 +149,12 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
     return retval;
 }
 
-int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
-                       SOCKLEN_T addrlen)
+int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, struct SOCKADDR *g_addr,
+                       socklen_t addrlen)
 {
     struct sockaddr_in addr;
-#ifdef NETWORK_HACK
-    S_SOCKADDR_IN ADDR;
+#ifndef __APPLE__
+    struct darwin_sockaddr_in darwin_addr;
 #endif
 
     VERIFY_FD(sckt);
@@ -178,33 +164,38 @@ int32_t qc_handle_bind(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
     if (addrlen > sizeof(addr)) {
         guest_svcs_errno = ENOMEM;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
-                            sizeof(ADDR), 0);
-
-#ifdef NETWORK_HACK
-        addr = convert_sockaddr_to(ADDR);
+#ifndef __APPLE__
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
+                                    sizeof(darwin_addr), 0);
+        addr = convert_sockaddr_from_darwin(darwin_addr);
+#else
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                                    sizeof(addr), 0);
 #endif
         if ((retval = bind(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                            addrlen)) < 0) {
-            guest_svcs_errno = convert_error(errno);
+            guest_svcs_errno = darwin_error(errno);
         } else {
-#ifdef NETWORK_HACK
-            ADDR = convert_sockaddr_from(addr);
+#ifndef __APPLE__
+            darwin_addr = convert_sockaddr_to_darwin(addr);
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
+                                            sizeof(darwin_addr), 1);
+#else
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                                sizeof(addr), 1);
 #endif
-            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
-                                sizeof(ADDR), 1);
         }
     }
 
     return retval;
 }
 
-int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
-                          SOCKLEN_T addrlen)
+int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, struct SOCKADDR *g_addr,
+                          socklen_t addrlen)
 {
     struct sockaddr_in addr;
-#ifdef NETWORK_HACK
-    S_SOCKADDR_IN ADDR;
+#ifndef __APPLE__
+    struct darwin_sockaddr_in darwin_addr;
 #endif
 
     VERIFY_FD(sckt);
@@ -214,20 +205,26 @@ int32_t qc_handle_connect(CPUState *cpu, int32_t sckt, S_SOCKADDR *g_addr,
     if (addrlen > sizeof(addr)) {
         guest_svcs_errno = ENOMEM;
     } else {
-        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &ADDR,
-                            sizeof(ADDR), 0);
-#ifdef NETWORK_HACK
-        addr = convert_sockaddr_to(ADDR);
+#ifndef __APPLE__
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
+                            sizeof(darwin_addr), 0);
+        addr = convert_sockaddr_from_darwin(darwin_addr);
+#else
+        cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
+                            sizeof(addr), 0);
 #endif
         if ((retval = connect(guest_svcs_fds[sckt], (struct sockaddr *) &addr,
                             addrlen)) < 0) {
-            guest_svcs_errno = convert_error(errno);
+            guest_svcs_errno = darwin_error(errno);
         } else {
-#ifdef NETWORK_HACK
-            ADDR = convert_sockaddr_from(addr);
-#endif
+#ifndef __APPLE__
+            darwin_addr = convert_sockaddr_to_darwin(addr);
+            cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
+                                            sizeof(darwin_addr), 1);
+#else
             cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &addr,
                                 sizeof(addr), 1);
+#endif
         }
     }
 
@@ -241,7 +238,7 @@ int32_t qc_handle_listen(CPUState *cpu, int32_t sckt, int32_t backlog)
     int retval = 0;
 
     if ((retval = listen(guest_svcs_fds[sckt], backlog)) < 0) {
-        guest_svcs_errno = convert_error(errno);
+        guest_svcs_errno = darwin_error(errno);
     }
 
     return retval;
@@ -259,7 +256,7 @@ int32_t qc_handle_recv(CPUState *cpu, int32_t sckt, void *g_buffer,
     if (length > MAX_BUF_SIZE) {
         guest_svcs_errno = ENOMEM;
     } else if ((retval = recv(guest_svcs_fds[sckt], buffer, length, flags)) <= 0) {
-        guest_svcs_errno = convert_error(errno);
+        guest_svcs_errno = darwin_error(errno);
     } else {
         cpu_memory_rw_debug(cpu, (target_ulong) g_buffer, buffer, retval, 1);
     }
@@ -281,7 +278,7 @@ int32_t qc_handle_send(CPUState *cpu, int32_t sckt, void *g_buffer,
         cpu_memory_rw_debug(cpu, (target_ulong) g_buffer, buffer, length, 0);
 
         if ((retval = send(guest_svcs_fds[sckt], buffer, length, flags)) < 0) {
-            guest_svcs_errno = convert_error(errno);
+            guest_svcs_errno = darwin_error(errno);
         }
     }
 
