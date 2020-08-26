@@ -121,21 +121,25 @@ int32_t qc_handle_accept(CPUState *cpu, int32_t sckt, struct SOCKADDR *g_addr,
     // TODO: timeout
     if (retval < 0) {
         guest_svcs_errno = ENOTSOCK;
-    } else if ((guest_svcs_fds[retval] =
-#ifndef __APPLE__
-                                         accept4(guest_svcs_fds[sckt],
+    } else if ((guest_svcs_fds[retval] = accept(guest_svcs_fds[sckt],
                                          (struct sockaddr *) &addr,
-                                         &addrlen, SOCK_NONBLOCK)) < 0)
-#else
-                                         accept(guest_svcs_fds[sckt],
-                                         (struct sockaddr *) &addr,
-                                         &addrlen)) < 0)
-#endif
-    {
+                                         &addrlen)) < 0) {
         retval = -1;
         guest_svcs_errno = darwin_error(errno);
     } else {
 #ifndef __APPLE__
+        /* XXX:
+            On Linux, the new socket returned by accept() does not inherit file
+            status flags such as O_NONBLOCK and O_ASYNC from the listening socket.
+        */
+
+        if ((fcntl(guest_svcs_fds[retval], F_SETFL, fcntl(guest_svcs_fds[sckt], F_GETFL) | O_NONBLOCK)) < 0) {
+            retval = -1;
+            guest_svcs_errno = darwin_error(errno);
+
+            return retval;
+        }
+
         struct darwin_sockaddr_in darwin_addr = convert_sockaddr_to_darwin(addr);
         cpu_memory_rw_debug(cpu, (target_ulong) g_addr, (uint8_t*) &darwin_addr,
                                     sizeof(darwin_addr), 1);
