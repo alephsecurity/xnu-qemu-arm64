@@ -426,6 +426,105 @@ static void n66_cpu_reset(void *opaque)
     env->pc = nms->kpc_pa;
 }
 
+//hooks arg is expected like this:
+//"hookfilepath@va@scratch_reg#hookfilepath@va@scratch_reg#..."
+
+static void n66_machine_init_hook_funcs(N66MachineState *nms,
+                                        AddressSpace *nsas)
+{
+    AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
+    uint64_t i = 0;
+    char *orig_pos = NULL;
+    size_t orig_len = 0;
+    char *pos = NULL;
+    char *next_pos = NULL;
+    size_t len = 0;
+    char *elem = NULL;
+    char *next_elem = NULL;
+    size_t elem_len = 0;
+    char *end;
+
+    //ugly solution but a simple one for now, use this memory which is fixed at
+    //(pa: 0x0000000049BF4C00 va: 0xFFFFFFF009BF4C00) for globals to be common
+    //between drivers/hooks. Please adjust address if anything changes in
+    //the layout of the memory the "boot loader" sets up
+    uint64_t zero_var = 0;
+    address_space_rw(nsas, (hwaddr)&allocated_data->hook_globals[0],
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&zero_var,
+                     sizeof(zero_var), 1);
+
+    nms->hook_funcs_count = 0;
+
+    pos = &nms->hook_funcs_cfg[0];
+    if ((NULL == pos) || (0 == strlen(pos))) {
+        //fprintf(stderr, "no function hooks configured\n");
+        return;
+    }
+
+    orig_pos = pos;
+    orig_len = strlen(pos);
+
+    do {
+        next_pos = memchr(pos, '#', strlen(pos));
+        if (NULL != next_pos) {
+            len = next_pos - pos;
+        } else {
+            len = strlen(pos);
+        }
+
+        elem = pos;
+        next_elem = memchr(elem, '@', len);
+        if (NULL == next_elem) {
+            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
+            abort();
+        }
+        elem_len = next_elem - elem;
+        elem[elem_len] = 0;
+
+        uint8_t *code = NULL;
+        size_t size = 0;
+        if (!g_file_get_contents(elem, (char **)&code, &size, NULL)) {
+            fprintf(stderr, "hook[%llu] failed to read filepath: %s\n",
+                    i, elem);
+            abort();
+        }
+
+        elem += elem_len + 1;
+        next_elem = memchr(elem, '@', len);
+        if (NULL == next_elem) {
+            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
+            abort();
+        }
+        elem_len = next_elem - elem;
+        elem[elem_len] = 0;
+
+        nms->hook_funcs[i].va = strtoull(elem, &end, 16);
+        nms->hook_funcs[i].pa = vtop_static(nms->hook_funcs[i].va);
+        nms->hook_funcs[i].buf_va =
+                   ptov_static((hwaddr)&allocated_data->hook_funcs_code[i][0]);
+        nms->hook_funcs[i].buf_pa =
+                                (hwaddr)&allocated_data->hook_funcs_code[i][0];
+        nms->hook_funcs[i].buf_size = HOOK_CODE_ALLOC_SIZE;
+        nms->hook_funcs[i].code = (uint8_t *)code;
+        nms->hook_funcs[i].code_size = size;
+
+        elem += elem_len + 1;
+        if (NULL != next_pos) {
+            elem_len = next_pos - elem;
+        } else {
+            elem_len = strlen(elem);
+        }
+        elem[elem_len] = 0;
+
+        nms->hook_funcs[i].scratch_reg = (uint8_t)strtoul(elem, &end, 10);
+
+        i++;
+        pos += len + 1;
+    } while ((NULL != pos) && (pos < (orig_pos + orig_len)));
+
+    nms->hook_funcs_count = i;
+}
+
 static void n66_machine_init(MachineState *machine)
 {
     N66MachineState *nms = N66_MACHINE(machine);
@@ -472,6 +571,12 @@ static void n66_machine_init(MachineState *machine)
     if (0 != nms->qc_file_1_filename[0]) {
         qc_file_open(1, &nms->qc_file_1_filename[0]);
     }
+
+    if (0 != nms->qc_file_log_filename[0]) {
+        qc_file_open(2, &nms->qc_file_log_filename[0]);
+    }
+
+    n66_machine_init_hook_funcs(nms, nsas);
 
     n66_add_cpregs(nms);
 
@@ -557,6 +662,19 @@ static char *n66_get_tunnel_port(Object *obj, Error **errp)
     return g_strdup(buf);
 }
 
+static void n66_set_hook_funcs(Object *obj, const char *value, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+
+    g_strlcpy(nms->hook_funcs_cfg, value, sizeof(nms->hook_funcs_cfg));
+}
+
+static char *n66_get_hook_funcs(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    return g_strdup(nms->hook_funcs_cfg);
+}
+
 static void n66_set_driver_filename(Object *obj, const char *value,
                                     Error **errp)
 {
@@ -570,6 +688,7 @@ static char *n66_get_driver_filename(Object *obj, Error **errp)
     N66MachineState *nms = N66_MACHINE(obj);
     return g_strdup(nms->driver_filename);
 }
+
 static void n66_set_qc_file_0_filename(Object *obj, const char *value,
                                        Error **errp)
 {
@@ -596,6 +715,21 @@ static char *n66_get_qc_file_1_filename(Object *obj, Error **errp)
 {
     N66MachineState *nms = N66_MACHINE(obj);
     return g_strdup(nms->qc_file_1_filename);
+}
+
+static void n66_set_qc_file_log_filename(Object *obj, const char *value,
+                                       Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+
+    g_strlcpy(nms->qc_file_log_filename, value,
+              sizeof(nms->qc_file_log_filename));
+}
+
+static char *n66_get_qc_file_log_filename(Object *obj, Error **errp)
+{
+    N66MachineState *nms = N66_MACHINE(obj);
+    return g_strdup(nms->qc_file_log_filename);
 }
 
 static void n66_set_xnu_ramfb(Object *obj, const char *value,
@@ -653,6 +787,12 @@ static void n66_instance_init(Object *obj)
                                     "Set the port for the tunnel connection",
                                     NULL);
 
+    object_property_add_str(obj, "hook-funcs", n66_get_hook_funcs,
+                            n66_set_hook_funcs, NULL);
+    object_property_set_description(obj, "hook-funcs",
+                                    "Set the hook funcs to be loaded",
+                                    NULL);
+
     object_property_add_str(obj, "driver-filename", n66_get_driver_filename,
                             n66_set_driver_filename, NULL);
     object_property_set_description(obj, "driver-filename",
@@ -671,6 +811,13 @@ static void n66_instance_init(Object *obj)
                             n66_set_qc_file_1_filename, NULL);
     object_property_set_description(obj, "qc-file-1-filename",
                                     "Set the qc file 1 filename to be loaded",
+                                    NULL);
+
+    object_property_add_str(obj, "qc-file-log-filename",
+                            n66_get_qc_file_log_filename,
+                            n66_set_qc_file_log_filename, NULL);
+    object_property_set_description(obj, "qc-file-log-filename",
+                                   "Set the qc file log filename to be loaded",
                                     NULL);
 
     object_property_add_str(obj, "xnu-ramfb",

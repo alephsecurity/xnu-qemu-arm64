@@ -48,6 +48,9 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
     CPUState *cpu = qemu_get_cpu(0);
     qemu_call_t qcall;
+    uint64_t i = 0;
+
+    static uint8_t hooks_installed = false;
 
     if (!value) {
         // Special case: not a regular QEMU call. This is used by our
@@ -66,9 +69,24 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 
         }
 
+        if (!hooks_installed) {
+            for (i = 0; i < nms->hook_funcs_count; i++) {
+                xnu_hook_tr_copy_install(nms->hook_funcs[i].va,
+                                         nms->hook_funcs[i].pa,
+                                         nms->hook_funcs[i].buf_va,
+                                         nms->hook_funcs[i].buf_pa,
+                                         nms->hook_funcs[i].code,
+                                         nms->hook_funcs[i].code_size,
+                                         nms->hook_funcs[i].buf_size,
+                                         nms->hook_funcs[i].scratch_reg);
+            }
+            hooks_installed = true;
+        }
+
         //emulate original opcode: str x20, [x23]
         value = env->xregs[20];
-        cpu_memory_rw_debug(cpu, env->xregs[23], (uint8_t*) &value, sizeof(value), 1);
+        cpu_memory_rw_debug(cpu, env->xregs[23], (uint8_t*) &value,
+                            sizeof(value), 1);
 
         return;
     }

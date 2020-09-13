@@ -45,6 +45,7 @@ int64_t qc_handle_write_file(CPUState *cpu, uint64_t buffer_guest_ptr,
                              uint64_t length, uint64_t offset, uint64_t index)
 {
     uint8_t buf[MAX_FILE_TRANSACTION_LEN];
+
     if (index >= MAX_FILE_FDS) {
         abort();
     }
