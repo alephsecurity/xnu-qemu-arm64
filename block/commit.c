@@ -43,27 +43,6 @@ typedef struct CommitBlockJob {
     char *backing_file_str;
 } CommitBlockJob;
 
-static int coroutine_fn commit_populate(BlockBackend *bs, BlockBackend *base,
-                                        int64_t offset, uint64_t bytes,
-                                        void *buf)
-{
-    int ret = 0;
-
-    assert(bytes < SIZE_MAX);
-
-    ret = blk_co_pread(bs, offset, bytes, buf, 0);
-    if (ret < 0) {
-        return ret;
-    }
-
-    ret = blk_co_pwrite(base, offset, bytes, buf, 0);
-    if (ret < 0) {
-        return ret;
-    }
-
-    return 0;
-}
-
 static int commit_prepare(Job *job)
 {
     CommitBlockJob *s = container_of(job, CommitBlockJob, common.job);
@@ -140,7 +119,6 @@ static int coroutine_fn commit_run(Job *job, Error **errp)
     int ret = 0;
     int64_t n = 0; /* bytes */
     void *buf = NULL;
-    int bytes_written = 0;
     int64_t len, base_len;
 
     ret = len = blk_getlength(s->top);
@@ -155,7 +133,7 @@ static int coroutine_fn commit_run(Job *job, Error **errp)
     }
 
     if (base_len < len) {
-        ret = blk_truncate(s->base, len, false, PREALLOC_MODE_OFF, NULL);
+        ret = blk_truncate(s->base, len, false, PREALLOC_MODE_OFF, 0, NULL);
         if (ret) {
             goto out;
         }
@@ -165,6 +143,7 @@ static int coroutine_fn commit_run(Job *job, Error **errp)
 
     for (offset = 0; offset < len; offset += n) {
         bool copy;
+        bool error_in_source = true;
 
         /* Note that even when no rate limit is applied we need to yield
          * with no pending I/O here so that bdrv_drain_all() returns.
@@ -179,12 +158,20 @@ static int coroutine_fn commit_run(Job *job, Error **errp)
         copy = (ret == 1);
         trace_commit_one_iteration(s, offset, n, ret);
         if (copy) {
-            ret = commit_populate(s->top, s->base, offset, n, buf);
-            bytes_written += n;
+            assert(n < SIZE_MAX);
+
+            ret = blk_co_pread(s->top, offset, n, buf, 0);
+            if (ret >= 0) {
+                ret = blk_co_pwrite(s->base, offset, n, buf, 0);
+                if (ret < 0) {
+                    error_in_source = false;
+                }
+            }
         }
         if (ret < 0) {
             BlockErrorAction action =
-                block_job_error_action(&s->common, false, s->on_error, -ret);
+                block_job_error_action(&s->common, s->on_error,
+                                       error_in_source, -ret);
             if (action == BLOCK_ERROR_ACTION_REPORT) {
                 goto out;
             } else {
@@ -236,7 +223,7 @@ static void bdrv_commit_top_refresh_filename(BlockDriverState *bs)
 }
 
 static void bdrv_commit_top_child_perm(BlockDriverState *bs, BdrvChild *c,
-                                       const BdrvChildRole *role,
+                                       BdrvChildRole role,
                                        BlockReopenQueue *reopen_queue,
                                        uint64_t perm, uint64_t shared,
                                        uint64_t *nperm, uint64_t *nshared)
@@ -253,6 +240,8 @@ static BlockDriver bdrv_commit_top = {
     .bdrv_co_block_status       = bdrv_co_block_status_from_backing,
     .bdrv_refresh_filename      = bdrv_commit_top_refresh_filename,
     .bdrv_child_perm            = bdrv_commit_top_child_perm,
+
+    .is_filter                  = true,
 };
 
 void commit_start(const char *job_id, BlockDriverState *bs,
@@ -427,7 +416,9 @@ int bdrv_commit(BlockDriverState *bs)
     }
 
     ctx = bdrv_get_aio_context(bs);
-    src = blk_new(ctx, BLK_PERM_CONSISTENT_READ, BLK_PERM_ALL);
+    /* WRITE_UNCHANGED is required for bdrv_make_empty() */
+    src = blk_new(ctx, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE_UNCHANGED,
+                  BLK_PERM_ALL);
     backing = blk_new(ctx, BLK_PERM_WRITE | BLK_PERM_RESIZE, BLK_PERM_ALL);
 
     ret = blk_insert_bs(src, bs, &local_err);
@@ -471,7 +462,7 @@ int bdrv_commit(BlockDriverState *bs)
      * grow the backing file image if possible.  If not possible,
      * we must return an error */
     if (length > backing_length) {
-        ret = blk_truncate(backing, length, false, PREALLOC_MODE_OFF,
+        ret = blk_truncate(backing, length, false, PREALLOC_MODE_OFF, 0,
                            &local_err);
         if (ret < 0) {
             error_report_err(local_err);
@@ -505,13 +496,13 @@ int bdrv_commit(BlockDriverState *bs)
         }
     }
 
-    if (drv->bdrv_make_empty) {
-        ret = drv->bdrv_make_empty(bs);
-        if (ret < 0) {
-            goto ro_cleanup;
-        }
-        blk_flush(src);
+    ret = blk_make_empty(src, NULL);
+    /* Ignore -ENOTSUP */
+    if (ret < 0 && ret != -ENOTSUP) {
+        goto ro_cleanup;
     }
+
+    blk_flush(src);
 
     /*
      * Make sure all data we wrote to the backing device is actually

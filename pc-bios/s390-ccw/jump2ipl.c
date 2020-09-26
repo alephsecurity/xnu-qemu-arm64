@@ -8,15 +8,13 @@
 
 #include "libc.h"
 #include "s390-ccw.h"
+#include "s390-arch.h"
 
 #define KERN_IMAGE_START 0x010000UL
-#define PSW_MASK_64 0x0000000100000000ULL
-#define PSW_MASK_32 0x0000000080000000ULL
-#define IPL_PSW_MASK (PSW_MASK_32 | PSW_MASK_64)
+#define RESET_PSW_MASK (PSW_MASK_SHORTPSW | PSW_MASK_64)
 
 typedef struct ResetInfo {
-    uint32_t ipl_mask;
-    uint32_t ipl_addr;
+    uint64_t ipl_psw;
     uint32_t ipl_continue;
 } ResetInfo;
 
@@ -35,6 +33,7 @@ void jump_to_IPL_code(uint64_t address)
 {
     /* store the subsystem information _after_ the bootmap was loaded */
     write_subsystem_identification();
+    write_iplb_location();
 
     /* prevent unknown IPL types in the guest */
     if (iplb.pbt == S390_IPL_TYPE_QEMU_SCSI) {
@@ -50,8 +49,10 @@ void jump_to_IPL_code(uint64_t address)
     ResetInfo *current = 0;
 
     save = *current;
-    current->ipl_addr = (uint32_t) (uint64_t) &jump_to_IPL_2;
-    current->ipl_continue = address & 0x7fffffff;
+
+    current->ipl_psw = (uint64_t) &jump_to_IPL_2;
+    current->ipl_psw |= RESET_PSW_MASK;
+    current->ipl_continue = address & PSW_MASK_SHORT_ADDR;
 
     debug_print_int("set IPL addr to", current->ipl_continue);
 
@@ -82,8 +83,8 @@ void jump_to_low_kernel(void)
     }
 
     /* Trying to get PSW at zero address */
-    if (*((uint64_t *)0) & IPL_PSW_MASK) {
-        jump_to_IPL_code((*((uint64_t *)0)) & 0x7fffffff);
+    if (*((uint64_t *)0) & RESET_PSW_MASK) {
+        jump_to_IPL_code((*((uint64_t *)0)) & PSW_MASK_SHORT_ADDR);
     }
 
     /* No other option left, so use the Linux kernel start address */

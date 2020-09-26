@@ -106,7 +106,7 @@ static inline bool read_table_entry(CPUS390XState *env, hwaddr gaddr,
      * We treat them as absolute addresses and don't wrap them.
      */
     if (unlikely(address_space_read(cs->as, gaddr, MEMTXATTRS_UNSPECIFIED,
-                                    (uint8_t *)entry, sizeof(*entry)) !=
+                                    entry, sizeof(*entry)) !=
                  MEMTX_OK)) {
         return false;
     }
@@ -472,6 +472,20 @@ static int translate_pages(S390CPU *cpu, vaddr addr, int nr_pages,
     }
 
     return 0;
+}
+
+int s390_cpu_pv_mem_rw(S390CPU *cpu, unsigned int offset, void *hostbuf,
+                       int len, bool is_write)
+{
+    int ret;
+
+    if (kvm_enabled()) {
+        ret = kvm_s390_mem_op_pv(cpu, offset, hostbuf, len, is_write);
+    } else {
+        /* Protected Virtualization is a KVM/Hardware only feature */
+        g_assert_not_reached();
+    }
+    return ret;
 }
 
 /**

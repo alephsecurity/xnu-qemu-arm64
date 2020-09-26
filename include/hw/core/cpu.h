@@ -79,7 +79,6 @@ struct TranslationBlock;
  * @class_by_name: Callback to map -cpu command line model name to an
  * instantiatable CPU type.
  * @parse_features: Callback to parse command line arguments.
- * @reset: Callback to reset the #CPUState to its initial state.
  * @reset_dump_flags: #CPUDumpFlags to use for reset logging.
  * @has_work: Callback for checking if there is work to do.
  * @do_interrupt: Callback for interrupt handling.
@@ -165,7 +164,6 @@ typedef struct CPUClass {
     ObjectClass *(*class_by_name)(const char *cpu_model);
     void (*parse_features)(const char *typename, char *str, Error **errp);
 
-    void (*reset)(CPUState *cpu);
     int reset_dump_flags;
     bool (*has_work)(CPUState *cpu);
     void (*do_interrupt)(CPUState *cpu);
@@ -195,7 +193,7 @@ typedef struct CPUClass {
     hwaddr (*get_phys_page_attrs_debug)(CPUState *cpu, vaddr addr,
                                         MemTxAttrs *attrs);
     int (*asidx_from_attrs)(CPUState *cpu, MemTxAttrs attrs);
-    int (*gdb_read_register)(CPUState *cpu, uint8_t *buf, int reg);
+    int (*gdb_read_register)(CPUState *cpu, GByteArray *buf, int reg);
     int (*gdb_write_register)(CPUState *cpu, uint8_t *buf, int reg);
     bool (*debug_check_watchpoint)(CPUState *cpu, CPUWatchpoint *wp);
     void (*debug_excp_handler)(CPUState *cpu);
@@ -260,6 +258,18 @@ struct CPUWatchpoint {
     int flags; /* BP_* */
     QTAILQ_ENTRY(CPUWatchpoint) entry;
 };
+
+#ifdef CONFIG_PLUGIN
+/*
+ * For plugins we sometime need to save the resolved iotlb data before
+ * the memory regions get moved around  by io_writex.
+ */
+typedef struct SavedIOTLB {
+    hwaddr addr;
+    MemoryRegionSection *section;
+    hwaddr mr_offset;
+} SavedIOTLB;
+#endif
 
 struct KVMState;
 struct kvm_run;
@@ -333,8 +343,8 @@ struct qemu_work_item;
  * @opaque: User data.
  * @mem_io_pc: Host Program Counter at which the memory was accessed.
  * @kvm_fd: vCPU file descriptor for KVM.
- * @work_mutex: Lock to prevent multiple access to queued_work_*.
- * @queued_work_first: First asynchronous work pending.
+ * @work_mutex: Lock to prevent multiple access to @work_list.
+ * @work_list: List of pending asynchronous work.
  * @trace_dstate_delayed: Delayed changes to trace_dstate (includes all changes
  *                        to @trace_dstate).
  * @trace_dstate: Dynamic tracing state of events for this vCPU (bitmask).
@@ -378,7 +388,7 @@ struct CPUState {
     sigjmp_buf jmp_env;
 
     QemuMutex work_mutex;
-    struct qemu_work_item *queued_work_first, *queued_work_last;
+    QSIMPLEQ_HEAD(, qemu_work_item) work_list;
 
     CPUAddressSpace *cpu_ases;
     int num_ases;
@@ -419,7 +429,11 @@ struct CPUState {
 
     DECLARE_BITMAP(plugin_mask, QEMU_PLUGIN_EV_MAX);
 
+#ifdef CONFIG_PLUGIN
     GArray *plugin_mem_cbs;
+    /* saved iotlb data from io_writex */
+    SavedIOTLB saved_iotlb;
+#endif
 
     /* TODO Move common fields from CPUArchState here. */
     int cpu_index;
@@ -492,6 +506,8 @@ bool cpu_paging_enabled(const CPUState *cpu);
 void cpu_get_memory_mapping(CPUState *cpu, MemoryMappingList *list,
                             Error **errp);
 
+#if !defined(CONFIG_USER_ONLY)
+
 /**
  * cpu_write_elf64_note:
  * @f: pointer to a function that writes memory to a file
@@ -540,6 +556,8 @@ int cpu_write_elf32_qemunote(WriteCoreDumpFunction f, CPUState *cpu,
  * Caller is responsible for freeing the data.
  */
 GuestPanicInformation *cpu_get_crash_info(CPUState *cpu);
+
+#endif /* !CONFIG_USER_ONLY */
 
 /**
  * CPUDumpFlags:
@@ -634,7 +652,8 @@ static inline int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs)
     }
     return ret;
 }
-#endif
+
+#endif /* CONFIG_USER_ONLY */
 
 /**
  * cpu_list_add:
@@ -818,43 +837,6 @@ bool cpu_exists(int64_t id);
  * Returns: The CPU or %NULL if there is no matching CPU.
  */
 CPUState *cpu_by_arch_id(int64_t id);
-
-/**
- * cpu_throttle_set:
- * @new_throttle_pct: Percent of sleep time. Valid range is 1 to 99.
- *
- * Throttles all vcpus by forcing them to sleep for the given percentage of
- * time. A throttle_percentage of 25 corresponds to a 75% duty cycle roughly.
- * (example: 10ms sleep for every 30ms awake).
- *
- * cpu_throttle_set can be called as needed to adjust new_throttle_pct.
- * Once the throttling starts, it will remain in effect until cpu_throttle_stop
- * is called.
- */
-void cpu_throttle_set(int new_throttle_pct);
-
-/**
- * cpu_throttle_stop:
- *
- * Stops the vcpu throttling started by cpu_throttle_set.
- */
-void cpu_throttle_stop(void);
-
-/**
- * cpu_throttle_active:
- *
- * Returns: %true if the vcpus are currently being throttled, %false otherwise.
- */
-bool cpu_throttle_active(void);
-
-/**
- * cpu_throttle_get_percentage:
- *
- * Returns the vcpu throttle percentage. See cpu_throttle_set for details.
- *
- * Returns: The throttle percentage in range 1 to 99.
- */
-int cpu_throttle_get_percentage(void);
 
 #ifndef CONFIG_USER_ONLY
 
@@ -1102,8 +1084,31 @@ int cpu_watchpoint_remove(CPUState *cpu, vaddr addr,
                           vaddr len, int flags);
 void cpu_watchpoint_remove_by_ref(CPUState *cpu, CPUWatchpoint *watchpoint);
 void cpu_watchpoint_remove_all(CPUState *cpu, int mask);
+
+/**
+ * cpu_check_watchpoint:
+ * @cpu: cpu context
+ * @addr: guest virtual address
+ * @len: access length
+ * @attrs: memory access attributes
+ * @flags: watchpoint access type
+ * @ra: unwind return address
+ *
+ * Check for a watchpoint hit in [addr, addr+len) of the type
+ * specified by @flags.  Exit via exception with a hit.
+ */
 void cpu_check_watchpoint(CPUState *cpu, vaddr addr, vaddr len,
                           MemTxAttrs attrs, int flags, uintptr_t ra);
+
+/**
+ * cpu_watchpoint_address_matches:
+ * @cpu: cpu context
+ * @addr: guest virtual address
+ * @len: access length
+ *
+ * Return the watchpoint flags that apply to [addr, addr+len).
+ * If no watchpoint is registered for the range, the result is 0.
+ */
 int cpu_watchpoint_address_matches(CPUState *cpu, vaddr addr, vaddr len);
 #endif
 

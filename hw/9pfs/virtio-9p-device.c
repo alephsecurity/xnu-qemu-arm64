@@ -209,14 +209,15 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
     v->vq = virtio_add_queue(vdev, MAX_REQ, handle_9p_output);
 }
 
-static void virtio_9p_device_unrealize(DeviceState *dev, Error **errp)
+static void virtio_9p_device_unrealize(DeviceState *dev)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     V9fsVirtioState *v = VIRTIO_9P(dev);
     V9fsState *s = &v->state;
 
+    virtio_delete_queue(v->vq);
     virtio_cleanup(vdev);
-    v9fs_device_unrealize_common(s, errp);
+    v9fs_device_unrealize_common(s);
 }
 
 /* virtio-9p device */
@@ -242,7 +243,7 @@ static void virtio_9p_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
 
-    dc->props = virtio_9p_properties;
+    device_class_set_props(dc, virtio_9p_properties);
     dc->vmsd = &vmstate_virtio_9p;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     vdc->realize = virtio_9p_device_realize;

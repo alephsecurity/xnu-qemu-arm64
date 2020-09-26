@@ -102,7 +102,9 @@ struct MirrorOp {
 
     bool is_pseudo_op;
     bool is_active_write;
+    bool is_in_flight;
     CoQueue waiting_requests;
+    Coroutine *co;
 
     QTAILQ_ENTRY(MirrorOp) next;
 };
@@ -292,7 +294,9 @@ mirror_wait_for_any_operation(MirrorBlockJob *s, bool active)
          * caller of this function.  Since there is only one pseudo op
          * at any given time, we will always find some real operation
          * to wait on. */
-        if (!op->is_pseudo_op && op->is_active_write == active) {
+        if (!op->is_pseudo_op && op->is_in_flight &&
+            op->is_active_write == active)
+        {
             qemu_co_queue_wait(&op->waiting_requests, NULL);
             return;
         }
@@ -366,6 +370,7 @@ static void coroutine_fn mirror_co_read(void *opaque)
     /* Copy the dirty cluster.  */
     s->in_flight++;
     s->bytes_in_flight += op->bytes;
+    op->is_in_flight = true;
     trace_mirror_one_iteration(s, op->offset, op->bytes);
 
     ret = bdrv_co_preadv(s->mirror_top_bs->backing, op->offset, op->bytes,
@@ -381,6 +386,7 @@ static void coroutine_fn mirror_co_zero(void *opaque)
     op->s->in_flight++;
     op->s->bytes_in_flight += op->bytes;
     *op->bytes_handled = op->bytes;
+    op->is_in_flight = true;
 
     ret = blk_co_pwrite_zeroes(op->s->target, op->offset, op->bytes,
                                op->s->unmap ? BDRV_REQ_MAY_UNMAP : 0);
@@ -395,6 +401,7 @@ static void coroutine_fn mirror_co_discard(void *opaque)
     op->s->in_flight++;
     op->s->bytes_in_flight += op->bytes;
     *op->bytes_handled = op->bytes;
+    op->is_in_flight = true;
 
     ret = blk_co_pdiscard(op->s->target, op->offset, op->bytes);
     mirror_write_complete(op, ret);
@@ -429,6 +436,7 @@ static unsigned mirror_perform(MirrorBlockJob *s, int64_t offset,
     default:
         abort();
     }
+    op->co = co;
 
     QTAILQ_INSERT_TAIL(&s->ops_in_flight, op, next);
     qemu_coroutine_enter(co);
@@ -673,6 +681,7 @@ static int mirror_exit_common(Job *job)
             bdrv_set_backing_hd(target_bs, backing, &local_err);
             if (local_err) {
                 error_report_err(local_err);
+                local_err = NULL;
                 ret = -EPERM;
             }
         }
@@ -695,7 +704,19 @@ static int mirror_exit_common(Job *job)
          * drain potential other users of the BDS before changing the graph. */
         assert(s->in_drain);
         bdrv_drained_begin(target_bs);
-        bdrv_replace_node(to_replace, target_bs, &local_err);
+        /*
+         * Cannot use check_to_replace_node() here, because that would
+         * check for an op blocker on @to_replace, and we have our own
+         * there.
+         */
+        if (bdrv_recurse_can_replace(src, to_replace)) {
+            bdrv_replace_node(to_replace, target_bs, &local_err);
+        } else {
+            error_setg(&local_err, "Can no longer replace '%s' by '%s', "
+                       "because it can no longer be guaranteed that doing so "
+                       "would not lead to an abrupt change of visible data",
+                       to_replace->node_name, target_bs->node_name);
+        }
         bdrv_drained_end(target_bs);
         if (local_err) {
             error_report_err(local_err);
@@ -851,6 +872,7 @@ static int coroutine_fn mirror_run(Job *job, Error **errp)
     BlockDriverState *target_bs = blk_bs(s->target);
     bool need_drain = true;
     int64_t length;
+    int64_t target_length;
     BlockDriverInfo bdi;
     char backing_filename[2]; /* we only need 2 characters because we are only
                                  checking for a NULL string */
@@ -866,24 +888,26 @@ static int coroutine_fn mirror_run(Job *job, Error **errp)
         goto immediate_exit;
     }
 
+    target_length = blk_getlength(s->target);
+    if (target_length < 0) {
+        ret = target_length;
+        goto immediate_exit;
+    }
+
     /* Active commit must resize the base image if its size differs from the
      * active layer. */
     if (s->base == blk_bs(s->target)) {
-        int64_t base_length;
-
-        base_length = blk_getlength(s->target);
-        if (base_length < 0) {
-            ret = base_length;
-            goto immediate_exit;
-        }
-
-        if (s->bdev_length > base_length) {
+        if (s->bdev_length > target_length) {
             ret = blk_truncate(s->target, s->bdev_length, false,
-                               PREALLOC_MODE_OFF, NULL);
+                               PREALLOC_MODE_OFF, 0, NULL);
             if (ret < 0) {
                 goto immediate_exit;
             }
         }
+    } else if (s->bdev_length != target_length) {
+        error_setg(errp, "Source and target image have different sizes");
+        ret = -EINVAL;
+        goto immediate_exit;
     }
 
     if (s->bdev_length == 0) {
@@ -1304,6 +1328,7 @@ static MirrorOp *coroutine_fn active_write_prepare(MirrorBlockJob *s,
         .offset             = offset,
         .bytes              = bytes,
         .is_active_write    = true,
+        .is_in_flight       = true,
     };
     qemu_co_queue_init(&op->waiting_requests);
     QTAILQ_INSERT_TAIL(&s->ops_in_flight, op, next);
@@ -1467,7 +1492,7 @@ static void bdrv_mirror_top_refresh_filename(BlockDriverState *bs)
 }
 
 static void bdrv_mirror_top_child_perm(BlockDriverState *bs, BdrvChild *c,
-                                       const BdrvChildRole *role,
+                                       BdrvChildRole role,
                                        BlockReopenQueue *reopen_queue,
                                        uint64_t perm, uint64_t shared,
                                        uint64_t *nperm, uint64_t *nshared)
@@ -1505,6 +1530,8 @@ static BlockDriver bdrv_mirror_top = {
     .bdrv_co_block_status       = bdrv_co_block_status_from_backing,
     .bdrv_refresh_filename      = bdrv_mirror_top_refresh_filename,
     .bdrv_child_perm            = bdrv_mirror_top_child_perm,
+
+    .is_filter                  = true,
 };
 
 static BlockJob *mirror_start_job(

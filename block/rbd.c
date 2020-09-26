@@ -104,6 +104,7 @@ typedef struct BDRVRBDState {
     rbd_image_t image;
     char *image_name;
     char *snap;
+    char *namespace;
     uint64_t image_size;
 } BDRVRBDState;
 
@@ -152,7 +153,7 @@ static void qemu_rbd_parse_filename(const char *filename, QDict *options,
     const char *start;
     char *p, *buf;
     QList *keypairs = NULL;
-    char *found_str;
+    char *found_str, *image_name;
 
     if (!strstart(filename, "rbd:", &start)) {
         error_setg(errp, "File name must start with 'rbd:'");
@@ -171,18 +172,24 @@ static void qemu_rbd_parse_filename(const char *filename, QDict *options,
     qdict_put_str(options, "pool", found_str);
 
     if (strchr(p, '@')) {
-        found_str = qemu_rbd_next_tok(p, '@', &p);
-        qemu_rbd_unescape(found_str);
-        qdict_put_str(options, "image", found_str);
+        image_name = qemu_rbd_next_tok(p, '@', &p);
 
         found_str = qemu_rbd_next_tok(p, ':', &p);
         qemu_rbd_unescape(found_str);
         qdict_put_str(options, "snapshot", found_str);
     } else {
-        found_str = qemu_rbd_next_tok(p, ':', &p);
-        qemu_rbd_unescape(found_str);
-        qdict_put_str(options, "image", found_str);
+        image_name = qemu_rbd_next_tok(p, ':', &p);
     }
+    /* Check for namespace in the image_name */
+    if (strchr(image_name, '/')) {
+        found_str = qemu_rbd_next_tok(image_name, '/', &image_name);
+        qemu_rbd_unescape(found_str);
+        qdict_put_str(options, "namespace", found_str);
+    } else {
+        qdict_put_str(options, "namespace", "");
+    }
+    qemu_rbd_unescape(image_name);
+    qdict_put_str(options, "image", image_name);
     if (!p) {
         goto done;
     }
@@ -344,6 +351,11 @@ static QemuOptsList runtime_opts = {
             .help = "Rados pool name",
         },
         {
+            .name = "namespace",
+            .type = QEMU_OPT_STRING,
+            .help = "Rados namespace name in the pool",
+        },
+        {
             .name = "image",
             .type = QEMU_OPT_STRING,
             .help = "Image name in the pool",
@@ -425,7 +437,8 @@ static int qemu_rbd_co_create(BlockdevCreateOptions *options, Error **errp)
     return qemu_rbd_do_create(options, NULL, NULL, errp);
 }
 
-static int coroutine_fn qemu_rbd_co_create_opts(const char *filename,
+static int coroutine_fn qemu_rbd_co_create_opts(BlockDriver *drv,
+                                                const char *filename,
                                                 QemuOpts *opts,
                                                 Error **errp)
 {
@@ -467,13 +480,14 @@ static int coroutine_fn qemu_rbd_co_create_opts(const char *filename,
      * schema, but when they come from -drive, they're all QString.
      */
     loc = rbd_opts->location;
-    loc->pool     = g_strdup(qdict_get_try_str(options, "pool"));
-    loc->conf     = g_strdup(qdict_get_try_str(options, "conf"));
-    loc->has_conf = !!loc->conf;
-    loc->user     = g_strdup(qdict_get_try_str(options, "user"));
-    loc->has_user = !!loc->user;
-    loc->image    = g_strdup(qdict_get_try_str(options, "image"));
-    keypairs      = qdict_get_try_str(options, "=keyvalue-pairs");
+    loc->pool        = g_strdup(qdict_get_try_str(options, "pool"));
+    loc->conf        = g_strdup(qdict_get_try_str(options, "conf"));
+    loc->has_conf    = !!loc->conf;
+    loc->user        = g_strdup(qdict_get_try_str(options, "user"));
+    loc->has_user    = !!loc->user;
+    loc->q_namespace = g_strdup(qdict_get_try_str(options, "namespace"));
+    loc->image       = g_strdup(qdict_get_try_str(options, "image"));
+    keypairs         = qdict_get_try_str(options, "=keyvalue-pairs");
 
     ret = qemu_rbd_do_create(create_options, keypairs, password_secret, errp);
     if (ret < 0) {
@@ -648,6 +662,11 @@ static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
         error_setg_errno(errp, -r, "error opening pool %s", opts->pool);
         goto failed_shutdown;
     }
+    /*
+     * Set the namespace after opening the io context on the pool,
+     * if nspace == NULL or if nspace == "", it is just as we did nothing
+     */
+    rados_ioctx_set_namespace(*io_ctx, opts->q_namespace);
 
     return 0;
 
@@ -662,7 +681,6 @@ static int qemu_rbd_convert_options(QDict *options, BlockdevOptionsRbd **opts,
                                     Error **errp)
 {
     Visitor *v;
-    Error *local_err = NULL;
 
     /* Convert the remaining options into a QAPI object */
     v = qobject_input_visitor_new_flat_confused(options, errp);
@@ -670,11 +688,9 @@ static int qemu_rbd_convert_options(QDict *options, BlockdevOptionsRbd **opts,
         return -EINVAL;
     }
 
-    visit_type_BlockdevOptionsRbd(v, NULL, opts, &local_err);
+    visit_type_BlockdevOptionsRbd(v, NULL, opts, errp);
     visit_free(v);
-
-    if (local_err) {
-        error_propagate(errp, local_err);
+    if (!opts) {
         return -EINVAL;
     }
 
@@ -797,6 +813,9 @@ static int qemu_rbd_open(BlockDriverState *bs, QDict *options, int flags,
             goto failed_open;
         }
     }
+
+    /* When extending regular files, we get zeros from the OS */
+    bs->supported_truncate_flags = BDRV_REQ_ZERO_WRITE;
 
     r = 0;
     goto out;
@@ -1089,6 +1108,7 @@ static int coroutine_fn qemu_rbd_co_truncate(BlockDriverState *bs,
                                              int64_t offset,
                                              bool exact,
                                              PreallocMode prealloc,
+                                             BdrvRequestFlags flags,
                                              Error **errp)
 {
     int r;
@@ -1290,7 +1310,6 @@ static BlockDriver bdrv_rbd = {
     .bdrv_co_create         = qemu_rbd_co_create,
     .bdrv_co_create_opts    = qemu_rbd_co_create_opts,
     .bdrv_has_zero_init     = bdrv_has_zero_init_1,
-    .bdrv_has_zero_init_truncate = bdrv_has_zero_init_1,
     .bdrv_get_info          = qemu_rbd_getinfo,
     .create_opts            = &qemu_rbd_create_opts,
     .bdrv_getlength         = qemu_rbd_getlength,

@@ -53,12 +53,10 @@ static void virtio_crypto_pci_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
         return;
     }
 
-    qdev_set_parent_bus(vdev, BUS(&vpci_dev->bus));
     virtio_pci_force_virtio_1(vpci_dev);
-    object_property_set_bool(OBJECT(vdev), true, "realized", errp);
-    object_property_set_link(OBJECT(vcrypto),
-                 OBJECT(vcrypto->vdev.conf.cryptodev), "cryptodev",
-                 NULL);
+    if (!qdev_realize(vdev, BUS(&vpci_dev->bus), errp)) {
+        return;
+    }
 }
 
 static void virtio_crypto_pci_class_init(ObjectClass *klass, void *data)
@@ -69,7 +67,7 @@ static void virtio_crypto_pci_class_init(ObjectClass *klass, void *data)
 
     k->realize = virtio_crypto_pci_realize;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
-    dc->props = virtio_crypto_pci_properties;
+    device_class_set_props(dc, virtio_crypto_pci_properties);
     pcidev_k->class_id = PCI_CLASS_OTHERS;
 }
 

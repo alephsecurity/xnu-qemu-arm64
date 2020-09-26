@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "sysemu/hostmem.h"
 #include "sysemu/numa.h"
 #include "sysemu/sysemu.h"
@@ -51,6 +52,11 @@ QemuOptsList qemu_numa_opts = {
 };
 
 static int have_memdevs;
+bool numa_uses_legacy_mem(void)
+{
+    return !have_memdevs;
+}
+
 static int have_mem;
 static int max_numa_nodeid; /* Highest specified NUMA node ID, plus one.
                              * For all nodes, nodeid < max_numa_nodeid
@@ -83,10 +89,6 @@ static void parse_numa_node(MachineState *ms, NumaNodeOptions *node,
         return;
     }
 
-    if (!mc->cpu_index_to_instance_props || !mc->get_default_cpu_node_id) {
-        error_setg(errp, "NUMA is not supported by this machine-type");
-        return;
-    }
     for (cpus = node->cpus; cpus; cpus = cpus->next) {
         CpuInstanceProperties props;
         if (cpus->value >= max_cpus) {
@@ -115,6 +117,13 @@ static void parse_numa_node(MachineState *ms, NumaNodeOptions *node,
     }
 
     if (node->has_mem) {
+        if (!mc->numa_mem_supported) {
+            error_setg(errp, "Parameter -numa node,mem is not supported by this"
+                      " machine type");
+            error_append_hint(errp, "Use -numa node,memdev instead\n");
+            return;
+        }
+
         numa_info[nodenr].node_mem = node->mem;
         if (!qtest_enabled()) {
             warn_report("Parameter -numa node,mem is deprecated,"
@@ -132,6 +141,29 @@ static void parse_numa_node(MachineState *ms, NumaNodeOptions *node,
         object_ref(o);
         numa_info[nodenr].node_mem = object_property_get_uint(o, "size", NULL);
         numa_info[nodenr].node_memdev = MEMORY_BACKEND(o);
+    }
+
+    /*
+     * If not set the initiator, set it to MAX_NODES. And if
+     * HMAT is enabled and this node has no cpus, QEMU will raise error.
+     */
+    numa_info[nodenr].initiator = MAX_NODES;
+    if (node->has_initiator) {
+        if (!ms->numa_state->hmat_enabled) {
+            error_setg(errp, "ACPI Heterogeneous Memory Attribute Table "
+                       "(HMAT) is disabled, enable it with -machine hmat=on "
+                       "before using any of hmat specific options");
+            return;
+        }
+
+        if (node->initiator >= MAX_NODES) {
+            error_report("The initiator id %" PRIu16 " expects an integer "
+                         "between 0 and %d", node->initiator,
+                         MAX_NODES - 1);
+            return;
+        }
+
+        numa_info[nodenr].initiator = node->initiator;
     }
     numa_info[nodenr].present = true;
     max_numa_nodeid = MAX(max_numa_nodeid, nodenr + 1);
@@ -175,50 +207,306 @@ void parse_numa_distance(MachineState *ms, NumaDistOptions *dist, Error **errp)
     ms->numa_state->have_numa_distance = true;
 }
 
+void parse_numa_hmat_lb(NumaState *numa_state, NumaHmatLBOptions *node,
+                        Error **errp)
+{
+    int i, first_bit, last_bit;
+    uint64_t max_entry, temp_base, bitmap_copy;
+    NodeInfo *numa_info = numa_state->nodes;
+    HMAT_LB_Info *hmat_lb =
+        numa_state->hmat_lb[node->hierarchy][node->data_type];
+    HMAT_LB_Data lb_data = {};
+    HMAT_LB_Data *lb_temp;
+
+    /* Error checking */
+    if (node->initiator > numa_state->num_nodes) {
+        error_setg(errp, "Invalid initiator=%d, it should be less than %d",
+                   node->initiator, numa_state->num_nodes);
+        return;
+    }
+    if (node->target > numa_state->num_nodes) {
+        error_setg(errp, "Invalid target=%d, it should be less than %d",
+                   node->target, numa_state->num_nodes);
+        return;
+    }
+    if (!numa_info[node->initiator].has_cpu) {
+        error_setg(errp, "Invalid initiator=%d, it isn't an "
+                   "initiator proximity domain", node->initiator);
+        return;
+    }
+    if (!numa_info[node->target].present) {
+        error_setg(errp, "The target=%d should point to an existing node",
+                   node->target);
+        return;
+    }
+
+    if (!hmat_lb) {
+        hmat_lb = g_malloc0(sizeof(*hmat_lb));
+        numa_state->hmat_lb[node->hierarchy][node->data_type] = hmat_lb;
+        hmat_lb->list = g_array_new(false, true, sizeof(HMAT_LB_Data));
+    }
+    hmat_lb->hierarchy = node->hierarchy;
+    hmat_lb->data_type = node->data_type;
+    lb_data.initiator = node->initiator;
+    lb_data.target = node->target;
+
+    if (node->data_type <= HMATLB_DATA_TYPE_WRITE_LATENCY) {
+        /* Input latency data */
+
+        if (!node->has_latency) {
+            error_setg(errp, "Missing 'latency' option");
+            return;
+        }
+        if (node->has_bandwidth) {
+            error_setg(errp, "Invalid option 'bandwidth' since "
+                       "the data type is latency");
+            return;
+        }
+
+        /* Detect duplicate configuration */
+        for (i = 0; i < hmat_lb->list->len; i++) {
+            lb_temp = &g_array_index(hmat_lb->list, HMAT_LB_Data, i);
+
+            if (node->initiator == lb_temp->initiator &&
+                node->target == lb_temp->target) {
+                error_setg(errp, "Duplicate configuration of the latency for "
+                    "initiator=%d and target=%d", node->initiator,
+                    node->target);
+                return;
+            }
+        }
+
+        hmat_lb->base = hmat_lb->base ? hmat_lb->base : UINT64_MAX;
+
+        if (node->latency) {
+            /* Calculate the temporary base and compressed latency */
+            max_entry = node->latency;
+            temp_base = 1;
+            while (QEMU_IS_ALIGNED(max_entry, 10)) {
+                max_entry /= 10;
+                temp_base *= 10;
+            }
+
+            /* Calculate the max compressed latency */
+            temp_base = MIN(hmat_lb->base, temp_base);
+            max_entry = node->latency / hmat_lb->base;
+            max_entry = MAX(hmat_lb->range_bitmap, max_entry);
+
+            /*
+             * For latency hmat_lb->range_bitmap record the max compressed
+             * latency which should be less than 0xFFFF (UINT16_MAX)
+             */
+            if (max_entry >= UINT16_MAX) {
+                error_setg(errp, "Latency %" PRIu64 " between initiator=%d and "
+                        "target=%d should not differ from previously entered "
+                        "min or max values on more than %d", node->latency,
+                        node->initiator, node->target, UINT16_MAX - 1);
+                return;
+            } else {
+                hmat_lb->base = temp_base;
+                hmat_lb->range_bitmap = max_entry;
+            }
+
+            /*
+             * Set lb_info_provided bit 0 as 1,
+             * latency information is provided
+             */
+            numa_info[node->target].lb_info_provided |= BIT(0);
+        }
+        lb_data.data = node->latency;
+    } else if (node->data_type >= HMATLB_DATA_TYPE_ACCESS_BANDWIDTH) {
+        /* Input bandwidth data */
+        if (!node->has_bandwidth) {
+            error_setg(errp, "Missing 'bandwidth' option");
+            return;
+        }
+        if (node->has_latency) {
+            error_setg(errp, "Invalid option 'latency' since "
+                       "the data type is bandwidth");
+            return;
+        }
+        if (!QEMU_IS_ALIGNED(node->bandwidth, MiB)) {
+            error_setg(errp, "Bandwidth %" PRIu64 " between initiator=%d and "
+                       "target=%d should be 1MB aligned", node->bandwidth,
+                       node->initiator, node->target);
+            return;
+        }
+
+        /* Detect duplicate configuration */
+        for (i = 0; i < hmat_lb->list->len; i++) {
+            lb_temp = &g_array_index(hmat_lb->list, HMAT_LB_Data, i);
+
+            if (node->initiator == lb_temp->initiator &&
+                node->target == lb_temp->target) {
+                error_setg(errp, "Duplicate configuration of the bandwidth for "
+                    "initiator=%d and target=%d", node->initiator,
+                    node->target);
+                return;
+            }
+        }
+
+        hmat_lb->base = hmat_lb->base ? hmat_lb->base : 1;
+
+        if (node->bandwidth) {
+            /* Keep bitmap unchanged when bandwidth out of range */
+            bitmap_copy = hmat_lb->range_bitmap;
+            bitmap_copy |= node->bandwidth;
+            first_bit = ctz64(bitmap_copy);
+            temp_base = UINT64_C(1) << first_bit;
+            max_entry = node->bandwidth / temp_base;
+            last_bit = 64 - clz64(bitmap_copy);
+
+            /*
+             * For bandwidth, first_bit record the base unit of bandwidth bits,
+             * last_bit record the last bit of the max bandwidth. The max
+             * compressed bandwidth should be less than 0xFFFF (UINT16_MAX)
+             */
+            if ((last_bit - first_bit) > UINT16_BITS ||
+                max_entry >= UINT16_MAX) {
+                error_setg(errp, "Bandwidth %" PRIu64 " between initiator=%d "
+                        "and target=%d should not differ from previously "
+                        "entered values on more than %d", node->bandwidth,
+                        node->initiator, node->target, UINT16_MAX - 1);
+                return;
+            } else {
+                hmat_lb->base = temp_base;
+                hmat_lb->range_bitmap = bitmap_copy;
+            }
+
+            /*
+             * Set lb_info_provided bit 1 as 1,
+             * bandwidth information is provided
+             */
+            numa_info[node->target].lb_info_provided |= BIT(1);
+        }
+        lb_data.data = node->bandwidth;
+    } else {
+        assert(0);
+    }
+
+    g_array_append_val(hmat_lb->list, lb_data);
+}
+
+void parse_numa_hmat_cache(MachineState *ms, NumaHmatCacheOptions *node,
+                           Error **errp)
+{
+    int nb_numa_nodes = ms->numa_state->num_nodes;
+    NodeInfo *numa_info = ms->numa_state->nodes;
+    NumaHmatCacheOptions *hmat_cache = NULL;
+
+    if (node->node_id >= nb_numa_nodes) {
+        error_setg(errp, "Invalid node-id=%" PRIu32 ", it should be less "
+                   "than %d", node->node_id, nb_numa_nodes);
+        return;
+    }
+
+    if (numa_info[node->node_id].lb_info_provided != (BIT(0) | BIT(1))) {
+        error_setg(errp, "The latency and bandwidth information of "
+                   "node-id=%" PRIu32 " should be provided before memory side "
+                   "cache attributes", node->node_id);
+        return;
+    }
+
+    if (node->level < 1 || node->level >= HMAT_LB_LEVELS) {
+        error_setg(errp, "Invalid level=%" PRIu8 ", it should be larger than 0 "
+                   "and less than or equal to %d", node->level,
+                   HMAT_LB_LEVELS - 1);
+        return;
+    }
+
+    assert(node->associativity < HMAT_CACHE_ASSOCIATIVITY__MAX);
+    assert(node->policy < HMAT_CACHE_WRITE_POLICY__MAX);
+    if (ms->numa_state->hmat_cache[node->node_id][node->level]) {
+        error_setg(errp, "Duplicate configuration of the side cache for "
+                   "node-id=%" PRIu32 " and level=%" PRIu8,
+                   node->node_id, node->level);
+        return;
+    }
+
+    if ((node->level > 1) &&
+        ms->numa_state->hmat_cache[node->node_id][node->level - 1] &&
+        (node->size >=
+            ms->numa_state->hmat_cache[node->node_id][node->level - 1]->size)) {
+        error_setg(errp, "Invalid size=%" PRIu64 ", the size of level=%" PRIu8
+                   " should be less than the size(%" PRIu64 ") of "
+                   "level=%u", node->size, node->level,
+                   ms->numa_state->hmat_cache[node->node_id]
+                                             [node->level - 1]->size,
+                   node->level - 1);
+        return;
+    }
+
+    if ((node->level < HMAT_LB_LEVELS - 1) &&
+        ms->numa_state->hmat_cache[node->node_id][node->level + 1] &&
+        (node->size <=
+            ms->numa_state->hmat_cache[node->node_id][node->level + 1]->size)) {
+        error_setg(errp, "Invalid size=%" PRIu64 ", the size of level=%" PRIu8
+                   " should be larger than the size(%" PRIu64 ") of "
+                   "level=%u", node->size, node->level,
+                   ms->numa_state->hmat_cache[node->node_id]
+                                             [node->level + 1]->size,
+                   node->level + 1);
+        return;
+    }
+
+    hmat_cache = g_malloc0(sizeof(*hmat_cache));
+    memcpy(hmat_cache, node, sizeof(*hmat_cache));
+    ms->numa_state->hmat_cache[node->node_id][node->level] = hmat_cache;
+}
+
 void set_numa_options(MachineState *ms, NumaOptions *object, Error **errp)
 {
-    Error *err = NULL;
-    MachineClass *mc = MACHINE_GET_CLASS(ms);
-
-    if (!mc->numa_mem_supported) {
+    if (!ms->numa_state) {
         error_setg(errp, "NUMA is not supported by this machine-type");
-        goto end;
+        return;
     }
 
     switch (object->type) {
     case NUMA_OPTIONS_TYPE_NODE:
-        parse_numa_node(ms, &object->u.node, &err);
-        if (err) {
-            goto end;
-        }
+        parse_numa_node(ms, &object->u.node, errp);
         break;
     case NUMA_OPTIONS_TYPE_DIST:
-        parse_numa_distance(ms, &object->u.dist, &err);
-        if (err) {
-            goto end;
-        }
+        parse_numa_distance(ms, &object->u.dist, errp);
         break;
     case NUMA_OPTIONS_TYPE_CPU:
         if (!object->u.cpu.has_node_id) {
-            error_setg(&err, "Missing mandatory node-id property");
-            goto end;
+            error_setg(errp, "Missing mandatory node-id property");
+            return;
         }
         if (!ms->numa_state->nodes[object->u.cpu.node_id].present) {
-            error_setg(&err, "Invalid node-id=%" PRId64 ", NUMA node must be "
-                "defined with -numa node,nodeid=ID before it's used with "
-                "-numa cpu,node-id=ID", object->u.cpu.node_id);
-            goto end;
+            error_setg(errp, "Invalid node-id=%" PRId64 ", NUMA node must be "
+                       "defined with -numa node,nodeid=ID before it's used with "
+                       "-numa cpu,node-id=ID", object->u.cpu.node_id);
+            return;
         }
 
-        machine_set_cpu_numa_node(ms, qapi_NumaCpuOptions_base(&object->u.cpu),
-                                  &err);
+        machine_set_cpu_numa_node(ms,
+                                  qapi_NumaCpuOptions_base(&object->u.cpu),
+                                  errp);
+        break;
+    case NUMA_OPTIONS_TYPE_HMAT_LB:
+        if (!ms->numa_state->hmat_enabled) {
+            error_setg(errp, "ACPI Heterogeneous Memory Attribute Table "
+                       "(HMAT) is disabled, enable it with -machine hmat=on "
+                       "before using any of hmat specific options");
+            return;
+        }
+
+        parse_numa_hmat_lb(ms->numa_state, &object->u.hmat_lb, errp);
+        break;
+    case NUMA_OPTIONS_TYPE_HMAT_CACHE:
+        if (!ms->numa_state->hmat_enabled) {
+            error_setg(errp, "ACPI Heterogeneous Memory Attribute Table "
+                       "(HMAT) is disabled, enable it with -machine hmat=on "
+                       "before using any of hmat specific options");
+            return;
+        }
+
+        parse_numa_hmat_cache(ms, &object->u.hmat_cache, errp);
         break;
     default:
         abort();
     }
-
-end:
-    error_propagate(errp, err);
 }
 
 static int parse_numa(void *opaque, QemuOpts *opts, Error **errp)
@@ -228,10 +516,10 @@ static int parse_numa(void *opaque, QemuOpts *opts, Error **errp)
     Error *err = NULL;
     Visitor *v = opts_visitor_new(opts);
 
-    visit_type_NumaOptions(v, NULL, &object, &err);
+    visit_type_NumaOptions(v, NULL, &object, errp);
     visit_free(v);
-    if (err) {
-        goto end;
+    if (!object) {
+        return -1;
     }
 
     /* Fix up legacy suffix-less format */
@@ -242,7 +530,6 @@ static int parse_numa(void *opaque, QemuOpts *opts, Error **errp)
 
     set_numa_options(ms, object, &err);
 
-end:
     qapi_free_NumaOptions(object);
     if (err) {
         error_propagate(errp, err);
@@ -360,6 +647,23 @@ void numa_default_auto_assign_ram(MachineClass *mc, NodeInfo *nodes,
     nodes[i].node_mem = size - usedmem;
 }
 
+static void numa_init_memdev_container(MachineState *ms, MemoryRegion *ram)
+{
+    int i;
+    uint64_t addr = 0;
+
+    for (i = 0; i < ms->numa_state->num_nodes; i++) {
+        uint64_t size = ms->numa_state->nodes[i].node_mem;
+        HostMemoryBackend *backend = ms->numa_state->nodes[i].node_memdev;
+        if (!backend) {
+            continue;
+        }
+        MemoryRegion *seg = machine_consume_memdev(ms, backend);
+        memory_region_add_subregion(ram, addr, seg);
+        addr += size;
+    }
+}
+
 void numa_complete_configuration(MachineState *ms)
 {
     int i;
@@ -367,8 +671,9 @@ void numa_complete_configuration(MachineState *ms)
     NodeInfo *numa_info = ms->numa_state->nodes;
 
     /*
-     * If memory hotplug is enabled (slots > 0) but without '-numa'
-     * options explicitly on CLI, guestes will break.
+     * If memory hotplug is enabled (slot > 0) or memory devices are enabled
+     * (ms->maxram_size > ram_size) but without '-numa' options explicitly on
+     * CLI, guests will break.
      *
      *   Windows: won't enable memory hotplug without SRAT table at all
      *
@@ -383,9 +688,9 @@ void numa_complete_configuration(MachineState *ms)
      * assume there is just one node with whole RAM.
      */
     if (ms->numa_state->num_nodes == 0 &&
-        ((ms->ram_slots > 0 &&
-        mc->auto_enable_numa_with_memhp) ||
-        mc->auto_enable_numa)) {
+        ((ms->ram_slots && mc->auto_enable_numa_with_memhp) ||
+         (ms->maxram_size > ms->ram_size && mc->auto_enable_numa_with_memdev) ||
+         mc->auto_enable_numa)) {
             NumaNodeOptions node = { };
             parse_numa_node(ms, &node, &error_abort);
             numa_info[0].node_mem = ram_size;
@@ -442,6 +747,17 @@ void numa_complete_configuration(MachineState *ms)
             exit(1);
         }
 
+        if (!numa_uses_legacy_mem() && mc->default_ram_id) {
+            if (ms->ram_memdev_id) {
+                error_report("'-machine memory-backend' and '-numa memdev'"
+                             " properties are mutually exclusive");
+                exit(1);
+            }
+            ms->ram = g_new(MemoryRegion, 1);
+            memory_region_init(ms->ram, OBJECT(ms), mc->default_ram_id,
+                               ram_size);
+            numa_init_memdev_container(ms, ms->ram);
+        }
         /* QEMU needs at least all unique node pair distances to build
          * the whole NUMA distance table. QEMU treats the distance table
          * as symmetric by default, i.e. distance A->B == distance B->A.
@@ -477,85 +793,12 @@ void numa_cpu_pre_plug(const CPUArchId *slot, DeviceState *dev, Error **errp)
         /* due to bug in libvirt, it doesn't pass node-id from props on
          * device_add as expected, so we have to fix it up here */
         if (slot->props.has_node_id) {
-            object_property_set_int(OBJECT(dev), slot->props.node_id,
-                                    "node-id", errp);
+            object_property_set_int(OBJECT(dev), "node-id",
+                                    slot->props.node_id, errp);
         }
     } else if (node_id != slot->props.node_id) {
         error_setg(errp, "invalid node-id, must be %"PRId64,
                    slot->props.node_id);
-    }
-}
-
-static void allocate_system_memory_nonnuma(MemoryRegion *mr, Object *owner,
-                                           const char *name,
-                                           uint64_t ram_size)
-{
-    if (mem_path) {
-#ifdef __linux__
-        Error *err = NULL;
-        memory_region_init_ram_from_file(mr, owner, name, ram_size, 0, 0,
-                                         mem_path, &err);
-        if (err) {
-            error_report_err(err);
-            if (mem_prealloc) {
-                exit(1);
-            }
-            warn_report("falling back to regular RAM allocation");
-            error_printf("This is deprecated. Make sure that -mem-path "
-                         " specified path has sufficient resources to allocate"
-                         " -m specified RAM amount\n");
-            /* Legacy behavior: if allocation failed, fall back to
-             * regular RAM allocation.
-             */
-            mem_path = NULL;
-            memory_region_init_ram_nomigrate(mr, owner, name, ram_size, &error_fatal);
-        }
-#else
-        fprintf(stderr, "-mem-path not supported on this host\n");
-        exit(1);
-#endif
-    } else {
-        memory_region_init_ram_nomigrate(mr, owner, name, ram_size, &error_fatal);
-    }
-    vmstate_register_ram_global(mr);
-}
-
-void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
-                                          const char *name,
-                                          uint64_t ram_size)
-{
-    uint64_t addr = 0;
-    int i;
-    MachineState *ms = MACHINE(qdev_get_machine());
-
-    if (ms->numa_state == NULL ||
-        ms->numa_state->num_nodes == 0 || !have_memdevs) {
-        allocate_system_memory_nonnuma(mr, owner, name, ram_size);
-        return;
-    }
-
-    memory_region_init(mr, owner, name, ram_size);
-    for (i = 0; i < ms->numa_state->num_nodes; i++) {
-        uint64_t size = ms->numa_state->nodes[i].node_mem;
-        HostMemoryBackend *backend = ms->numa_state->nodes[i].node_memdev;
-        if (!backend) {
-            continue;
-        }
-        MemoryRegion *seg = host_memory_backend_get_memory(backend);
-
-        if (memory_region_is_mapped(seg)) {
-            char *path = object_get_canonical_path_component(OBJECT(backend));
-            error_report("memory backend %s is used multiple times. Each "
-                         "-numa option must use a different memdev value.",
-                         path);
-            g_free(path);
-            exit(1);
-        }
-
-        host_memory_backend_set_mapped(backend, true);
-        memory_region_add_subregion(mr, addr, seg);
-        vmstate_register_ram_global(seg);
-        addr += size;
     }
 }
 
@@ -565,6 +808,7 @@ static void numa_stat_memory_devices(NumaNodeMem node_mem[])
     MemoryDeviceInfoList *info;
     PCDIMMDeviceInfo     *pcdimm_info;
     VirtioPMEMDeviceInfo *vpi;
+    VirtioMEMDeviceInfo *vmi;
 
     for (info = info_list; info; info = info->next) {
         MemoryDeviceInfo *value = info->value;
@@ -584,6 +828,11 @@ static void numa_stat_memory_devices(NumaNodeMem node_mem[])
                 /* TODO: once we support numa, assign to right node */
                 node_mem[0].node_mem += vpi->size;
                 node_mem[0].node_plugged_mem += vpi->size;
+                break;
+            case MEMORY_DEVICE_INFO_KIND_VIRTIO_MEM:
+                vmi = value->u.virtio_mem.data;
+                node_mem[vmi->node].node_mem += vmi->size;
+                node_mem[vmi->node].node_plugged_mem += vmi->size;
                 break;
             default:
                 g_assert_not_reached();

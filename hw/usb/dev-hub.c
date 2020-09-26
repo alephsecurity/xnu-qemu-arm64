@@ -565,7 +565,7 @@ static void usb_hub_handle_data(USBDevice *dev, USBPacket *p)
     }
 }
 
-static void usb_hub_unrealize(USBDevice *dev, Error **errp)
+static void usb_hub_unrealize(USBDevice *dev)
 {
     USBHubState *s = (USBHubState *)dev;
     int i;
@@ -686,7 +686,7 @@ static void usb_hub_class_initfn(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "hub";
     dc->vmsd = &vmstate_usb_hub;
-    dc->props = usb_hub_properties;
+    device_class_set_props(dc, usb_hub_properties);
 }
 
 static const TypeInfo hub_info = {

@@ -214,11 +214,35 @@ static size_t curl_header_cb(void *ptr, size_t size, size_t nmemb, void *opaque)
 {
     BDRVCURLState *s = opaque;
     size_t realsize = size * nmemb;
-    const char *accept_line = "Accept-Ranges: bytes";
+    const char *header = (char *)ptr;
+    const char *end = header + realsize;
+    const char *accept_ranges = "accept-ranges:";
+    const char *bytes = "bytes";
 
-    if (realsize >= strlen(accept_line)
-        && strncmp((char *)ptr, accept_line, strlen(accept_line)) == 0) {
-        s->accept_range = true;
+    if (realsize >= strlen(accept_ranges)
+        && g_ascii_strncasecmp(header, accept_ranges,
+                               strlen(accept_ranges)) == 0) {
+
+        char *p = strchr(header, ':') + 1;
+
+        /* Skip whitespace between the header name and value. */
+        while (p < end && *p && g_ascii_isspace(*p)) {
+            p++;
+        }
+
+        if (end - p >= strlen(bytes)
+            && strncmp(p, bytes, strlen(bytes)) == 0) {
+
+            /* Check that there is nothing but whitespace after the value. */
+            p += strlen(bytes);
+            while (p < end && *p && g_ascii_isspace(*p)) {
+                p++;
+            }
+
+            if (p == end || !*p) {
+                s->accept_range = true;
+            }
+        }
     }
 
     return realsize;
@@ -645,7 +669,6 @@ static int curl_open(BlockDriverState *bs, QDict *options, int flags,
     BDRVCURLState *s = bs->opaque;
     CURLState *state = NULL;
     QemuOpts *opts;
-    Error *local_err = NULL;
     const char *file;
     const char *cookie;
     const char *cookie_secret;
@@ -671,9 +694,7 @@ static int curl_open(BlockDriverState *bs, QDict *options, int flags,
 
     qemu_mutex_init(&s->mutex);
     opts = qemu_opts_create(&runtime_opts, NULL, 0, &error_abort);
-    qemu_opts_absorb_qdict(opts, options, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
+    if (!qemu_opts_absorb_qdict(opts, options, errp)) {
         goto out_noclean;
     }
 

@@ -16,12 +16,22 @@ if [ "$#" -ne 0 ]; then
     format_list="$@"
 fi
 
-if grep -q "TARGET_GPROF=y" *-softmmu/config-target.mak 2>/dev/null ; then
+if grep -q "CONFIG_GPROF=y" config-host.mak 2>/dev/null ; then
     echo "GPROF is enabled ==> Not running the qemu-iotests."
     exit 0
 fi
 
-if grep -q "CFLAGS.*-fsanitize" config-host.mak 2>/dev/null ; then
+# Disable tests with any sanitizer except for SafeStack
+CFLAGS=$( grep "CFLAGS.*-fsanitize" config-host.mak 2>/dev/null )
+SANITIZE_FLAGS=""
+#Remove all occurrencies of -fsanitize=safe-stack
+for i in ${CFLAGS}; do
+        if [ "${i}" != "-fsanitize=safe-stack" ]; then
+                SANITIZE_FLAGS="${SANITIZE_FLAGS} ${i}"
+        fi
+done
+if echo ${SANITIZE_FLAGS} | grep -q "\-fsanitize" 2>/dev/null; then
+    # Have a sanitize flag that is not allowed, stop
     echo "Sanitizers are enabled ==> Not running the qemu-iotests."
     exit 0
 fi

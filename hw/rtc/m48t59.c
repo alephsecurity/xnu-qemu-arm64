@@ -33,8 +33,10 @@
 #include "sysemu/sysemu.h"
 #include "hw/sysbus.h"
 #include "exec/address-spaces.h"
+#include "qapi/error.h"
 #include "qemu/bcd.h"
 #include "qemu/module.h"
+#include "trace.h"
 
 #include "m48t59-internal.h"
 #include "migration/vmstate.h"
@@ -192,8 +194,7 @@ void m48t59_write(M48t59State *NVRAM, uint32_t addr, uint32_t val)
     struct tm tm;
     int tmp;
 
-    if (addr > 0x1FF8 && addr < 0x2000)
-	NVRAM_PRINTF("%s: 0x%08x => 0x%08x\n", __func__, addr, val);
+    trace_m48txx_nvram_mem_write(addr, val);
 
     /* check for NVRAM access */
     if ((NVRAM->model == 2 && addr < 0x7f8) ||
@@ -450,8 +451,7 @@ uint32_t m48t59_read(M48t59State *NVRAM, uint32_t addr)
 	}
         break;
     }
-    if (addr > 0x1FF9 && addr < 0x2000)
-       NVRAM_PRINTF("%s: 0x%08x <= 0x%08x\n", __func__, addr, retval);
+    trace_m48txx_nvram_mem_read(addr, retval);
 
     return retval;
 }
@@ -462,7 +462,7 @@ static void NVRAM_writeb(void *opaque, hwaddr addr, uint64_t val,
 {
     M48t59State *NVRAM = opaque;
 
-    NVRAM_PRINTF("%s: 0x%"HWADDR_PRIx" => 0x%"PRIx64"\n", __func__, addr, val);
+    trace_m48txx_nvram_io_write(addr, val);
     switch (addr) {
     case 0:
         NVRAM->addr &= ~0x00FF;
@@ -494,7 +494,7 @@ static uint64_t NVRAM_readb(void *opaque, hwaddr addr, unsigned size)
         retval = -1;
         break;
     }
-    NVRAM_PRINTF("%s: 0x%"HWADDR_PRIx" <= 0x%08x\n", __func__, addr, retval);
+    trace_m48txx_nvram_io_read(addr, retval);
 
     return retval;
 }
@@ -580,10 +580,10 @@ Nvram *m48t59_init(qemu_irq IRQ, hwaddr mem_base,
             continue;
         }
 
-        dev = qdev_create(NULL, m48txx_sysbus_info[i].bus_name);
+        dev = qdev_new(m48txx_sysbus_info[i].bus_name);
         qdev_prop_set_int32(dev, "base-year", base_year);
-        qdev_init_nofail(dev);
         s = SYS_BUS_DEVICE(dev);
+        sysbus_realize_and_unref(s, &error_fatal);
         sysbus_connect_irq(s, 0, IRQ);
         if (io_base != 0) {
             memory_region_add_subregion(get_system_io(), io_base,
@@ -667,7 +667,7 @@ static void m48txx_sysbus_class_init(ObjectClass *klass, void *data)
 
     dc->realize = m48t59_realize;
     dc->reset = m48t59_reset_sysbus;
-    dc->props = m48t59_sysbus_properties;
+    device_class_set_props(dc, m48t59_sysbus_properties);
     dc->vmsd = &vmstate_m48t59;
     nc->read = m48txx_sysbus_read;
     nc->write = m48txx_sysbus_write;

@@ -5,7 +5,8 @@
  * Rasperry Pi 2 emulation and refactoring Copyright (c) 2015, Microsoft
  * Written by Andrew Baumann
  *
- * This code is licensed under the GNU GPLv2 and later.
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the COPYING file in the top-level directory.
  */
 
 #include "qemu/osdep.h"
@@ -52,19 +53,17 @@ static void bcm2836_init(Object *obj)
 
     for (n = 0; n < BCM283X_NCPUS; n++) {
         object_initialize_child(obj, "cpu[*]", &s->cpu[n].core,
-                                sizeof(s->cpu[n].core), info->cpu_type,
-                                &error_abort, NULL);
+                                info->cpu_type);
     }
 
-    sysbus_init_child_obj(obj, "control", &s->control, sizeof(s->control),
-                          TYPE_BCM2836_CONTROL);
+    object_initialize_child(obj, "control", &s->control, TYPE_BCM2836_CONTROL);
 
-    sysbus_init_child_obj(obj, "peripherals", &s->peripherals,
-                          sizeof(s->peripherals), TYPE_BCM2835_PERIPHERALS);
+    object_initialize_child(obj, "peripherals", &s->peripherals,
+                            TYPE_BCM2835_PERIPHERALS);
     object_property_add_alias(obj, "board-rev", OBJECT(&s->peripherals),
-                              "board-rev", &error_abort);
+                              "board-rev");
     object_property_add_alias(obj, "vcram-size", OBJECT(&s->peripherals),
-                              "vcram-size", &error_abort);
+                              "vcram-size");
 }
 
 static void bcm2836_realize(DeviceState *dev, Error **errp)
@@ -73,44 +72,26 @@ static void bcm2836_realize(DeviceState *dev, Error **errp)
     BCM283XClass *bc = BCM283X_GET_CLASS(dev);
     const BCM283XInfo *info = bc->info;
     Object *obj;
-    Error *err = NULL;
     int n;
 
     /* common peripherals from bcm2835 */
 
-    obj = object_property_get_link(OBJECT(dev), "ram", &err);
-    if (obj == NULL) {
-        error_setg(errp, "%s: required ram link not found: %s",
-                   __func__, error_get_pretty(err));
-        return;
-    }
+    obj = object_property_get_link(OBJECT(dev), "ram", &error_abort);
 
-    object_property_add_const_link(OBJECT(&s->peripherals), "ram", obj, &err);
-    if (err) {
-        error_propagate(errp, err);
-        return;
-    }
+    object_property_add_const_link(OBJECT(&s->peripherals), "ram", obj);
 
-    object_property_set_bool(OBJECT(&s->peripherals), true, "realized", &err);
-    if (err) {
-        error_propagate(errp, err);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->peripherals), errp)) {
         return;
     }
 
     object_property_add_alias(OBJECT(s), "sd-bus", OBJECT(&s->peripherals),
-                              "sd-bus", &err);
-    if (err) {
-        error_propagate(errp, err);
-        return;
-    }
+                              "sd-bus");
 
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(&s->peripherals), 0,
                             info->peri_base, 1);
 
     /* bcm2836 interrupt controller (and mailboxes, etc.) */
-    object_property_set_bool(OBJECT(&s->control), true, "realized", &err);
-    if (err) {
-        error_propagate(errp, err);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->control), errp)) {
         return;
     }
 
@@ -126,26 +107,20 @@ static void bcm2836_realize(DeviceState *dev, Error **errp)
         s->cpu[n].core.mp_affinity = (info->clusterid << 8) | n;
 
         /* set periphbase/CBAR value for CPU-local registers */
-        object_property_set_int(OBJECT(&s->cpu[n].core),
-                                info->peri_base,
-                                "reset-cbar", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!object_property_set_int(OBJECT(&s->cpu[n].core), "reset-cbar",
+                                     info->peri_base, errp)) {
             return;
         }
 
         /* start powered off if not enabled */
-        object_property_set_bool(OBJECT(&s->cpu[n].core), n >= s->enabled_cpus,
-                                 "start-powered-off", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!object_property_set_bool(OBJECT(&s->cpu[n].core),
+                                      "start-powered-off",
+                                      n >= s->enabled_cpus,
+                                      errp)) {
             return;
         }
 
-        object_property_set_bool(OBJECT(&s->cpu[n].core), true,
-                                 "realized", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!qdev_realize(DEVICE(&s->cpu[n].core), NULL, errp)) {
             return;
         }
 
@@ -180,7 +155,7 @@ static void bcm283x_class_init(ObjectClass *oc, void *data)
 
     bc->info = data;
     dc->realize = bcm2836_realize;
-    dc->props = bcm2836_props;
+    device_class_set_props(dc, bcm2836_props);
     /* Reason: Must be wired up in code (see raspi_init() function) */
     dc->user_creatable = false;
 }

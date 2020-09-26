@@ -18,7 +18,6 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qom/object.h"
 #include "hw/fw-path-provider.h"
 #include "hw/qdev-core.h"
 #include "hw/qdev-properties.h"
@@ -37,6 +36,10 @@ static const int user_feature_bits[] = {
     VIRTIO_RING_F_EVENT_IDX,
     VIRTIO_SCSI_F_HOTPLUG,
     VHOST_INVALID_FEATURE_BIT
+};
+
+enum VhostUserProtocolFeature {
+    VHOST_USER_PROTOCOL_F_RESET_DEVICE = 13,
 };
 
 static void vhost_user_scsi_set_status(VirtIODevice *vdev, uint8_t status)
@@ -59,6 +62,25 @@ static void vhost_user_scsi_set_status(VirtIODevice *vdev, uint8_t status)
         }
     } else {
         vhost_scsi_common_stop(vsc);
+    }
+}
+
+static void vhost_user_scsi_reset(VirtIODevice *vdev)
+{
+    VHostSCSICommon *vsc = VHOST_SCSI_COMMON(vdev);
+    struct vhost_dev *dev = &vsc->dev;
+
+    /*
+     * Historically, reset was not implemented so only reset devices
+     * that are expecting it.
+     */
+    if (!virtio_has_feature(dev->protocol_features,
+                            VHOST_USER_PROTOCOL_F_RESET_DEVICE)) {
+        return;
+    }
+
+    if (dev->vhost_ops->vhost_reset_device) {
+        dev->vhost_ops->vhost_reset_device(dev);
     }
 }
 
@@ -120,7 +142,7 @@ free_virtio:
     virtio_scsi_common_unrealize(dev);
 }
 
-static void vhost_user_scsi_unrealize(DeviceState *dev, Error **errp)
+static void vhost_user_scsi_unrealize(DeviceState *dev)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VHostUserSCSI *s = VHOST_USER_SCSI(dev);
@@ -174,7 +196,7 @@ static void vhost_user_scsi_class_init(ObjectClass *klass, void *data)
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
     FWPathProviderClass *fwc = FW_PATH_PROVIDER_CLASS(klass);
 
-    dc->props = vhost_user_scsi_properties;
+    device_class_set_props(dc, vhost_user_scsi_properties);
     dc->vmsd = &vmstate_vhost_scsi;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     vdc->realize = vhost_user_scsi_realize;
@@ -182,6 +204,7 @@ static void vhost_user_scsi_class_init(ObjectClass *klass, void *data)
     vdc->get_features = vhost_scsi_common_get_features;
     vdc->set_config = vhost_scsi_common_set_config;
     vdc->set_status = vhost_user_scsi_set_status;
+    vdc->reset = vhost_user_scsi_reset;
     fwc->get_dev_path = vhost_scsi_common_get_fw_dev_path;
 }
 
@@ -193,7 +216,7 @@ static void vhost_user_scsi_instance_init(Object *obj)
 
     /* Add the bootindex property for this object */
     device_add_bootindex_property(obj, &vsc->bootindex, "bootindex", NULL,
-                                  DEVICE(vsc), NULL);
+                                  DEVICE(vsc));
 }
 
 static const TypeInfo vhost_user_scsi_info = {

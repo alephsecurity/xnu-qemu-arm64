@@ -44,7 +44,7 @@
 typedef struct SMBusEEPROMDevice {
     SMBusDevice smbusdev;
     uint8_t data[SMBUS_EEPROM_SIZE];
-    void *init_data;
+    uint8_t *init_data;
     uint8_t offset;
     bool accessed;
 } SMBusEEPROMDevice;
@@ -129,13 +129,13 @@ static void smbus_eeprom_reset(DeviceState *dev)
 
 static void smbus_eeprom_realize(DeviceState *dev, Error **errp)
 {
-    smbus_eeprom_reset(dev);
-}
+    SMBusEEPROMDevice *eeprom = SMBUS_EEPROM(dev);
 
-static Property smbus_eeprom_properties[] = {
-    DEFINE_PROP_PTR("data", SMBusEEPROMDevice, init_data),
-    DEFINE_PROP_END_OF_LIST(),
-};
+    smbus_eeprom_reset(dev);
+    if (eeprom->init_data == NULL) {
+        error_setg(errp, "init_data cannot be NULL");
+    }
+}
 
 static void smbus_eeprom_class_initfn(ObjectClass *klass, void *data)
 {
@@ -146,9 +146,8 @@ static void smbus_eeprom_class_initfn(ObjectClass *klass, void *data)
     dc->reset = smbus_eeprom_reset;
     sc->receive_byte = eeprom_receive_byte;
     sc->write_data = eeprom_write_data;
-    dc->props = smbus_eeprom_properties;
     dc->vmsd = &vmstate_smbus_eeprom;
-    /* Reason: pointer property "data" */
+    /* Reason: init_data */
     dc->user_creatable = false;
 }
 
@@ -170,10 +169,11 @@ void smbus_eeprom_init_one(I2CBus *smbus, uint8_t address, uint8_t *eeprom_buf)
 {
     DeviceState *dev;
 
-    dev = qdev_create((BusState *) smbus, TYPE_SMBUS_EEPROM);
+    dev = qdev_new(TYPE_SMBUS_EEPROM);
     qdev_prop_set_uint8(dev, "address", address);
-    qdev_prop_set_ptr(dev, "data", eeprom_buf);
-    qdev_init_nofail(dev);
+    /* FIXME: use an array of byte or block backend property? */
+    SMBUS_EEPROM(dev)->init_data = eeprom_buf;
+    qdev_realize_and_unref(dev, (BusState *)smbus, &error_fatal);
 }
 
 void smbus_eeprom_init(I2CBus *smbus, int nb_eeprom,
@@ -195,8 +195,7 @@ void smbus_eeprom_init(I2CBus *smbus, int nb_eeprom,
 }
 
 /* Generate SDRAM SPD EEPROM data describing a module of type and size */
-uint8_t *spd_data_generate(enum sdram_type type, ram_addr_t ram_size,
-                           Error **errp)
+uint8_t *spd_data_generate(enum sdram_type type, ram_addr_t ram_size)
 {
     uint8_t *spd;
     uint8_t nbanks;
@@ -222,39 +221,18 @@ uint8_t *spd_data_generate(enum sdram_type type, ram_addr_t ram_size,
         g_assert_not_reached();
     }
     size = ram_size >> 20; /* work in terms of megabytes */
-    if (size < 4) {
-        error_setg(errp, "SDRAM size is too small");
-        return NULL;
-    }
     sz_log2 = 31 - clz32(size);
     size = 1U << sz_log2;
-    if (ram_size > size * MiB) {
-        error_setg(errp, "SDRAM size 0x"RAM_ADDR_FMT" is not a power of 2, "
-                   "truncating to %u MB", ram_size, size);
-    }
-    if (sz_log2 < min_log2) {
-        error_setg(errp,
-                   "Memory size is too small for SDRAM type, adjusting type");
-        if (size >= 32) {
-            type = DDR;
-            min_log2 = 5;
-            max_log2 = 12;
-        } else {
-            type = SDR;
-            min_log2 = 2;
-            max_log2 = 9;
-        }
-    }
+    assert(ram_size == size * MiB);
+    assert(sz_log2 >= min_log2);
 
     nbanks = 1;
     while (sz_log2 > max_log2 && nbanks < 8) {
         sz_log2--;
-        nbanks++;
+        nbanks *= 2;
     }
 
-    if (size > (1ULL << sz_log2) * nbanks) {
-        error_setg(errp, "Memory size is too big for SDRAM, truncating");
-    }
+    assert(size == (1ULL << sz_log2) * nbanks);
 
     /* split to 2 banks if possible to avoid a bug in MIPS Malta firmware */
     if (nbanks == 1 && sz_log2 > min_log2) {

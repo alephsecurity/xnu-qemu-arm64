@@ -1,24 +1,25 @@
-config TPMDEV
+config TPM_TIS_ISA
+    bool
+    depends on TPM && ISA_BUS
+    select TPM_TIS
+
+config TPM_TIS_SYSBUS
     bool
     depends on TPM
+    select TPM_TIS
 
 config TPM_TIS
     bool
-    depends on TPM && ISA_BUS
-    select TPMDEV
+    depends on TPM
+    select TPM_BACKEND
 
 config TPM_CRB
     bool
     depends on TPM && PC
-    select TPMDEV
+    select TPM_BACKEND
 
-config TPM_PASSTHROUGH
+config TPM_SPAPR
     bool
     default y
-    # FIXME: should check for x86 host as well
-    depends on TPMDEV && LINUX
-
-config TPM_EMULATOR
-    bool
-    default y
-    depends on TPMDEV
+    depends on TPM && PSERIES
+    select TPM_BACKEND

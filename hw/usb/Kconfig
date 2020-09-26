@@ -46,6 +46,10 @@ config USB_MUSB
     bool
     select USB
 
+config USB_DWC2
+    bool
+    select USB
+
 config TUSB6010
     bool
     select USB_MUSB
@@ -82,17 +86,17 @@ config USB_NETWORK
     default y
     depends on USB
 
-config USB_BLUETOOTH
-    bool
-    default y
-    depends on USB
-
 config USB_SMARTCARD
     bool
     default y
     depends on USB
 
 config USB_STORAGE_MTP
+    bool
+    default y
+    depends on USB
+
+config IMX_USBPHY
     bool
     default y
     depends on USB

@@ -26,17 +26,25 @@ _Static_assert(sizeof(struct PSWLegacy) == 8, "PSWLegacy size incorrect");
 
 /* s390 psw bit masks */
 #define PSW_MASK_IOINT      0x0200000000000000ULL
+#define PSW_MASK_SHORTPSW   0x0008000000000000ULL
 #define PSW_MASK_WAIT       0x0002000000000000ULL
 #define PSW_MASK_EAMODE     0x0000000100000000ULL
 #define PSW_MASK_BAMODE     0x0000000080000000ULL
-#define PSW_MASK_ZMODE      (PSW_MASK_EAMODE | PSW_MASK_BAMODE)
+#define PSW_MASK_SHORT_ADDR 0x000000007fffffffULL
+#define PSW_MASK_64         (PSW_MASK_EAMODE | PSW_MASK_BAMODE)
 
 /* Low core mapping */
 typedef struct LowCore {
     /* prefix area: defined by architecture */
     PSWLegacy       ipl_psw;                  /* 0x000 */
     uint32_t        ccw1[2];                  /* 0x008 */
-    uint32_t        ccw2[2];                  /* 0x010 */
+    union {
+        uint32_t        ccw2[2];                  /* 0x010 */
+        struct {
+            uint32_t reserved10;
+            uint32_t ptr_iplb;
+        };
+    };
     uint8_t         pad1[0x80 - 0x18];        /* 0x018 */
     uint32_t        ext_params;               /* 0x080 */
     uint16_t        cpu_addr;                 /* 0x084 */
@@ -85,7 +93,7 @@ typedef struct LowCore {
     PSW             io_new_psw;               /* 0x1f0 */
 } __attribute__((packed, aligned(8192))) LowCore;
 
-extern LowCore const *lowcore;
+extern LowCore *lowcore;
 
 static inline void set_prefix(uint32_t address)
 {

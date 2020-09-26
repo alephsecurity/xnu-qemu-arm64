@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Test NBD client reconnection
 #
@@ -22,6 +22,8 @@ import os
 import subprocess
 import iotests
 from iotests import file_path, log
+
+iotests.script_initialize()
 
 
 nbd_sock, conf_file = file_path('nbd-sock', 'nbd-fault-injector.conf')

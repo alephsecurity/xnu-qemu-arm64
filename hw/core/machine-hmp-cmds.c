@@ -55,7 +55,7 @@ void hmp_cpu_add(Monitor *mon, const QDict *qdict)
 
     cpuid = qdict_get_int(qdict, "id");
     qmp_cpu_add(cpuid, &err);
-    hmp_handle_error(mon, &err);
+    hmp_handle_error(mon, err);
 }
 
 void hmp_hotpluggable_cpus(Monitor *mon, const QDict *qdict)
@@ -66,7 +66,7 @@ void hmp_hotpluggable_cpus(Monitor *mon, const QDict *qdict)
     CpuInstanceProperties *c;
 
     if (err != NULL) {
-        hmp_handle_error(mon, &err);
+        hmp_handle_error(mon, err);
         return;
     }
 
@@ -113,7 +113,7 @@ void hmp_info_memdev(Monitor *mon, const QDict *qdict)
 
     while (m) {
         v = string_output_visitor_new(false, &str);
-        visit_type_uint16List(v, NULL, &m->value->host_nodes, NULL);
+        visit_type_uint16List(v, NULL, &m->value->host_nodes, &error_abort);
         monitor_printf(mon, "memory backend: %s\n", m->value->id);
         monitor_printf(mon, "  size:  %" PRId64 "\n", m->value->size);
         monitor_printf(mon, "  merge: %s\n",
@@ -135,7 +135,7 @@ void hmp_info_memdev(Monitor *mon, const QDict *qdict)
     monitor_printf(mon, "\n");
 
     qapi_free_MemdevList(memdev_list);
-    hmp_handle_error(mon, &err);
+    hmp_handle_error(mon, err);
 }
 
 void hmp_info_numa(Monitor *mon, const QDict *qdict)

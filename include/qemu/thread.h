@@ -57,17 +57,17 @@ extern QemuCondTimedWaitFunc qemu_cond_timedwait_func;
  * hide them.
  */
 #define qemu_mutex_lock(m)                                              \
-            qemu_mutex_lock_impl(m, __FILE__, __LINE__);
+            qemu_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_trylock(m)                                           \
-            qemu_mutex_trylock_impl(m, __FILE__, __LINE__);
+            qemu_mutex_trylock_impl(m, __FILE__, __LINE__)
 #define qemu_rec_mutex_lock(m)                                          \
-            qemu_rec_mutex_lock_impl(m, __FILE__, __LINE__);
+            qemu_rec_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_rec_mutex_trylock(m)                                       \
-            qemu_rec_mutex_trylock_impl(m, __FILE__, __LINE__);
+            qemu_rec_mutex_trylock_impl(m, __FILE__, __LINE__)
 #define qemu_cond_wait(c, m)                                            \
-            qemu_cond_wait_impl(c, m, __FILE__, __LINE__);
+            qemu_cond_wait_impl(c, m, __FILE__, __LINE__)
 #define qemu_cond_timedwait(c, m, ms)                                   \
-            qemu_cond_wait_impl(c, m, ms, __FILE__, __LINE__);
+            qemu_cond_timedwait_impl(c, m, ms, __FILE__, __LINE__)
 #else
 #define qemu_mutex_lock(m) ({                                           \
             QemuMutexLockFunc _f = atomic_read(&qemu_mutex_lock_func);  \
@@ -177,7 +177,7 @@ void qemu_thread_create(QemuThread *thread, const char *name,
 void *qemu_thread_join(QemuThread *thread);
 void qemu_thread_get_self(QemuThread *thread);
 bool qemu_thread_is_self(QemuThread *thread);
-void qemu_thread_exit(void *retval);
+void qemu_thread_exit(void *retval) QEMU_NORETURN;
 void qemu_thread_naming(bool enable);
 
 struct Notifier;
@@ -206,6 +206,10 @@ void qemu_thread_atexit_add(struct Notifier *notifier);
  */
 void qemu_thread_atexit_remove(struct Notifier *notifier);
 
+#ifdef CONFIG_TSAN
+#include <sanitizer/tsan_interface.h>
+#endif
+
 struct QemuSpin {
     int value;
 };
@@ -213,20 +217,46 @@ struct QemuSpin {
 static inline void qemu_spin_init(QemuSpin *spin)
 {
     __sync_lock_release(&spin->value);
+#ifdef CONFIG_TSAN
+    __tsan_mutex_create(spin, __tsan_mutex_not_static);
+#endif
+}
+
+/* const parameter because the only purpose here is the TSAN annotation */
+static inline void qemu_spin_destroy(const QemuSpin *spin)
+{
+#ifdef CONFIG_TSAN
+    __tsan_mutex_destroy((void *)spin, __tsan_mutex_not_static);
+#endif
 }
 
 static inline void qemu_spin_lock(QemuSpin *spin)
 {
+#ifdef CONFIG_TSAN
+    __tsan_mutex_pre_lock(spin, 0);
+#endif
     while (unlikely(__sync_lock_test_and_set(&spin->value, true))) {
         while (atomic_read(&spin->value)) {
             cpu_relax();
         }
     }
+#ifdef CONFIG_TSAN
+    __tsan_mutex_post_lock(spin, 0, 0);
+#endif
 }
 
 static inline bool qemu_spin_trylock(QemuSpin *spin)
 {
-    return __sync_lock_test_and_set(&spin->value, true);
+#ifdef CONFIG_TSAN
+    __tsan_mutex_pre_lock(spin, __tsan_mutex_try_lock);
+#endif
+    bool busy = __sync_lock_test_and_set(&spin->value, true);
+#ifdef CONFIG_TSAN
+    unsigned flags = __tsan_mutex_try_lock;
+    flags |= busy ? __tsan_mutex_try_lock_failed : 0;
+    __tsan_mutex_post_lock(spin, flags, 0);
+#endif
+    return busy;
 }
 
 static inline bool qemu_spin_locked(QemuSpin *spin)
@@ -236,7 +266,13 @@ static inline bool qemu_spin_locked(QemuSpin *spin)
 
 static inline void qemu_spin_unlock(QemuSpin *spin)
 {
+#ifdef CONFIG_TSAN
+    __tsan_mutex_pre_unlock(spin, 0);
+#endif
     __sync_lock_release(&spin->value);
+#ifdef CONFIG_TSAN
+    __tsan_mutex_post_unlock(spin, 0);
+#endif
 }
 
 struct QemuLockCnt {

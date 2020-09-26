@@ -181,7 +181,7 @@ static void amdvi_log_event(AMDVIState *s, uint64_t *evt)
     }
 
     if (dma_memory_write(&address_space_memory, s->evtlog + s->evtlog_tail,
-        &evt, AMDVI_EVENT_LEN)) {
+                         evt, AMDVI_EVENT_LEN)) {
         trace_amdvi_evntlog_fail(s->evtlog, s->evtlog_tail);
     }
 
@@ -370,7 +370,7 @@ static void amdvi_completion_wait(AMDVIState *s, uint64_t *cmd)
     hwaddr addr = cpu_to_le64(extract64(cmd[0], 3, 49)) << 3;
     uint64_t data = cpu_to_le64(cmd[1]);
 
-    if (extract64(cmd[0], 51, 8)) {
+    if (extract64(cmd[0], 52, 8)) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
     }
@@ -395,7 +395,7 @@ static void amdvi_inval_devtab_entry(AMDVIState *s, uint64_t *cmd)
     uint16_t devid = cpu_to_le16((uint16_t)extract64(cmd[0], 0, 16));
 
     /* This command should invalidate internal caches of which there isn't */
-    if (extract64(cmd[0], 15, 16) || cmd[1]) {
+    if (extract64(cmd[0], 16, 44) || cmd[1]) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
     }
@@ -405,9 +405,9 @@ static void amdvi_inval_devtab_entry(AMDVIState *s, uint64_t *cmd)
 
 static void amdvi_complete_ppr(AMDVIState *s, uint64_t *cmd)
 {
-    if (extract64(cmd[0], 15, 16) ||  extract64(cmd[0], 19, 8) ||
+    if (extract64(cmd[0], 16, 16) ||  extract64(cmd[0], 52, 8) ||
         extract64(cmd[1], 0, 2) || extract64(cmd[1], 3, 29)
-        || extract64(cmd[1], 47, 16)) {
+        || extract64(cmd[1], 48, 16)) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
     }
@@ -438,8 +438,8 @@ static void amdvi_inval_pages(AMDVIState *s, uint64_t *cmd)
 {
     uint16_t domid = cpu_to_le16((uint16_t)extract64(cmd[0], 32, 16));
 
-    if (extract64(cmd[0], 20, 12) || extract64(cmd[0], 16, 12) ||
-        extract64(cmd[0], 3, 10)) {
+    if (extract64(cmd[0], 20, 12) || extract64(cmd[0], 48, 12) ||
+        extract64(cmd[1], 3, 9)) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
     }
@@ -451,7 +451,7 @@ static void amdvi_inval_pages(AMDVIState *s, uint64_t *cmd)
 
 static void amdvi_prefetch_pages(AMDVIState *s, uint64_t *cmd)
 {
-    if (extract64(cmd[0], 16, 8) || extract64(cmd[0], 20, 8) ||
+    if (extract64(cmd[0], 16, 8) || extract64(cmd[0], 52, 8) ||
         extract64(cmd[1], 1, 1) || extract64(cmd[1], 3, 1) ||
         extract64(cmd[1], 5, 7)) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
@@ -463,7 +463,7 @@ static void amdvi_prefetch_pages(AMDVIState *s, uint64_t *cmd)
 
 static void amdvi_inval_inttable(AMDVIState *s, uint64_t *cmd)
 {
-    if (extract64(cmd[0], 16, 16) || cmd[1]) {
+    if (extract64(cmd[0], 16, 44) || cmd[1]) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
         return;
@@ -479,7 +479,8 @@ static void iommu_inval_iotlb(AMDVIState *s, uint64_t *cmd)
 {
 
     uint16_t devid = extract64(cmd[0], 0, 16);
-    if (extract64(cmd[1], 1, 1) || extract64(cmd[1], 3, 9)) {
+    if (extract64(cmd[1], 1, 1) || extract64(cmd[1], 3, 1) ||
+        extract64(cmd[1], 6, 6)) {
         amdvi_log_illegalcom_error(s, extract64(cmd[0], 60, 4),
                                    s->cmdbuf + s->cmdbuf_head);
         return;
@@ -1533,7 +1534,7 @@ static void amdvi_reset(DeviceState *dev)
     amdvi_init(s);
 }
 
-static void amdvi_realize(DeviceState *dev, Error **err)
+static void amdvi_realize(DeviceState *dev, Error **errp)
 {
     int ret = 0;
     AMDVIState *s = AMD_IOMMU_DEVICE(dev);
@@ -1548,22 +1549,23 @@ static void amdvi_realize(DeviceState *dev, Error **err)
 
     /* This device should take care of IOMMU PCI properties */
     x86_iommu->type = TYPE_AMD;
-    qdev_set_parent_bus(DEVICE(&s->pci), &bus->qbus);
-    object_property_set_bool(OBJECT(&s->pci), true, "realized", err);
+    if (!qdev_realize(DEVICE(&s->pci), &bus->qbus, errp)) {
+        return;
+    }
     ret = pci_add_capability(&s->pci.dev, AMDVI_CAPAB_ID_SEC, 0,
-                                         AMDVI_CAPAB_SIZE, err);
+                                         AMDVI_CAPAB_SIZE, errp);
     if (ret < 0) {
         return;
     }
     s->capab_offset = ret;
 
     ret = pci_add_capability(&s->pci.dev, PCI_CAP_ID_MSI, 0,
-                             AMDVI_CAPAB_REG_SIZE, err);
+                             AMDVI_CAPAB_REG_SIZE, errp);
     if (ret < 0) {
         return;
     }
     ret = pci_add_capability(&s->pci.dev, PCI_CAP_ID_HT, 0,
-                             AMDVI_CAPAB_REG_SIZE, err);
+                             AMDVI_CAPAB_REG_SIZE, errp);
     if (ret < 0) {
         return;
     }
@@ -1578,8 +1580,8 @@ static void amdvi_realize(DeviceState *dev, Error **err)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->mmio);
     sysbus_mmio_map(SYS_BUS_DEVICE(s), 0, AMDVI_BASE_ADDR);
     pci_setup_iommu(bus, amdvi_host_dma_iommu, s);
-    s->devid = object_property_get_int(OBJECT(&s->pci), "addr", err);
-    msi_init(&s->pci.dev, 0, 1, true, false, err);
+    s->devid = object_property_get_int(OBJECT(&s->pci), "addr", &error_abort);
+    msi_init(&s->pci.dev, 0, 1, true, false, errp);
     amdvi_init(s);
 }
 

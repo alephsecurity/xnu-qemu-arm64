@@ -105,8 +105,7 @@ void ipmi_bmc_find_and_link(Object *obj, Object **bmc)
 {
     object_property_add_link(obj, "bmc", TYPE_IPMI_BMC, bmc,
                              isa_ipmi_bmc_check,
-                             OBJ_PROP_LINK_STRONG,
-                             &error_abort);
+                             OBJ_PROP_LINK_STRONG);
 }
 
 static Property ipmi_bmc_properties[] = {
@@ -118,7 +117,7 @@ static void bmc_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
-    dc->props = ipmi_bmc_properties;
+    device_class_set_props(dc, ipmi_bmc_properties);
 }
 
 static TypeInfo ipmi_bmc_type_info = {

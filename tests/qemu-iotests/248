@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Test resume mirror after auto pause on ENOSPC
 #
@@ -21,7 +21,7 @@
 import iotests
 from iotests import qemu_img_create, qemu_io, file_path, filter_qmp_testfiles
 
-iotests.verify_image_format(supported_fmts=['qcow2'])
+iotests.script_initialize(supported_fmts=['qcow2'])
 
 source, target = file_path('source', 'target')
 size = 5 * 1024 * 1024

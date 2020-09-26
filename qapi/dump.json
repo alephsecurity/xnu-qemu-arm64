@@ -1,4 +1,5 @@
 # -*- Mode: Python -*-
+# vim: filetype=python
 #
 # This work is licensed under the terms of the GNU GPL, version 2 or later.
 # See the COPYING file in the top-level directory.
@@ -38,8 +39,8 @@
 #          using gdb to process the core file.
 #
 #          IMPORTANT: this option can make QEMU allocate several gigabytes
-#                     of RAM. This can happen for a large guest, or a
-#                     malicious guest pretending to be large.
+#          of RAM. This can happen for a large guest, or a
+#          malicious guest pretending to be large.
 #
 #          Also, paging=true has the following limitations:
 #

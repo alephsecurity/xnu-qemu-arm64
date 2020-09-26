@@ -36,7 +36,7 @@
 /* --------------------------------- */
 
 static char *idebus_get_fw_dev_path(DeviceState *dev);
-static void idebus_unrealize(BusState *qdev, Error **errp);
+static void idebus_unrealize(BusState *qdev);
 
 static Property ide_props[] = {
     DEFINE_PROP_UINT32("unit", IDEDevice, unit, -1),
@@ -51,7 +51,7 @@ static void ide_bus_class_init(ObjectClass *klass, void *data)
     k->unrealize = idebus_unrealize;
 }
 
-static void idebus_unrealize(BusState *bus, Error **errp)
+static void idebus_unrealize(BusState *bus)
 {
     IDEBus *ibus = IDE_BUS(bus);
 
@@ -127,11 +127,11 @@ IDEDevice *ide_create_drive(IDEBus *bus, int unit, DriveInfo *drive)
 {
     DeviceState *dev;
 
-    dev = qdev_create(&bus->qbus, drive->media_cd ? "ide-cd" : "ide-hd");
+    dev = qdev_new(drive->media_cd ? "ide-cd" : "ide-hd");
     qdev_prop_set_uint32(dev, "unit", unit);
-    qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(drive),
-                        &error_fatal);
-    qdev_init_nofail(dev);
+    qdev_prop_set_drive_err(dev, "drive", blk_by_legacy_dinfo(drive),
+                            &error_fatal);
+    qdev_realize_and_unref(dev, &bus->qbus, &error_fatal);
     return DO_UPCAST(IDEDevice, qdev, dev);
 }
 
@@ -187,7 +187,10 @@ static void ide_dev_initfn(IDEDevice *dev, IDEDriveKind kind, Error **errp)
         return;
     }
 
-    blkconf_blocksizes(&dev->conf);
+    if (!blkconf_blocksizes(&dev->conf, errp)) {
+        return;
+    }
+
     if (dev->conf.logical_block_size != 512) {
         error_setg(errp, "logical_block_size must be 512 for IDE");
         return;
@@ -242,9 +245,8 @@ static void ide_dev_set_bootindex(Object *obj, Visitor *v, const char *name,
     int32_t boot_index;
     Error *local_err = NULL;
 
-    visit_type_int32(v, name, &boot_index, &local_err);
-    if (local_err) {
-        goto out;
+    if (!visit_type_int32(v, name, &boot_index, errp)) {
+        return;
     }
     /* check whether bootindex is present in fw_boot_order list  */
     check_boot_index(boot_index, &local_err);
@@ -266,8 +268,8 @@ static void ide_dev_instance_init(Object *obj)
 {
     object_property_add(obj, "bootindex", "int32",
                         ide_dev_get_bootindex,
-                        ide_dev_set_bootindex, NULL, NULL, NULL);
-    object_property_set_int(obj, -1, "bootindex", NULL);
+                        ide_dev_set_bootindex, NULL, NULL);
+    object_property_set_int(obj, "bootindex", -1, NULL);
 }
 
 static void ide_hd_realize(IDEDevice *dev, Error **errp)
@@ -319,7 +321,7 @@ static void ide_hd_class_init(ObjectClass *klass, void *data)
     k->realize  = ide_hd_realize;
     dc->fw_name = "drive";
     dc->desc    = "virtual IDE disk";
-    dc->props   = ide_hd_properties;
+    device_class_set_props(dc, ide_hd_properties);
 }
 
 static const TypeInfo ide_hd_info = {
@@ -342,7 +344,7 @@ static void ide_cd_class_init(ObjectClass *klass, void *data)
     k->realize  = ide_cd_realize;
     dc->fw_name = "drive";
     dc->desc    = "virtual IDE CD-ROM";
-    dc->props   = ide_cd_properties;
+    device_class_set_props(dc, ide_cd_properties);
 }
 
 static const TypeInfo ide_cd_info = {
@@ -365,7 +367,7 @@ static void ide_drive_class_init(ObjectClass *klass, void *data)
     k->realize  = ide_drive_realize;
     dc->fw_name = "drive";
     dc->desc    = "virtual IDE disk or CD-ROM (legacy)";
-    dc->props   = ide_drive_properties;
+    device_class_set_props(dc, ide_drive_properties);
 }
 
 static const TypeInfo ide_drive_info = {
@@ -381,7 +383,7 @@ static void ide_device_class_init(ObjectClass *klass, void *data)
     k->realize = ide_qdev_realize;
     set_bit(DEVICE_CATEGORY_STORAGE, k->categories);
     k->bus_type = TYPE_IDE_BUS;
-    k->props = ide_props;
+    device_class_set_props(k, ide_props);
 }
 
 static const TypeInfo ide_device_type_info = {

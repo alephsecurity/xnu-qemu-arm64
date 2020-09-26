@@ -786,9 +786,8 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "'cryptodev' parameter expects a valid object");
         return;
     } else if (cryptodev_backend_is_used(vcrypto->cryptodev)) {
-        char *path = object_get_canonical_path_component(OBJECT(vcrypto->conf.cryptodev));
-        error_setg(errp, "can't use already used cryptodev backend: %s", path);
-        g_free(path);
+        error_setg(errp, "can't use already used cryptodev backend: %s",
+                   object_get_canonical_path_component(OBJECT(vcrypto->conf.cryptodev)));
         return;
     }
 
@@ -822,7 +821,7 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     cryptodev_backend_set_used(vcrypto->cryptodev, true);
 }
 
-static void virtio_crypto_device_unrealize(DeviceState *dev, Error **errp)
+static void virtio_crypto_device_unrealize(DeviceState *dev)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
@@ -831,12 +830,13 @@ static void virtio_crypto_device_unrealize(DeviceState *dev, Error **errp)
 
     max_queues = vcrypto->multiqueue ? vcrypto->max_queues : 1;
     for (i = 0; i < max_queues; i++) {
-        virtio_del_queue(vdev, i);
+        virtio_delete_queue(vcrypto->vqs[i].dataq);
         q = &vcrypto->vqs[i];
         qemu_bh_delete(q->dataq_bh);
     }
 
     g_free(vcrypto->vqs);
+    virtio_delete_queue(vcrypto->ctrl_vq);
 
     virtio_cleanup(vdev);
     cryptodev_backend_set_used(vcrypto->cryptodev, false);
@@ -955,7 +955,7 @@ static void virtio_crypto_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
 
-    dc->props = virtio_crypto_properties;
+    device_class_set_props(dc, virtio_crypto_properties);
     dc->vmsd = &vmstate_virtio_crypto;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     vdc->realize = virtio_crypto_device_realize;

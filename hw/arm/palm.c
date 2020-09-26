@@ -31,6 +31,7 @@
 #include "hw/loader.h"
 #include "exec/address-spaces.h"
 #include "cpu.h"
+#include "qemu/cutils.h"
 
 static uint64_t static_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -60,21 +61,21 @@ static const MemoryRegionOps static_ops = {
 /* Palm Tunsgten|E support */
 
 /* Shared GPIOs */
-#define PALMTE_USBDETECT_GPIO	0
-#define PALMTE_USB_OR_DC_GPIO	1
-#define PALMTE_TSC_GPIO		4
-#define PALMTE_PINTDAV_GPIO	6
-#define PALMTE_MMC_WP_GPIO	8
-#define PALMTE_MMC_POWER_GPIO	9
-#define PALMTE_HDQ_GPIO		11
-#define PALMTE_HEADPHONES_GPIO	14
-#define PALMTE_SPEAKER_GPIO	15
+#define PALMTE_USBDETECT_GPIO   0
+#define PALMTE_USB_OR_DC_GPIO   1
+#define PALMTE_TSC_GPIO                 4
+#define PALMTE_PINTDAV_GPIO     6
+#define PALMTE_MMC_WP_GPIO      8
+#define PALMTE_MMC_POWER_GPIO   9
+#define PALMTE_HDQ_GPIO                 11
+#define PALMTE_HEADPHONES_GPIO  14
+#define PALMTE_SPEAKER_GPIO     15
 /* MPU private GPIOs */
-#define PALMTE_DC_GPIO		2
-#define PALMTE_MMC_SWITCH_GPIO	4
-#define PALMTE_MMC1_GPIO	6
-#define PALMTE_MMC2_GPIO	7
-#define PALMTE_MMC3_GPIO	11
+#define PALMTE_DC_GPIO          2
+#define PALMTE_MMC_SWITCH_GPIO  4
+#define PALMTE_MMC1_GPIO        6
+#define PALMTE_MMC2_GPIO        7
+#define PALMTE_MMC3_GPIO        11
 
 static MouseTransformInfo palmte_pointercal = {
     .x = 320,
@@ -99,17 +100,17 @@ static struct {
     int column;
 } palmte_keymap[0x80] = {
     [0 ... 0x7f] = { -1, -1 },
-    [0x3b] = { 0, 0 },	/* F1	-> Calendar */
-    [0x3c] = { 1, 0 },	/* F2	-> Contacts */
-    [0x3d] = { 2, 0 },	/* F3	-> Tasks List */
-    [0x3e] = { 3, 0 },	/* F4	-> Note Pad */
-    [0x01] = { 4, 0 },	/* Esc	-> Power */
-    [0x4b] = { 0, 1 },	/* 	   Left */
-    [0x50] = { 1, 1 },	/* 	   Down */
-    [0x48] = { 2, 1 },	/*	   Up */
-    [0x4d] = { 3, 1 },	/*	   Right */
-    [0x4c] = { 4, 1 },	/* 	   Centre */
-    [0x39] = { 4, 1 },	/* Spc	-> Centre */
+    [0x3b] = { 0, 0 },  /* F1   -> Calendar */
+    [0x3c] = { 1, 0 },  /* F2   -> Contacts */
+    [0x3d] = { 2, 0 },  /* F3   -> Tasks List */
+    [0x3e] = { 3, 0 },  /* F4   -> Note Pad */
+    [0x01] = { 4, 0 },  /* Esc  -> Power */
+    [0x4b] = { 0, 1 },  /*         Left */
+    [0x50] = { 1, 1 },  /*         Down */
+    [0x48] = { 2, 1 },  /*         Up */
+    [0x4d] = { 3, 1 },  /*         Right */
+    [0x4c] = { 4, 1 },  /*         Centre */
+    [0x39] = { 4, 1 },  /* Spc  -> Centre */
 };
 
 static void palmte_button_event(void *opaque, int keycode)
@@ -122,6 +123,21 @@ static void palmte_button_event(void *opaque, int keycode)
                         palmte_keymap[keycode & 0x7f].column,
                         !(keycode & 0x80));
 }
+
+/*
+ * Encapsulation of some GPIO line behaviour for the Palm board
+ *
+ * QEMU interface:
+ *  + unnamed GPIO inputs 0..6: for the various miscellaneous input lines
+ */
+
+#define TYPE_PALM_MISC_GPIO "palm-misc-gpio"
+#define PALM_MISC_GPIO(obj) \
+    OBJECT_CHECK(PalmMiscGPIOState, (obj), TYPE_PALM_MISC_GPIO)
+
+typedef struct PalmMiscGPIOState {
+    SysBusDevice parent_obj;
+} PalmMiscGPIOState;
 
 static void palmte_onoff_gpios(void *opaque, int line, int level)
 {
@@ -150,23 +166,44 @@ static void palmte_onoff_gpios(void *opaque, int line, int level)
     }
 }
 
+static void palm_misc_gpio_init(Object *obj)
+{
+    DeviceState *dev = DEVICE(obj);
+
+    qdev_init_gpio_in(dev, palmte_onoff_gpios, 7);
+}
+
+static const TypeInfo palm_misc_gpio_info = {
+    .name = TYPE_PALM_MISC_GPIO,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(PalmMiscGPIOState),
+    .instance_init = palm_misc_gpio_init,
+    /*
+     * No class init required: device has no internal state so does not
+     * need to set up reset or vmstate, and has no realize method.
+     */
+};
+
 static void palmte_gpio_setup(struct omap_mpu_state_s *cpu)
 {
-    qemu_irq *misc_gpio;
+    DeviceState *misc_gpio;
+
+    misc_gpio = sysbus_create_simple(TYPE_PALM_MISC_GPIO, -1, NULL);
 
     omap_mmc_handlers(cpu->mmc,
                     qdev_get_gpio_in(cpu->gpio, PALMTE_MMC_WP_GPIO),
                     qemu_irq_invert(omap_mpuio_in_get(cpu->mpuio)
                             [PALMTE_MMC_SWITCH_GPIO]));
 
-    misc_gpio = qemu_allocate_irqs(palmte_onoff_gpios, cpu, 7);
-    qdev_connect_gpio_out(cpu->gpio, PALMTE_MMC_POWER_GPIO,	misc_gpio[0]);
-    qdev_connect_gpio_out(cpu->gpio, PALMTE_SPEAKER_GPIO,	misc_gpio[1]);
-    qdev_connect_gpio_out(cpu->gpio, 11,			misc_gpio[2]);
-    qdev_connect_gpio_out(cpu->gpio, 12,			misc_gpio[3]);
-    qdev_connect_gpio_out(cpu->gpio, 13,			misc_gpio[4]);
-    omap_mpuio_out_set(cpu->mpuio, 1,				misc_gpio[5]);
-    omap_mpuio_out_set(cpu->mpuio, 3,				misc_gpio[6]);
+    qdev_connect_gpio_out(cpu->gpio, PALMTE_MMC_POWER_GPIO,
+                          qdev_get_gpio_in(misc_gpio, 0));
+    qdev_connect_gpio_out(cpu->gpio, PALMTE_SPEAKER_GPIO,
+                          qdev_get_gpio_in(misc_gpio, 1));
+    qdev_connect_gpio_out(cpu->gpio, 11, qdev_get_gpio_in(misc_gpio, 2));
+    qdev_connect_gpio_out(cpu->gpio, 12, qdev_get_gpio_in(misc_gpio, 3));
+    qdev_connect_gpio_out(cpu->gpio, 13, qdev_get_gpio_in(misc_gpio, 4));
+    omap_mpuio_out_set(cpu->mpuio, 1, qdev_get_gpio_in(misc_gpio, 5));
+    omap_mpuio_out_set(cpu->mpuio, 3, qdev_get_gpio_in(misc_gpio, 6));
 
     /* Reset some inputs to initial state.  */
     qemu_irq_lower(qdev_get_gpio_in(cpu->gpio, PALMTE_USBDETECT_GPIO));
@@ -195,20 +232,25 @@ static void palmte_init(MachineState *machine)
     static uint32_t cs2val = 0x0000e1a0;
     static uint32_t cs3val = 0xe1a0e1a0;
     int rom_size, rom_loaded = 0;
-    MemoryRegion *dram = g_new(MemoryRegion, 1);
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
     MemoryRegion *flash = g_new(MemoryRegion, 1);
     MemoryRegion *cs = g_new(MemoryRegion, 4);
 
-    memory_region_allocate_system_memory(dram, NULL, "omap1.dram",
-                                         palmte_binfo.ram_size);
-    memory_region_add_subregion(address_space_mem, OMAP_EMIFF_BASE, dram);
+    if (machine->ram_size != mc->default_ram_size) {
+        char *sz = size_to_str(mc->default_ram_size);
+        error_report("Invalid RAM size, should be %s", sz);
+        g_free(sz);
+        exit(EXIT_FAILURE);
+    }
 
-    mpu = omap310_mpu_init(dram, machine->cpu_type);
+    memory_region_add_subregion(address_space_mem, OMAP_EMIFF_BASE,
+                                machine->ram);
+
+    mpu = omap310_mpu_init(machine->ram, machine->cpu_type);
 
     /* External Flash (EMIFS) */
-    memory_region_init_ram(flash, NULL, "palmte.flash", flash_size,
+    memory_region_init_rom(flash, NULL, "palmte.flash", flash_size,
                            &error_fatal);
-    memory_region_set_readonly(flash, true);
     memory_region_add_subregion(address_space_mem, OMAP_CS0_BASE, flash);
 
     memory_region_init_io(&cs[0], NULL, &static_ops, &cs0val, "palmte-cs0",
@@ -265,6 +307,15 @@ static void palmte_machine_init(MachineClass *mc)
     mc->init = palmte_init;
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("ti925t");
+    mc->default_ram_size = 0x02000000;
+    mc->default_ram_id = "omap1.dram";
 }
 
 DEFINE_MACHINE("cheetah", palmte_machine_init)
+
+static void palm_register_types(void)
+{
+    type_register_static(&palm_misc_gpio_info);
+}
+
+type_init(palm_register_types)

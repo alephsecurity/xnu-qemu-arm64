@@ -38,8 +38,10 @@ struct VirtIOBlkConf
     uint32_t request_merging;
     uint16_t num_queues;
     uint16_t queue_size;
+    bool seg_max_adjust;
     uint32_t max_discard_sectors;
     uint32_t max_write_zeroes_sectors;
+    bool x_enable_wce_if_config_wce;
 };
 
 struct VirtIOBlockDataPlane;
@@ -84,5 +86,6 @@ typedef struct MultiReqBuffer {
 } MultiReqBuffer;
 
 bool virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq);
+void virtio_blk_process_queued_requests(VirtIOBlock *s, bool is_bh);
 
 #endif

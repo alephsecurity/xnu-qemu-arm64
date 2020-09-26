@@ -37,14 +37,14 @@ void xnu_define_ramfb_device(AddressSpace* as, hwaddr ramfb_pa)
 {
 
     DeviceState *fb_dev;
-    fb_dev = qdev_create(NULL, TYPE_XNU_RAMFB_DEVICE);
+    fb_dev = qdev_new(TYPE_XNU_RAMFB_DEVICE);
     qdev_prop_set_uint64(fb_dev, "as", (hwaddr)as);
     qdev_prop_set_uint64(fb_dev, "fb_pa", ramfb_pa);
     qdev_prop_set_uint32(fb_dev, "fb_size", RAMFB_SIZE);
     qdev_prop_set_uint32(fb_dev, "display_cfg.height", V_HEIGHT);
     qdev_prop_set_uint32(fb_dev, "display_cfg.width", V_WIDTH);
     qdev_prop_set_uint32(fb_dev, "display_cfg.linesize", V_LINESIZE);
-    qdev_init_nofail(fb_dev);
+    qdev_realize(fb_dev, NULL, &error_abort);
 }
 
 void  xnu_get_video_bootargs(void *opaque, hwaddr ramfb_pa)

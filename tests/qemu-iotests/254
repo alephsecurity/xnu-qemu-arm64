@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Test external snapshot with bitmap copying and moving.
 #
@@ -21,7 +21,7 @@
 import iotests
 from iotests import qemu_img_create, file_path, log
 
-iotests.verify_image_format(supported_fmts=['qcow2'])
+iotests.script_initialize(supported_fmts=['qcow2'])
 
 disk, top = file_path('disk', 'top')
 size = 1024 * 1024

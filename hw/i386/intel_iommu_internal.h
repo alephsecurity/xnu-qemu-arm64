@@ -230,7 +230,8 @@
 #define VTD_IQA_DW_MASK             0x800
 
 /* IQH_REG */
-#define VTD_IQH_QH_SHIFT            4
+#define VTD_IQH_QH_SHIFT_4          4
+#define VTD_IQH_QH_SHIFT_5          5
 #define VTD_IQH_QH_MASK             0x7fff0ULL
 
 /* ICS_REG */
@@ -479,6 +480,7 @@ typedef struct VTDRootEntry VTDRootEntry;
 #define VTD_PASID_ENTRY_FPD           (1ULL << 1) /* Fault Processing Disable */
 
 /* PASID Granular Translation Type Mask */
+#define VTD_PASID_ENTRY_P              1ULL
 #define VTD_SM_PASID_ENTRY_PGTT        (7ULL << 6)
 #define VTD_SM_PASID_ENTRY_FLT         (1ULL << 6)
 #define VTD_SM_PASID_ENTRY_SLT         (2ULL << 6)

@@ -221,12 +221,10 @@ qauthz_list_file_class_init(ObjectClass *oc, void *data)
 
     object_class_property_add_str(oc, "filename",
                                   qauthz_list_file_prop_get_filename,
-                                  qauthz_list_file_prop_set_filename,
-                                  NULL);
+                                  qauthz_list_file_prop_set_filename);
     object_class_property_add_bool(oc, "refresh",
                                    qauthz_list_file_prop_get_refresh,
-                                   qauthz_list_file_prop_set_refresh,
-                                   NULL);
+                                   qauthz_list_file_prop_set_refresh);
 
     authz->is_allowed = qauthz_list_file_is_allowed;
 }
@@ -239,7 +237,7 @@ qauthz_list_file_init(Object *obj)
 
     authz->file_watch = -1;
 #ifdef CONFIG_INOTIFY1
-    authz->refresh = TRUE;
+    authz->refresh = true;
 #endif
 }
 

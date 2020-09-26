@@ -218,7 +218,7 @@ static void n66_create_s3c_uart(const N66MachineState *nms, Chardev *chr)
 
     //hack for now. create a device that is not used just to have a dummy
     //unused interrupt
-    d = qdev_create(NULL, TYPE_PLATFORM_BUS_DEVICE);
+    d = qdev_new(TYPE_PLATFORM_BUS_DEVICE);
     s = SYS_BUS_DEVICE(d);
     sysbus_init_irq(s, &irq);
     //pass a dummy irq as we don't need nor want interrupts for this UART
@@ -390,15 +390,15 @@ static void n66_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
 
     *sysmem = get_system_memory();
 
-    object_property_set_link(cpuobj, OBJECT(*sysmem), "memory",
+    object_property_set_link(cpuobj, "memory", OBJECT(*sysmem),
                              &error_abort);
 
     //set secure monitor to false
-    object_property_set_bool(cpuobj, false, "has_el3", NULL);
+    object_property_set_bool(cpuobj, "has_el3", false, NULL);
 
-    object_property_set_bool(cpuobj, false, "has_el2", NULL);
+    object_property_set_bool(cpuobj, "has_el2", false, NULL);
 
-    object_property_set_bool(cpuobj, true, "realized", &error_fatal);
+    object_property_set_bool(cpuobj, "realized", true, &error_fatal);
 
     *nsas = cpu_get_address_space(cs, ARMASIdx_NS);
 
@@ -758,74 +758,63 @@ static char* n66_get_xnu_ramfb(Object *obj, Error **errp)
 static void n66_instance_init(Object *obj)
 {
     object_property_add_str(obj, "ramdisk-filename", n66_get_ramdisk_filename,
-                            n66_set_ramdisk_filename, NULL);
+                            n66_set_ramdisk_filename);
     object_property_set_description(obj, "ramdisk-filename",
-                                    "Set the ramdisk filename to be loaded",
-                                    NULL);
+                                    "Set the ramdisk filename to be loaded");
 
     object_property_add_str(obj, "kernel-filename", n66_get_kernel_filename,
-                            n66_set_kernel_filename, NULL);
+                            n66_set_kernel_filename);
     object_property_set_description(obj, "kernel-filename",
-                                    "Set the kernel filename to be loaded",
-                                    NULL);
+                                    "Set the kernel filename to be loaded");
 
     object_property_add_str(obj, "dtb-filename", n66_get_dtb_filename,
-                            n66_set_dtb_filename, NULL);
+                            n66_set_dtb_filename);
     object_property_set_description(obj, "dtb-filename",
-                                    "Set the dev tree filename to be loaded",
-                                    NULL);
+                                    "Set the dev tree filename to be loaded");
 
     object_property_add_str(obj, "kern-cmd-args", n66_get_kern_args,
-                            n66_set_kern_args, NULL);
+                            n66_set_kern_args);
     object_property_set_description(obj, "kern-cmd-args",
-                                    "Set the XNU kernel cmd args",
-                                    NULL);
+                                    "Set the XNU kernel cmd args");
 
     object_property_add_str(obj, "tunnel-port", n66_get_tunnel_port,
-                            n66_set_tunnel_port, NULL);
+                            n66_set_tunnel_port);
     object_property_set_description(obj, "tunnel-port",
-                                    "Set the port for the tunnel connection",
-                                    NULL);
+                                    "Set the port for the tunnel connection");
 
     object_property_add_str(obj, "hook-funcs", n66_get_hook_funcs,
-                            n66_set_hook_funcs, NULL);
+                            n66_set_hook_funcs);
     object_property_set_description(obj, "hook-funcs",
-                                    "Set the hook funcs to be loaded",
-                                    NULL);
+                                    "Set the hook funcs to be loaded");
 
     object_property_add_str(obj, "driver-filename", n66_get_driver_filename,
-                            n66_set_driver_filename, NULL);
+                            n66_set_driver_filename);
     object_property_set_description(obj, "driver-filename",
-                                    "Set the driver filename to be loaded",
-                                    NULL);
+                                    "Set the driver filename to be loaded");
 
     object_property_add_str(obj, "qc-file-0-filename",
                             n66_get_qc_file_0_filename,
-                            n66_set_qc_file_0_filename, NULL);
+                            n66_set_qc_file_0_filename);
     object_property_set_description(obj, "qc-file-0-filename",
-                                    "Set the qc file 0 filename to be loaded",
-                                    NULL);
+                                    "Set the qc file 0 filename to be loaded");
 
     object_property_add_str(obj, "qc-file-1-filename",
                             n66_get_qc_file_1_filename,
-                            n66_set_qc_file_1_filename, NULL);
+                            n66_set_qc_file_1_filename);
     object_property_set_description(obj, "qc-file-1-filename",
-                                    "Set the qc file 1 filename to be loaded",
-                                    NULL);
+                                    "Set the qc file 1 filename to be loaded");
 
     object_property_add_str(obj, "qc-file-log-filename",
                             n66_get_qc_file_log_filename,
-                            n66_set_qc_file_log_filename, NULL);
+                            n66_set_qc_file_log_filename);
     object_property_set_description(obj, "qc-file-log-filename",
-                                   "Set the qc file log filename to be loaded",
-                                    NULL);
+                                   "Set the qc file log filename to be loaded");
 
     object_property_add_str(obj, "xnu-ramfb",
                             n66_get_xnu_ramfb,
-                            n66_set_xnu_ramfb, NULL);
+                            n66_set_xnu_ramfb);
     object_property_set_description(obj, "xnu-ramfb",
-                                    "Turn on the display framebuffer",
-                                    NULL);
+                                    "Turn on the display framebuffer");
 
 }
 

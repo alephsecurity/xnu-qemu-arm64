@@ -189,7 +189,10 @@ static void swim_drive_realize(DeviceState *qdev, Error **errp)
         assert(ret == 0);
     }
 
-    blkconf_blocksizes(&dev->conf);
+    if (!blkconf_blocksizes(&dev->conf, errp)) {
+        return;
+    }
+
     if (dev->conf.logical_block_size != 512 ||
         dev->conf.physical_block_size != 512)
     {
@@ -239,7 +242,7 @@ static void swim_drive_class_init(ObjectClass *klass, void *data)
     k->realize = swim_drive_realize;
     set_bit(DEVICE_CATEGORY_STORAGE, k->categories);
     k->bus_type = TYPE_SWIM_BUS;
-    k->props = swim_drive_properties;
+    device_class_set_props(k, swim_drive_properties);
     k->desc = "virtual SWIM drive";
 }
 

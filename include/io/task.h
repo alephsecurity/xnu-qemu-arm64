@@ -21,8 +21,6 @@
 #ifndef QIO_TASK_H
 #define QIO_TASK_H
 
-#include "qom/object.h"
-
 typedef struct QIOTask QIOTask;
 
 typedef void (*QIOTaskFunc)(QIOTask *task,
@@ -119,7 +117,7 @@ typedef void (*QIOTaskWorker)(QIOTask *task,
  *   gboolean myobject_operation_timer(gpointer opaque)
  *   {
  *      QIOTask *task = QIO_TASK(opaque);
- *      Error *err;*
+ *      Error *err = NULL;
  *
  *      ...check something important...
  *       if (err) {

@@ -47,17 +47,12 @@ static void cpu_mips_irq_request(void *opaque, int irq, int level)
 
     if (level) {
         env->CP0_Cause |= 1 << (irq + CP0Ca_IP);
-
-        if (kvm_enabled() && irq == 2) {
-            kvm_mips_set_interrupt(cpu, irq, level);
-        }
-
     } else {
         env->CP0_Cause &= ~(1 << (irq + CP0Ca_IP));
+    }
 
-        if (kvm_enabled() && irq == 2) {
-            kvm_mips_set_interrupt(cpu, irq, level);
-        }
+    if (kvm_enabled() && (irq == 2 || irq == 3)) {
+        kvm_mips_set_interrupt(cpu, irq, level);
     }
 
     if (env->CP0_Cause & CP0Ca_IP_mask) {
@@ -77,7 +72,7 @@ void cpu_mips_irq_init_cpu(MIPSCPU *cpu)
     qemu_irq *qi;
     int i;
 
-    qi = qemu_allocate_irqs(cpu_mips_irq_request, env_archcpu(env), 8);
+    qi = qemu_allocate_irqs(cpu_mips_irq_request, cpu, 8);
     for (i = 0; i < 8; i++) {
         env->irq[i] = qi[i];
     }

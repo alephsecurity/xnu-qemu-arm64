@@ -33,7 +33,7 @@
 #include "cpu.h"
 #include "exec/exec-all.h"
 #include "disas/disas.h"
-#include "tcg-op.h"
+#include "tcg/tcg-op.h"
 #include "qemu/log.h"
 #include "qemu/qemu-print.h"
 #include "exec/cpu_ldst.h"
@@ -72,8 +72,8 @@ struct DisasContext {
     unsigned cpenable;
 
     uint32_t op_flags;
-    xtensa_insnbuf insnbuf;
-    xtensa_insnbuf slotbuf;
+    xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
+    xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };
 
 static TCGv_i32 cpu_pc;
@@ -595,9 +595,6 @@ static int gen_postprocess(DisasContext *dc, int slot)
             gen_io_start();
         }
         gen_helper_check_interrupts(cpu_env);
-        if (tb_cflags(dc->base.tb) & CF_USE_ICOUNT) {
-            gen_io_end();
-        }
     }
 #endif
     if (op_flags & XTENSA_OP_SYNC_REGISTER_WINDOW) {
@@ -1173,11 +1170,6 @@ static void xtensa_tr_init_disas_context(DisasContextBase *dcbase,
     dc->cwoe = tb_flags & XTENSA_TBFLAG_CWOE;
     dc->callinc = ((tb_flags & XTENSA_TBFLAG_CALLINC_MASK) >>
                    XTENSA_TBFLAG_CALLINC_SHIFT);
-
-    if (dc->config->isa) {
-        dc->insnbuf = xtensa_insnbuf_alloc(dc->config->isa);
-        dc->slotbuf = xtensa_insnbuf_alloc(dc->config->isa);
-    }
     init_sar_tracker(dc);
 }
 
@@ -1267,10 +1259,6 @@ static void xtensa_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *dc = container_of(dcbase, DisasContext, base);
 
     reset_sar_tracker(dc);
-    if (dc->config->isa) {
-        xtensa_insnbuf_free(dc->config->isa, dc->insnbuf);
-        xtensa_insnbuf_free(dc->config->isa, dc->slotbuf);
-    }
     if (dc->icount) {
         tcg_temp_free(dc->next_icount);
     }
@@ -2200,7 +2188,11 @@ static void translate_rsil(DisasContext *dc, const OpcodeArg arg[],
 static void translate_rsr(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
-    tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
+    if (sr_name[par[0]]) {
+        tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
+    } else {
+        tcg_gen_movi_i32(arg[0].out, 0);
+    }
 }
 
 static void translate_rsr_ccount(DisasContext *dc, const OpcodeArg arg[],
@@ -2372,9 +2364,10 @@ static bool test_ill_simcall(DisasContext *dc, const OpcodeArg arg[],
 #ifdef CONFIG_USER_ONLY
     bool ill = true;
 #else
-    bool ill = !semihosting_enabled();
+    /* Between RE.2 and RE.3 simcall opcode's become nop for the hardware. */
+    bool ill = dc->config->hw_version <= 250002 && !semihosting_enabled();
 #endif
-    if (ill) {
+    if (ill || !semihosting_enabled()) {
         qemu_log_mask(LOG_GUEST_ERROR, "SIMCALL but semihosting is disabled\n");
     }
     return ill;
@@ -2384,7 +2377,9 @@ static void translate_simcall(DisasContext *dc, const OpcodeArg arg[],
                               const uint32_t par[])
 {
 #ifndef CONFIG_USER_ONLY
-    gen_helper_simcall(cpu_env);
+    if (semihosting_enabled()) {
+        gen_helper_simcall(cpu_env);
+    }
 #endif
 }
 
@@ -2572,13 +2567,17 @@ static void translate_wrmsk_expstate(DisasContext *dc, const OpcodeArg arg[],
 static void translate_wsr(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
-    tcg_gen_mov_i32(cpu_SR[par[0]], arg[0].in);
+    if (sr_name[par[0]]) {
+        tcg_gen_mov_i32(cpu_SR[par[0]], arg[0].in);
+    }
 }
 
 static void translate_wsr_mask(DisasContext *dc, const OpcodeArg arg[],
                                const uint32_t par[])
 {
-    tcg_gen_andi_i32(cpu_SR[par[0]], arg[0].in, par[2]);
+    if (sr_name[par[0]]) {
+        tcg_gen_andi_i32(cpu_SR[par[0]], arg[0].in, par[2]);
+    }
 }
 
 static void translate_wsr_acchi(DisasContext *dc, const OpcodeArg arg[],
@@ -2713,7 +2712,8 @@ static void translate_wsr_ps(DisasContext *dc, const OpcodeArg arg[],
     uint32_t mask = PS_WOE | PS_CALLINC | PS_OWB |
         PS_UM | PS_EXCM | PS_INTLEVEL;
 
-    if (option_enabled(dc, XTENSA_OPTION_MMU)) {
+    if (option_enabled(dc, XTENSA_OPTION_MMU) ||
+        option_enabled(dc, XTENSA_OPTION_MPU)) {
         mask |= PS_RING;
     }
     tcg_gen_andi_i32(cpu_SR[par[0]], arg[0].in, mask);
@@ -2783,23 +2783,31 @@ static void translate_xor(DisasContext *dc, const OpcodeArg arg[],
 static void translate_xsr(DisasContext *dc, const OpcodeArg arg[],
                           const uint32_t par[])
 {
-    TCGv_i32 tmp = tcg_temp_new_i32();
+    if (sr_name[par[0]]) {
+        TCGv_i32 tmp = tcg_temp_new_i32();
 
-    tcg_gen_mov_i32(tmp, arg[0].in);
-    tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
-    tcg_gen_mov_i32(cpu_SR[par[0]], tmp);
-    tcg_temp_free(tmp);
+        tcg_gen_mov_i32(tmp, arg[0].in);
+        tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
+        tcg_gen_mov_i32(cpu_SR[par[0]], tmp);
+        tcg_temp_free(tmp);
+    } else {
+        tcg_gen_movi_i32(arg[0].out, 0);
+    }
 }
 
 static void translate_xsr_mask(DisasContext *dc, const OpcodeArg arg[],
                                const uint32_t par[])
 {
-    TCGv_i32 tmp = tcg_temp_new_i32();
+    if (sr_name[par[0]]) {
+        TCGv_i32 tmp = tcg_temp_new_i32();
 
-    tcg_gen_mov_i32(tmp, arg[0].in);
-    tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
-    tcg_gen_andi_i32(cpu_SR[par[0]], tmp, par[2]);
-    tcg_temp_free(tmp);
+        tcg_gen_mov_i32(tmp, arg[0].in);
+        tcg_gen_mov_i32(arg[0].out, cpu_SR[par[0]]);
+        tcg_gen_andi_i32(cpu_SR[par[0]], tmp, par[2]);
+        tcg_temp_free(tmp);
+    } else {
+        tcg_gen_movi_i32(arg[0].out, 0);
+    }
 }
 
 static void translate_xsr_ccount(DisasContext *dc, const OpcodeArg arg[],
@@ -2827,7 +2835,11 @@ static void translate_xsr_ccount(DisasContext *dc, const OpcodeArg arg[],
 { \
     TCGv_i32 tmp = tcg_temp_new_i32(); \
  \
-    tcg_gen_mov_i32(tmp, cpu_SR[par[0]]); \
+    if (sr_name[par[0]]) { \
+        tcg_gen_mov_i32(tmp, cpu_SR[par[0]]); \
+    } else { \
+        tcg_gen_movi_i32(tmp, 0); \
+    } \
     translate_wsr_##name(dc, arg, par); \
     tcg_gen_mov_i32(arg[0].out, tmp); \
     tcg_temp_free(tmp); \
@@ -3740,7 +3752,7 @@ static const XtensaOpcodeOps core_ops[] = {
         .name = "pfwait.a",
         .translate = translate_nop,
     }, {
-        .name = "pfwait.o",
+        .name = "pfwait.r",
         .translate = translate_nop,
     }, {
         .name = "pitlb",

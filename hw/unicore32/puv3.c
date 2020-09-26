@@ -16,8 +16,6 @@
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "sysemu/qtest.h"
-
-#undef DEBUG_PUV3
 #include "hw/unicore32/puv3.h"
 #include "hw/input/i8042.h"
 #include "hw/irq.h"
@@ -140,7 +138,7 @@ static void puv3_machine_init(MachineClass *mc)
 {
     mc->desc = "PKUnity Version-3 based on UniCore32";
     mc->init = puv3_init;
-    mc->is_default = 1;
+    mc->is_default = true;
     mc->default_cpu_type = UNICORE32_CPU_TYPE_NAME("UniCore-II");
 }
 

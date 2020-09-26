@@ -160,6 +160,8 @@ typedef struct mips_elf_abiflags_v0 {
 
 #define EM_CRIS         76      /* Axis Communications 32-bit embedded processor */
 
+#define EM_AVR          83      /* AVR 8-bit microcontroller */
+
 #define EM_V850		87	/* NEC v850 */
 
 #define EM_H8_300H      47      /* Hitachi H8/300H */
@@ -201,6 +203,8 @@ typedef struct mips_elf_abiflags_v0 {
 
 #define EM_MOXIE           223     /* Moxie processor family */
 #define EM_MOXIE_OLD       0xFEED
+
+#define EF_AVR_MACH     0x7F       /* Mask for AVR e_flags to get core type */
 
 /* This is the info that is needed to parse the dynamic section of the file */
 #define DT_NULL		0
@@ -1650,6 +1654,7 @@ typedef struct elf64_shdr {
 #define NT_ARM_HW_BREAK 0x402           /* ARM hardware breakpoint registers */
 #define NT_ARM_HW_WATCH 0x403           /* ARM hardware watchpoint registers */
 #define NT_ARM_SYSTEM_CALL      0x404   /* ARM system call number */
+#define NT_ARM_SVE      0x405           /* ARM Scalable Vector Extension regs */
 
 /*
  * Physical entry point into the kernel.

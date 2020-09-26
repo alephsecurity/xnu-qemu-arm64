@@ -60,8 +60,9 @@
 #define XCHAL_RESET_VECTOR1_VADDR XCHAL_RESET_VECTOR_VADDR
 #endif
 
-#ifndef XCHAL_HW_MIN_VERSION
-#define XCHAL_HW_MIN_VERSION 0
+#ifndef XCHAL_HW_VERSION
+#define XCHAL_HW_VERSION (XCHAL_HW_VERSION_MAJOR * 100 \
+                          + XCHAL_HW_VERSION_MINOR)
 #endif
 
 #ifndef XCHAL_LOOP_BUFFER_SIZE
@@ -100,7 +101,7 @@
     XCHAL_OPTION(XCHAL_HAVE_FP, XTENSA_OPTION_FP_COPROCESSOR) | \
     XCHAL_OPTION(XCHAL_HAVE_RELEASE_SYNC, XTENSA_OPTION_MP_SYNCHRO) | \
     XCHAL_OPTION(XCHAL_HAVE_S32C1I, XTENSA_OPTION_CONDITIONAL_STORE) | \
-    XCHAL_OPTION(((XCHAL_HAVE_S32C1I && XCHAL_HW_MIN_VERSION >= 230000) || \
+    XCHAL_OPTION(((XCHAL_HAVE_S32C1I && XCHAL_HW_VERSION >= 230000) || \
                   XCHAL_HAVE_EXCLUSIVE), XTENSA_OPTION_ATOMCTL) | \
     XCHAL_OPTION(XCHAL_HAVE_DEPBITS, XTENSA_OPTION_DEPBITS) | \
     /* Interrupts and exceptions */ \
@@ -373,15 +374,28 @@
 #elif XCHAL_HAVE_MPU
 
 #ifndef XTENSA_MPU_BG_MAP
+#ifdef XCHAL_MPU_BACKGROUND_MAP
+#define XCHAL_MPU_BGMAP(s, vaddr_start, vaddr_last, rights, memtype, x...) \
+    { .vaddr = (vaddr_start), .attr = ((rights) << 8) | ((memtype) << 12), },
+
+#define XTENSA_MPU_BG_MAP (xtensa_mpu_entry []){\
+    XCHAL_MPU_BACKGROUND_MAP(0) \
+}
+
+#define XTENSA_MPU_BG_MAP_ENTRIES XCHAL_MPU_BACKGROUND_ENTRIES
+#else
 #define XTENSA_MPU_BG_MAP (xtensa_mpu_entry []){\
     { .vaddr = 0, .attr = 0x00006700, }, \
 }
+
+#define XTENSA_MPU_BG_MAP_ENTRIES 1
+#endif
 #endif
 
 #define TLB_SECTION \
     .mpu_align = XCHAL_MPU_ALIGN, \
     .n_mpu_fg_segments = XCHAL_MPU_ENTRIES, \
-    .n_mpu_bg_segments = 1, \
+    .n_mpu_bg_segments = XTENSA_MPU_BG_MAP_ENTRIES, \
     .mpu_bg = XTENSA_MPU_BG_MAP
 
 #ifndef XCHAL_SYSROM0_PADDR
@@ -485,6 +499,7 @@
     }
 
 #define CONFIG_SECTION \
+    .hw_version = XCHAL_HW_VERSION, \
     .configid = { \
         XCHAL_HW_CONFIGID0, \
         XCHAL_HW_CONFIGID1, \

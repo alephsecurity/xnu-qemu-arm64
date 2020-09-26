@@ -5,7 +5,8 @@
  * Rasperry Pi 2 emulation and refactoring Copyright (c) 2015, Microsoft
  * Written by Andrew Baumann
  *
- * This code is licensed under the GNU GPLv2 and later.
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the COPYING file in the top-level directory.
  */
 
 #ifndef BCM2836_H
@@ -32,7 +33,6 @@ typedef struct BCM283XState {
     DeviceState parent_obj;
     /*< public >*/
 
-    char *cpu_type;
     uint32_t enabled_cpus;
 
     struct {

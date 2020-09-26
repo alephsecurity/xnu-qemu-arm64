@@ -26,8 +26,10 @@
 #include "target/arm/cpu.h"
 #include "hw/gpio/aspeed_gpio.h"
 #include "hw/sd/aspeed_sdhci.h"
+#include "hw/usb/hcd-ehci.h"
 
 #define ASPEED_SPIS_NUM  2
+#define ASPEED_EHCIS_NUM 2
 #define ASPEED_WDTS_NUM  4
 #define ASPEED_CPUS_NUM  2
 #define ASPEED_MACS_NUM  4
@@ -38,8 +40,8 @@ typedef struct AspeedSoCState {
 
     /*< public >*/
     ARMCPU cpu[ASPEED_CPUS_NUM];
-    uint32_t num_cpus;
     A15MPPrivState     a7mpcore;
+    MemoryRegion *dram_mr;
     MemoryRegion sram;
     AspeedVICState vic;
     AspeedRtcState rtc;
@@ -49,6 +51,7 @@ typedef struct AspeedSoCState {
     AspeedXDMAState xdma;
     AspeedSMCState fmc;
     AspeedSMCState spi[ASPEED_SPIS_NUM];
+    EHCISysBusState ehci[ASPEED_EHCIS_NUM];
     AspeedSDMCState sdmc;
     AspeedWDTState wdt[ASPEED_WDTS_NUM];
     FTGMAC100State ftgmac100[ASPEED_MACS_NUM];
@@ -56,6 +59,7 @@ typedef struct AspeedSoCState {
     AspeedGPIOState gpio;
     AspeedGPIOState gpio_1_8v;
     AspeedSDHCIState sdhci;
+    AspeedSDHCIState emmc;
 } AspeedSoCState;
 
 #define TYPE_ASPEED_SOC "aspeed-soc"
@@ -69,6 +73,7 @@ typedef struct AspeedSoCClass {
     uint32_t silicon_rev;
     uint64_t sram_size;
     int spis_num;
+    int ehcis_num;
     int wdts_num;
     int macs_num;
     const int *irqmap;
@@ -92,6 +97,8 @@ enum {
     ASPEED_FMC,
     ASPEED_SPI1,
     ASPEED_SPI2,
+    ASPEED_EHCI1,
+    ASPEED_EHCI2,
     ASPEED_VIC,
     ASPEED_SDMC,
     ASPEED_SCU,
@@ -125,6 +132,7 @@ enum {
     ASPEED_MII4,
     ASPEED_SDRAM,
     ASPEED_XDMA,
+    ASPEED_EMMC,
 };
 
 #endif /* ASPEED_SOC_H */

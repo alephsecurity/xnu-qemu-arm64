@@ -14,6 +14,7 @@
 #include "hw/irq.h"
 #include "hw/net/smc91c111.h"
 #include "hw/qdev-properties.h"
+#include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 /* For crc32 */
@@ -130,16 +131,16 @@ static void smc91c111_update(smc91c111_state *s)
     qemu_set_irq(s->irq, level);
 }
 
-static int smc91c111_can_receive(smc91c111_state *s)
+static bool smc91c111_can_receive(smc91c111_state *s)
 {
     if ((s->rcr & RCR_RXEN) == 0 || (s->rcr & RCR_SOFT_RST)) {
-        return 1;
+        return true;
     }
     if (s->allocated == (1 << NUM_PACKETS) - 1 ||
         s->rx_fifo_len == NUM_PACKETS) {
-        return 0;
+        return false;
     }
-    return 1;
+    return true;
 }
 
 static inline void smc91c111_flush_queued_packets(smc91c111_state *s)
@@ -667,7 +668,7 @@ static void smc91c111_writefn(void *opaque, hwaddr addr,
     }
 }
 
-static int smc91c111_can_receive_nc(NetClientState *nc)
+static bool smc91c111_can_receive_nc(NetClientState *nc)
 {
     smc91c111_state *s = qemu_get_nic_opaque(nc);
 
@@ -798,7 +799,7 @@ static void smc91c111_class_init(ObjectClass *klass, void *data)
     dc->realize = smc91c111_realize;
     dc->reset = smc91c111_reset;
     dc->vmsd = &vmstate_smc91c111;
-    dc->props = smc91c111_properties;
+    device_class_set_props(dc, smc91c111_properties);
 }
 
 static const TypeInfo smc91c111_info = {
@@ -821,10 +822,10 @@ void smc91c111_init(NICInfo *nd, uint32_t base, qemu_irq irq)
     SysBusDevice *s;
 
     qemu_check_nic_model(nd, "smc91c111");
-    dev = qdev_create(NULL, TYPE_SMC91C111);
+    dev = qdev_new(TYPE_SMC91C111);
     qdev_set_nic_properties(dev, nd);
-    qdev_init_nofail(dev);
     s = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(s, &error_fatal);
     sysbus_mmio_map(s, 0, base);
     sysbus_connect_irq(s, 0, irq);
 }

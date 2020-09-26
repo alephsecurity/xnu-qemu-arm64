@@ -94,7 +94,7 @@ static void xnu_ramfb_realizefn(DeviceState *dev, Error **errp)
     xnu_ramfb_setup(xnu_ramfb);
 }
 
-static void xnu_ramfb_unrealizefn(DeviceState *dev, Error **errp)
+static void xnu_ramfb_unrealizefn(DeviceState *dev)
 {
     xnu_ramfb_state *xnu_ramfb = XNU_RAMFB(dev);
     graphic_console_close(xnu_ramfb->con);
@@ -121,7 +121,7 @@ static void xnu_ramfb_class_initfn(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->realize = xnu_ramfb_realizefn;
     dc->unrealize = xnu_ramfb_unrealizefn;
-    dc->props = xnu_ramfb_properties;
+    device_class_set_props(dc, xnu_ramfb_properties);
     dc->desc = "xnu ram framebuffer";
     dc->user_creatable = true;
 }

@@ -158,9 +158,9 @@ void spapr_vty_create(SpaprVioBus *bus, Chardev *chardev)
 {
     DeviceState *dev;
 
-    dev = qdev_create(&bus->bus, "spapr-vty");
+    dev = qdev_new("spapr-vty");
     qdev_prop_set_chr(dev, "chardev", chardev);
-    qdev_init_nofail(dev);
+    qdev_realize_and_unref(dev, &bus->bus, &error_fatal);
 }
 
 static Property spapr_vty_properties[] = {
@@ -193,7 +193,7 @@ static void spapr_vty_class_init(ObjectClass *klass, void *data)
     k->dt_type = "serial";
     k->dt_compatible = "hvterm1";
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
-    dc->props = spapr_vty_properties;
+    device_class_set_props(dc, spapr_vty_properties);
     dc->vmsd = &vmstate_spapr_vty;
 }
 

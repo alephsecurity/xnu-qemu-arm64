@@ -103,7 +103,7 @@ const MemoryRegionOps pci_ide_data_le_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-static void bmdma_start_dma(IDEDMA *dma, IDEState *s,
+static void bmdma_start_dma(const IDEDMA *dma, IDEState *s,
                             BlockCompletionFunc *dma_cb)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
@@ -126,7 +126,7 @@ static void bmdma_start_dma(IDEDMA *dma, IDEState *s,
  * IDEState.io_buffer_size will contain the number of bytes described
  * by the PRDs, whether or not we added them to the sglist.
  */
-static int32_t bmdma_prepare_buf(IDEDMA *dma, int32_t limit)
+static int32_t bmdma_prepare_buf(const IDEDMA *dma, int32_t limit)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
     IDEState *s = bmdma_active_if(bm);
@@ -181,7 +181,7 @@ static int32_t bmdma_prepare_buf(IDEDMA *dma, int32_t limit)
 }
 
 /* return 0 if buffer completed */
-static int bmdma_rw_buf(IDEDMA *dma, int is_write)
+static int bmdma_rw_buf(const IDEDMA *dma, bool is_write)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
     IDEState *s = bmdma_active_if(bm);
@@ -230,7 +230,7 @@ static int bmdma_rw_buf(IDEDMA *dma, int is_write)
     return 1;
 }
 
-static void bmdma_set_inactive(IDEDMA *dma, bool more)
+static void bmdma_set_inactive(const IDEDMA *dma, bool more)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
 
@@ -242,7 +242,7 @@ static void bmdma_set_inactive(IDEDMA *dma, bool more)
     }
 }
 
-static void bmdma_restart_dma(IDEDMA *dma)
+static void bmdma_restart_dma(const IDEDMA *dma)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
 
@@ -257,7 +257,7 @@ static void bmdma_cancel(BMDMAState *bm)
     }
 }
 
-static void bmdma_reset(IDEDMA *dma)
+static void bmdma_reset(const IDEDMA *dma)
 {
     BMDMAState *bm = DO_UPCAST(BMDMAState, dma, dma);
 
@@ -476,17 +476,20 @@ const VMStateDescription vmstate_ide_pci = {
     }
 };
 
-void pci_ide_create_devs(PCIDevice *dev, DriveInfo **hd_table)
+/* hd_table must contain 4 block drivers */
+void pci_ide_create_devs(PCIDevice *dev)
 {
     PCIIDEState *d = PCI_IDE(dev);
+    DriveInfo *hd_table[2 * MAX_IDE_DEVS];
     static const int bus[4]  = { 0, 0, 1, 1 };
     static const int unit[4] = { 0, 1, 0, 1 };
     int i;
 
+    ide_drive_get(hd_table, ARRAY_SIZE(hd_table));
     for (i = 0; i < 4; i++) {
-        if (hd_table[i] == NULL)
-            continue;
-        ide_create_drive(d->bus+bus[i], unit[i], hd_table[i]);
+        if (hd_table[i]) {
+            ide_create_drive(d->bus + bus[i], unit[i], hd_table[i]);
+        }
     }
 }
 

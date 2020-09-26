@@ -59,8 +59,7 @@ CPUState *cpu_create(const char *typename)
 {
     Error *err = NULL;
     CPUState *cpu = CPU(object_new(typename));
-    object_property_set_bool(OBJECT(cpu), true, "realized", &err);
-    if (err != NULL) {
+    if (!qdev_realize(DEVICE(cpu), NULL, &err)) {
         error_report_err(err);
         object_unref(OBJECT(cpu));
         exit(EXIT_FAILURE);
@@ -177,7 +176,7 @@ static int cpu_common_write_elf64_note(WriteCoreDumpFunction f,
 }
 
 
-static int cpu_common_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg)
+static int cpu_common_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg)
 {
     return 0;
 }
@@ -209,6 +208,7 @@ static bool cpu_common_exec_interrupt(CPUState *cpu, int int_req)
     return false;
 }
 
+#if !defined(CONFIG_USER_ONLY)
 GuestPanicInformation *cpu_get_crash_info(CPUState *cpu)
 {
     CPUClass *cc = CPU_GET_CLASS(cpu);
@@ -219,6 +219,7 @@ GuestPanicInformation *cpu_get_crash_info(CPUState *cpu)
     }
     return res;
 }
+#endif
 
 void cpu_dump_state(CPUState *cpu, FILE *f, int flags)
 {
@@ -241,17 +242,14 @@ void cpu_dump_statistics(CPUState *cpu, int flags)
 
 void cpu_reset(CPUState *cpu)
 {
-    CPUClass *klass = CPU_GET_CLASS(cpu);
-
-    if (klass->reset != NULL) {
-        (*klass->reset)(cpu);
-    }
+    device_cold_reset(DEVICE(cpu));
 
     trace_guest_cpu_reset(cpu);
 }
 
-static void cpu_common_reset(CPUState *cpu)
+static void cpu_common_reset(DeviceState *dev)
 {
+    CPUState *cpu = CPU(dev);
     CPUClass *cc = CPU_GET_CLASS(cpu);
 
     if (qemu_loglevel_mask(CPU_LOG_RESET)) {
@@ -348,7 +346,7 @@ static void cpu_common_realizefn(DeviceState *dev, Error **errp)
     trace_init_vcpu(cpu);
 }
 
-static void cpu_common_unrealizefn(DeviceState *dev, Error **errp)
+static void cpu_common_unrealizefn(DeviceState *dev)
 {
     CPUState *cpu = CPU(dev);
     /* NOTE: latest generic point before the cpu is fully unrealized */
@@ -371,6 +369,7 @@ static void cpu_common_initfn(Object *obj)
     cpu->nr_threads = 1;
 
     qemu_mutex_init(&cpu->work_mutex);
+    QSIMPLEQ_INIT(&cpu->work_list);
     QTAILQ_INIT(&cpu->breakpoints);
     QTAILQ_INIT(&cpu->watchpoints);
 
@@ -411,7 +410,6 @@ static void cpu_class_init(ObjectClass *klass, void *data)
     CPUClass *k = CPU_CLASS(klass);
 
     k->parse_features = cpu_common_parse_features;
-    k->reset = cpu_common_reset;
     k->get_arch_id = cpu_common_get_arch_id;
     k->has_work = cpu_common_has_work;
     k->get_paging_enabled = cpu_common_get_paging_enabled;
@@ -432,7 +430,8 @@ static void cpu_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_CPU, dc->categories);
     dc->realize = cpu_common_realizefn;
     dc->unrealize = cpu_common_unrealizefn;
-    dc->props = cpu_common_props;
+    dc->reset = cpu_common_reset;
+    device_class_set_props(dc, cpu_common_props);
     /*
      * Reason: CPUs still need special care by board code: wiring up
      * IRQs, adding reset handlers, halting non-first CPUs, ...

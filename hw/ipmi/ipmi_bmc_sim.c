@@ -49,6 +49,7 @@
 #define IPMI_CMD_GET_SENSOR_READING       0x2d
 #define IPMI_CMD_SET_SENSOR_TYPE          0x2e
 #define IPMI_CMD_GET_SENSOR_TYPE          0x2f
+#define IPMI_CMD_SET_SENSOR_READING       0x30
 
 /* #define IPMI_NETFN_APP             0x06 In ipmi.h */
 
@@ -167,22 +168,7 @@ typedef struct IPMISensor {
 #define MAX_SENSORS 20
 #define IPMI_WATCHDOG_SENSOR 0
 
-typedef struct IPMIBmcSim IPMIBmcSim;
-typedef struct RspBuffer RspBuffer;
-
 #define MAX_NETFNS 64
-
-typedef struct IPMICmdHandler {
-    void (*cmd_handler)(IPMIBmcSim *s,
-                        uint8_t *cmd, unsigned int cmd_len,
-                        RspBuffer *rsp);
-    unsigned int cmd_len_min;
-} IPMICmdHandler;
-
-typedef struct IPMINetfn {
-    unsigned int cmd_nums;
-    const IPMICmdHandler *cmd_handlers;
-} IPMINetfn;
 
 typedef struct IPMIRcvBufEntry {
     QTAILQ_ENTRY(IPMIRcvBufEntry) entry;
@@ -190,9 +176,6 @@ typedef struct IPMIRcvBufEntry {
     uint8_t buf[MAX_IPMI_MSG_SIZE];
 } IPMIRcvBufEntry;
 
-#define TYPE_IPMI_BMC_SIMULATOR "ipmi-bmc-sim"
-#define IPMI_BMC_SIMULATOR(obj) OBJECT_CHECK(IPMIBmcSim, (obj), \
-                                        TYPE_IPMI_BMC_SIMULATOR)
 struct IPMIBmcSim {
     IPMIBmc parent;
 
@@ -279,27 +262,7 @@ struct IPMIBmcSim {
 #define IPMI_BMC_WATCHDOG_ACTION_POWER_DOWN      2
 #define IPMI_BMC_WATCHDOG_ACTION_POWER_CYCLE     3
 
-struct RspBuffer {
-    uint8_t buffer[MAX_IPMI_MSG_SIZE];
-    unsigned int len;
-};
-
 #define RSP_BUFFER_INITIALIZER { }
-
-static inline void rsp_buffer_set_error(RspBuffer *rsp, uint8_t byte)
-{
-    rsp->buffer[2] = byte;
-}
-
-/* Add a byte to the response. */
-static inline void rsp_buffer_push(RspBuffer *rsp, uint8_t byte)
-{
-    if (rsp->len >= sizeof(rsp->buffer)) {
-        rsp_buffer_set_error(rsp, IPMI_CC_REQUEST_DATA_TRUNCATED);
-        return;
-    }
-    rsp->buffer[rsp->len++] = byte;
-}
 
 static inline void rsp_buffer_pushmore(RspBuffer *rsp, uint8_t *bytes,
                                        unsigned int n)
@@ -630,8 +593,8 @@ static void ipmi_init_sensors_from_sdrs(IPMIBmcSim *s)
     }
 }
 
-static int ipmi_register_netfn(IPMIBmcSim *s, unsigned int netfn,
-                               const IPMINetfn *netfnd)
+int ipmi_sim_register_netfn(IPMIBmcSim *s, unsigned int netfn,
+                        const IPMINetfn *netfnd)
 {
     if ((netfn & 1) || (netfn >= MAX_NETFNS) || (s->netfns[netfn / 2])) {
         return -1;
@@ -1785,6 +1748,227 @@ static void get_sensor_type(IPMIBmcSim *ibs,
     rsp_buffer_push(rsp, sens->evt_reading_type_code);
 }
 
+/*
+ * bytes   parameter
+ *    1    sensor number
+ *    2    operation (see below for bits meaning)
+ *    3    sensor reading
+ *  4:5    assertion states (optional)
+ *  6:7    deassertion states (optional)
+ *  8:10   event data 1,2,3 (optional)
+ */
+static void set_sensor_reading(IPMIBmcSim *ibs,
+                               uint8_t *cmd, unsigned int cmd_len,
+                               RspBuffer *rsp)
+{
+    IPMISensor *sens;
+    uint8_t evd1 = 0;
+    uint8_t evd2 = 0;
+    uint8_t evd3 = 0;
+    uint8_t new_reading = 0;
+    uint16_t new_assert_states = 0;
+    uint16_t new_deassert_states = 0;
+    bool change_reading = false;
+    bool change_assert = false;
+    bool change_deassert = false;
+    enum {
+        SENSOR_GEN_EVENT_NONE,
+        SENSOR_GEN_EVENT_DATA,
+        SENSOR_GEN_EVENT_BMC,
+    } do_gen_event = SENSOR_GEN_EVENT_NONE;
+
+    if ((cmd[2] >= MAX_SENSORS) ||
+            !IPMI_SENSOR_GET_PRESENT(ibs->sensors + cmd[2])) {
+        rsp_buffer_set_error(rsp, IPMI_CC_REQ_ENTRY_NOT_PRESENT);
+        return;
+    }
+
+    sens = ibs->sensors + cmd[2];
+
+    /* [1:0] Sensor Reading operation */
+    switch ((cmd[3]) & 0x3) {
+    case 0: /* Do not change */
+        break;
+    case 1: /* write given value to sensor reading byte */
+        new_reading = cmd[4];
+        if (sens->reading != new_reading) {
+            change_reading = true;
+        }
+        break;
+    case 2:
+    case 3:
+        rsp_buffer_set_error(rsp, IPMI_CC_INVALID_DATA_FIELD);
+        return;
+    }
+
+    /* [3:2] Deassertion bits operation */
+    switch ((cmd[3] >> 2) & 0x3) {
+    case 0: /* Do not change */
+        break;
+    case 1: /* write given value */
+        if (cmd_len > 7) {
+            new_deassert_states = cmd[7];
+            change_deassert = true;
+        }
+        if (cmd_len > 8) {
+            new_deassert_states |= (cmd[8] << 8);
+        }
+        break;
+
+    case 2: /* mask on */
+        if (cmd_len > 7) {
+            new_deassert_states = (sens->deassert_states | cmd[7]);
+            change_deassert = true;
+        }
+        if (cmd_len > 8) {
+            new_deassert_states |= (sens->deassert_states | (cmd[8] << 8));
+        }
+        break;
+
+    case 3: /* mask off */
+        if (cmd_len > 7) {
+            new_deassert_states = (sens->deassert_states & cmd[7]);
+            change_deassert = true;
+        }
+        if (cmd_len > 8) {
+            new_deassert_states |= (sens->deassert_states & (cmd[8] << 8));
+        }
+        break;
+    }
+
+    if (change_deassert && (new_deassert_states == sens->deassert_states)) {
+        change_deassert = false;
+    }
+
+    /* [5:4] Assertion bits operation */
+    switch ((cmd[3] >> 4) & 0x3) {
+    case 0: /* Do not change */
+        break;
+    case 1: /* write given value */
+        if (cmd_len > 5) {
+            new_assert_states = cmd[5];
+            change_assert = true;
+        }
+        if (cmd_len > 6) {
+            new_assert_states |= (cmd[6] << 8);
+        }
+        break;
+
+    case 2: /* mask on */
+        if (cmd_len > 5) {
+            new_assert_states = (sens->assert_states | cmd[5]);
+            change_assert = true;
+        }
+        if (cmd_len > 6) {
+            new_assert_states |= (sens->assert_states | (cmd[6] << 8));
+        }
+        break;
+
+    case 3: /* mask off */
+        if (cmd_len > 5) {
+            new_assert_states = (sens->assert_states & cmd[5]);
+            change_assert = true;
+        }
+        if (cmd_len > 6) {
+            new_assert_states |= (sens->assert_states & (cmd[6] << 8));
+        }
+        break;
+    }
+
+    if (change_assert && (new_assert_states == sens->assert_states)) {
+        change_assert = false;
+    }
+
+    if (cmd_len > 9) {
+        evd1 = cmd[9];
+    }
+    if (cmd_len > 10) {
+        evd2 = cmd[10];
+    }
+    if (cmd_len > 11) {
+        evd3 = cmd[11];
+    }
+
+    /* [7:6] Event Data Bytes operation */
+    switch ((cmd[3] >> 6) & 0x3) {
+    case 0: /*
+             * Don’t use Event Data bytes from this command. BMC will
+             * generate it's own Event Data bytes based on its sensor
+             * implementation.
+             */
+        evd1 = evd2 = evd3 = 0x0;
+        do_gen_event = SENSOR_GEN_EVENT_BMC;
+        break;
+    case 1: /*
+             * Write given values to event data bytes including bits
+             * [3:0] Event Data 1.
+             */
+        do_gen_event = SENSOR_GEN_EVENT_DATA;
+        break;
+    case 2: /*
+             * Write given values to event data bytes excluding bits
+             * [3:0] Event Data 1.
+             */
+        evd1 &= 0xf0;
+        do_gen_event = SENSOR_GEN_EVENT_DATA;
+        break;
+    case 3:
+        rsp_buffer_set_error(rsp, IPMI_CC_INVALID_DATA_FIELD);
+        return;
+    }
+
+    /*
+     * Event Data Bytes operation and parameter are inconsistent. The
+     * Specs are not clear on that topic but generating an error seems
+     * correct.
+     */
+    if (do_gen_event == SENSOR_GEN_EVENT_DATA && cmd_len < 10) {
+        rsp_buffer_set_error(rsp, IPMI_CC_INVALID_DATA_FIELD);
+        return;
+    }
+
+    /* commit values */
+    if (change_reading) {
+        sens->reading = new_reading;
+    }
+
+    if (change_assert) {
+        sens->assert_states = new_assert_states;
+    }
+
+    if (change_deassert) {
+        sens->deassert_states = new_deassert_states;
+    }
+
+    /* TODO: handle threshold sensor */
+    if (!IPMI_SENSOR_IS_DISCRETE(sens)) {
+        return;
+    }
+
+    switch (do_gen_event) {
+    case SENSOR_GEN_EVENT_DATA: {
+        unsigned int bit = evd1 & 0xf;
+        uint16_t mask = (1 << bit);
+
+        if (sens->assert_states & mask & sens->assert_enable) {
+            gen_event(ibs, cmd[2], 0, evd1, evd2, evd3);
+        }
+
+        if (sens->deassert_states & mask & sens->deassert_enable) {
+            gen_event(ibs, cmd[2], 1, evd1, evd2, evd3);
+        }
+        break;
+    }
+    case SENSOR_GEN_EVENT_BMC:
+        /*
+         * TODO: generate event and event data bytes depending on the
+         * sensor
+         */
+        break;
+    case SENSOR_GEN_EVENT_NONE:
+        break;
+    }
+}
 
 static const IPMICmdHandler chassis_cmds[] = {
     [IPMI_CMD_GET_CHASSIS_CAPABILITIES] = { chassis_capabilities },
@@ -1806,6 +1990,7 @@ static const IPMICmdHandler sensor_event_cmds[] = {
     [IPMI_CMD_GET_SENSOR_READING] = { get_sensor_reading, 3 },
     [IPMI_CMD_SET_SENSOR_TYPE] = { set_sensor_type, 5 },
     [IPMI_CMD_GET_SENSOR_TYPE] = { get_sensor_type, 3 },
+    [IPMI_CMD_SET_SENSOR_READING] = { set_sensor_reading, 5 },
 };
 static const IPMINetfn sensor_event_netfn = {
     .cmd_nums = ARRAY_SIZE(sensor_event_cmds),
@@ -1860,10 +2045,10 @@ static const IPMINetfn storage_netfn = {
 
 static void register_cmds(IPMIBmcSim *s)
 {
-    ipmi_register_netfn(s, IPMI_NETFN_CHASSIS, &chassis_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_SENSOR_EVENT, &sensor_event_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_APP, &app_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_STORAGE, &storage_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_CHASSIS, &chassis_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_SENSOR_EVENT, &sensor_event_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_APP, &app_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_STORAGE, &storage_netfn);
 }
 
 static uint8_t init_sdrs[] = {
@@ -2027,7 +2212,7 @@ static void ipmi_sim_class_init(ObjectClass *oc, void *data)
 
     dc->hotpluggable = false;
     dc->realize = ipmi_sim_realize;
-    dc->props = ipmi_sim_properties;
+    device_class_set_props(dc, ipmi_sim_properties);
     bk->handle_command = ipmi_sim_handle_command;
 }
 

@@ -87,6 +87,7 @@ static int vio_make_devnode(SpaprVioDevice *dev,
     SpaprVioDeviceClass *pc = VIO_SPAPR_DEVICE_GET_CLASS(dev);
     int vdevice_off, node_off, ret;
     char *dt_name;
+    const char *dt_compatible;
 
     vdevice_off = fdt_path_offset(fdt, "/vdevice");
     if (vdevice_off < 0) {
@@ -113,9 +114,15 @@ static int vio_make_devnode(SpaprVioDevice *dev,
         }
     }
 
-    if (pc->dt_compatible) {
+    if (pc->get_dt_compatible) {
+        dt_compatible = pc->get_dt_compatible(dev);
+    } else {
+        dt_compatible = pc->dt_compatible;
+    }
+
+    if (dt_compatible) {
         ret = fdt_setprop_string(fdt, node_off, "compatible",
-                                 pc->dt_compatible);
+                                 dt_compatible);
         if (ret < 0) {
             return ret;
         }
@@ -304,7 +311,7 @@ int spapr_vio_send_crq(SpaprVioDevice *dev, uint8_t *crq)
 static void spapr_vio_quiesce_one(SpaprVioDevice *dev)
 {
     if (dev->tcet) {
-        device_reset(DEVICE(dev->tcet));
+        device_legacy_reset(DEVICE(dev->tcet));
     }
     free_crq(dev);
 }
@@ -413,7 +420,7 @@ static void spapr_vio_busdev_reset(DeviceState *qdev)
 }
 
 /*
- * The register property of a VIO device is defined in livirt using
+ * The register property of a VIO device is defined in libvirt using
  * 0x1000 as a base register number plus a 0x1000 increment. For the
  * VIO tty device, the base number is changed to 0x30000000. QEMU uses
  * a base register number of 0x71000000 and then a simple increment.
@@ -443,7 +450,7 @@ static inline uint32_t spapr_vio_reg_to_irq(uint32_t reg)
 
     } else if (reg >= 0x30000000) {
         /*
-         * VIO tty devices register values, when allocated by livirt,
+         * VIO tty devices register values, when allocated by libvirt,
          * are mapped in range [0xf0 - 0xff], gives us a maximum of 16
          * vtys.
          */
@@ -452,7 +459,7 @@ static inline uint32_t spapr_vio_reg_to_irq(uint32_t reg)
     } else {
         /*
          * Other VIO devices register values, when allocated by
-         * livirt, should be mapped in range [0x00 - 0xef]. Conflicts
+         * libvirt, should be mapped in range [0x00 - 0xef]. Conflicts
          * will be detected when IRQ is claimed.
          */
         irq = (reg >> 12) & 0xff;
@@ -569,8 +576,8 @@ SpaprVioBus *spapr_vio_bus_init(void)
     DeviceState *dev;
 
     /* Create bridge device */
-    dev = qdev_create(NULL, TYPE_SPAPR_VIO_BRIDGE);
-    qdev_init_nofail(dev);
+    dev = qdev_new(TYPE_SPAPR_VIO_BRIDGE);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
     /* Create bus on bridge device */
     qbus = qbus_create(TYPE_SPAPR_VIO_BUS, dev, "spapr-vio");

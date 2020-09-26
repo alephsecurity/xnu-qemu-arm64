@@ -2,7 +2,7 @@
 #
 # Test reading dirty bitmap over NBD
 #
-# Copyright (C) 2018-2019 Red Hat, Inc.
+# Copyright (C) 2018-2020 Red Hat, Inc.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -153,7 +153,7 @@ _send_qemu_cmd $QEMU_HANDLE '{"execute":"nbd-server-add",
   "bitmap":"b3"}}' "error" # Missing bitmap
 _send_qemu_cmd $QEMU_HANDLE '{"execute":"nbd-server-add",
   "arguments":{"device":"n", "name":"n2", "writable":true,
-  "bitmap":"b2"}}' "return"
+  "description":"some text", "bitmap":"b2"}}' "return"
 $QEMU_NBD_PROG -L -k "$SOCK_DIR/nbd"
 
 echo
@@ -206,7 +206,9 @@ $QEMU_IMG map --output=json --image-opts \
 
 nbd_server_start_unix_socket -f $IMGFMT -B b2 "$TEST_IMG"
 IMG="driver=nbd,server.type=unix,server.path=$nbd_unix_socket"
-$QEMU_IMG map --output=json --image-opts \
+$QEMU_IMG map --output=json --image-opts --max-length=12345 \
+  "$IMG,x-dirty-bitmap=qemu:dirty-bitmap:b2" | _filter_qemu_img_map
+$QEMU_IMG map --output=json --image-opts --start-offset=12345 \
   "$IMG,x-dirty-bitmap=qemu:dirty-bitmap:b2" | _filter_qemu_img_map
 
 # success, all done

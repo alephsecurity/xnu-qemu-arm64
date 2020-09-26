@@ -152,7 +152,7 @@ cryptodev_vhost_claim_chardev(CryptoDevBackendVhostUser *s,
     return chr;
 }
 
-static void cryptodev_vhost_user_event(void *opaque, int event)
+static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
 {
     CryptoDevBackendVhostUser *s = opaque;
     CryptoDevBackend *b = CRYPTODEV_BACKEND(s);
@@ -170,6 +170,11 @@ static void cryptodev_vhost_user_event(void *opaque, int event)
     case CHR_EVENT_CLOSED:
         b->ready = false;
         cryptodev_vhost_user_stop(queues, s);
+        break;
+    case CHR_EVENT_BREAK:
+    case CHR_EVENT_MUX_IN:
+    case CHR_EVENT_MUX_OUT:
+        /* Ignore */
         break;
     }
 }
@@ -204,8 +209,7 @@ static void cryptodev_vhost_user_init(
         backend->conf.peers.ccs[i] = cc;
 
         if (i == 0) {
-            if (!qemu_chr_fe_init(&s->chr, chr, &local_err)) {
-                error_propagate(errp, local_err);
+            if (!qemu_chr_fe_init(&s->chr, chr, errp)) {
                 return;
             }
         }
@@ -335,8 +339,7 @@ static void cryptodev_vhost_user_instance_int(Object *obj)
 {
     object_property_add_str(obj, "chardev",
                             cryptodev_vhost_user_get_chardev,
-                            cryptodev_vhost_user_set_chardev,
-                            NULL);
+                            cryptodev_vhost_user_set_chardev);
 }
 
 static void cryptodev_vhost_user_finalize(Object *obj)

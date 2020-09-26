@@ -5,15 +5,15 @@ Formatting 'TEST_DIR/t.IMGFMT', fmt=IMGFMT size=1073741824
 qemu-img: Either --size N or one filename must be specified.
 qemu-img: --size N cannot be used together with a filename.
 qemu-img: At most one filename argument is allowed.
-qemu-img: --object, --image-opts, -f, and -l require a filename argument.
-qemu-img: --object, --image-opts, -f, and -l require a filename argument.
-qemu-img: --object, --image-opts, -f, and -l require a filename argument.
-qemu-img: --object, --image-opts, -f, and -l require a filename argument.
+qemu-img: Either --size N or one filename must be specified.
+qemu-img: --image-opts, -f, and -l require a filename argument.
+qemu-img: --image-opts, -f, and -l require a filename argument.
+qemu-img: --image-opts, -f, and -l require a filename argument.
 qemu-img: Invalid option list: ,
 qemu-img: Invalid parameter 'snapshot.foo'
 qemu-img: Failed in parsing snapshot param 'snapshot.foo'
 qemu-img: --output must be used with human or json as argument.
-qemu-img: Image size must be less than 8 EiB!
+qemu-img: Invalid image size specified. Must be between 0 and 9223372036854775807.
 qemu-img: Unknown file format 'foo'
 
 == Size calculation for a new file (human) ==

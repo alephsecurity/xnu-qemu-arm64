@@ -23,15 +23,15 @@
 #include "qemu/module.h"
 #include "qapi/error.h"
 
-void qbus_set_hotplug_handler(BusState *bus, Object *handler, Error **errp)
+void qbus_set_hotplug_handler(BusState *bus, Object *handler)
 {
-    object_property_set_link(OBJECT(bus), OBJECT(handler),
-                             QDEV_HOTPLUG_HANDLER_PROPERTY, errp);
+    object_property_set_link(OBJECT(bus), QDEV_HOTPLUG_HANDLER_PROPERTY,
+                             handler, &error_abort);
 }
 
-void qbus_set_bus_hotplug_handler(BusState *bus, Error **errp)
+void qbus_set_bus_hotplug_handler(BusState *bus)
 {
-    qbus_set_hotplug_handler(bus, OBJECT(bus), errp);
+    qbus_set_hotplug_handler(bus, OBJECT(bus));
 }
 
 int qbus_walk_children(BusState *bus,
@@ -68,7 +68,34 @@ int qbus_walk_children(BusState *bus,
     return 0;
 }
 
-static void qbus_realize(BusState *bus, DeviceState *parent, const char *name)
+void bus_cold_reset(BusState *bus)
+{
+    resettable_reset(OBJECT(bus), RESET_TYPE_COLD);
+}
+
+bool bus_is_in_reset(BusState *bus)
+{
+    return resettable_is_in_reset(OBJECT(bus));
+}
+
+static ResettableState *bus_get_reset_state(Object *obj)
+{
+    BusState *bus = BUS(obj);
+    return &bus->reset;
+}
+
+static void bus_reset_child_foreach(Object *obj, ResettableChildCallback cb,
+                                    void *opaque, ResetType type)
+{
+    BusState *bus = BUS(obj);
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &bus->children, sibling) {
+        cb(OBJECT(kid->child), opaque, type);
+    }
+}
+
+static void qbus_init(BusState *bus, DeviceState *parent, const char *name)
 {
     const char *typename = object_get_typename(OBJECT(bus));
     BusClass *bc;
@@ -95,7 +122,7 @@ static void qbus_realize(BusState *bus, DeviceState *parent, const char *name)
     if (bus->parent) {
         QLIST_INSERT_HEAD(&bus->parent->child_bus, bus, sibling);
         bus->parent->num_child_bus++;
-        object_property_add_child(OBJECT(bus->parent), bus->name, OBJECT(bus), NULL);
+        object_property_add_child(OBJECT(bus->parent), bus->name, OBJECT(bus));
         object_unref(OBJECT(bus));
     } else {
         /* The only bus without a parent is the main system bus */
@@ -124,7 +151,7 @@ void qbus_create_inplace(void *bus, size_t size, const char *typename,
                          DeviceState *parent, const char *name)
 {
     object_initialize(bus, size, typename);
-    qbus_realize(bus, parent, name);
+    qbus_init(bus, parent, name);
 }
 
 BusState *qbus_create(const char *typename, DeviceState *parent, const char *name)
@@ -132,9 +159,19 @@ BusState *qbus_create(const char *typename, DeviceState *parent, const char *nam
     BusState *bus;
 
     bus = BUS(object_new(typename));
-    qbus_realize(bus, parent, name);
+    qbus_init(bus, parent, name);
 
     return bus;
+}
+
+bool qbus_realize(BusState *bus, Error **errp)
+{
+    return object_property_set_bool(OBJECT(bus), "realized", true, errp);
+}
+
+void qbus_unrealize(BusState *bus)
+{
+    object_property_set_bool(OBJECT(bus), "realized", false, &error_abort);
 }
 
 static bool bus_get_realized(Object *obj, Error **errp)
@@ -149,31 +186,21 @@ static void bus_set_realized(Object *obj, bool value, Error **errp)
     BusState *bus = BUS(obj);
     BusClass *bc = BUS_GET_CLASS(bus);
     BusChild *kid;
-    Error *local_err = NULL;
 
     if (value && !bus->realized) {
         if (bc->realize) {
-            bc->realize(bus, &local_err);
+            bc->realize(bus, errp);
         }
 
         /* TODO: recursive realization */
     } else if (!value && bus->realized) {
         QTAILQ_FOREACH(kid, &bus->children, sibling) {
             DeviceState *dev = kid->child;
-            object_property_set_bool(OBJECT(dev), false, "realized",
-                                     &local_err);
-            if (local_err != NULL) {
-                break;
-            }
+            qdev_unrealize(dev);
         }
-        if (bc->unrealize && local_err == NULL) {
-            bc->unrealize(bus, &local_err);
+        if (bc->unrealize) {
+            bc->unrealize(bus);
         }
-    }
-
-    if (local_err != NULL) {
-        error_propagate(errp, local_err);
-        return;
     }
 
     bus->realized = value;
@@ -188,10 +215,9 @@ static void qbus_initfn(Object *obj)
                              TYPE_HOTPLUG_HANDLER,
                              (Object **)&bus->hotplug_handler,
                              object_property_allow_set_link,
-                             0,
-                             NULL);
+                             0);
     object_property_add_bool(obj, "realized",
-                             bus_get_realized, bus_set_realized, NULL);
+                             bus_get_realized, bus_set_realized);
 }
 
 static char *default_bus_get_fw_dev_path(DeviceState *dev)
@@ -199,12 +225,83 @@ static char *default_bus_get_fw_dev_path(DeviceState *dev)
     return g_strdup(object_get_typename(OBJECT(dev)));
 }
 
+/**
+ * bus_phases_reset:
+ * Transition reset method for buses to allow moving
+ * smoothly from legacy reset method to multi-phases
+ */
+static void bus_phases_reset(BusState *bus)
+{
+    ResettableClass *rc = RESETTABLE_GET_CLASS(bus);
+
+    if (rc->phases.enter) {
+        rc->phases.enter(OBJECT(bus), RESET_TYPE_COLD);
+    }
+    if (rc->phases.hold) {
+        rc->phases.hold(OBJECT(bus));
+    }
+    if (rc->phases.exit) {
+        rc->phases.exit(OBJECT(bus));
+    }
+}
+
+static void bus_transitional_reset(Object *obj)
+{
+    BusClass *bc = BUS_GET_CLASS(obj);
+
+    /*
+     * This will call either @bus_phases_reset (for multi-phases transitioned
+     * buses) or a bus's specific method for not-yet transitioned buses.
+     * In both case, it does not reset children.
+     */
+    if (bc->reset) {
+        bc->reset(BUS(obj));
+    }
+}
+
+/**
+ * bus_get_transitional_reset:
+ * check if the bus's class is ready for multi-phase
+ */
+static ResettableTrFunction bus_get_transitional_reset(Object *obj)
+{
+    BusClass *dc = BUS_GET_CLASS(obj);
+    if (dc->reset != bus_phases_reset) {
+        /*
+         * dc->reset has been overridden by a subclass,
+         * the bus is not ready for multi phase yet.
+         */
+        return bus_transitional_reset;
+    }
+    return NULL;
+}
+
 static void bus_class_init(ObjectClass *class, void *data)
 {
     BusClass *bc = BUS_CLASS(class);
+    ResettableClass *rc = RESETTABLE_CLASS(class);
 
     class->unparent = bus_unparent;
     bc->get_fw_dev_path = default_bus_get_fw_dev_path;
+
+    rc->get_state = bus_get_reset_state;
+    rc->child_foreach = bus_reset_child_foreach;
+
+    /*
+     * @bus_phases_reset is put as the default reset method below, allowing
+     * to do the multi-phase transition from base classes to leaf classes. It
+     * allows a legacy-reset Bus class to extend a multi-phases-reset
+     * Bus class for the following reason:
+     * + If a base class B has been moved to multi-phase, then it does not
+     *   override this default reset method and may have defined phase methods.
+     * + A child class C (extending class B) which uses
+     *   bus_class_set_parent_reset() (or similar means) to override the
+     *   reset method will still work as expected. @bus_phases_reset function
+     *   will be registered as the parent reset method and effectively call
+     *   parent reset phases.
+     */
+    bc->reset = bus_phases_reset;
+    rc->get_transitional_function = bus_get_transitional_reset;
 }
 
 static void qbus_finalize(Object *obj)
@@ -223,6 +320,10 @@ static const TypeInfo bus_info = {
     .instance_init = qbus_initfn,
     .instance_finalize = qbus_finalize,
     .class_init = bus_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_RESETTABLE_INTERFACE },
+        { }
+    },
 };
 
 static void bus_register_types(void)

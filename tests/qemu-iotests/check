@@ -137,6 +137,7 @@ sortme=false
 expunge=true
 have_test_arg=false
 cachemode=false
+aiomode=false
 
 tmp="${TEST_DIR}"/$$
 rm -f $tmp.list $tmp.tmp $tmp.sed
@@ -146,6 +147,7 @@ export IMGFMT_GENERIC=true
 export IMGPROTO=file
 export IMGOPTS=""
 export CACHEMODE="writeback"
+export AIOMODE="threads"
 export QEMU_IO_OPTIONS=""
 export QEMU_IO_OPTIONS_NO_FMT=""
 export CACHEMODE_IS_DEFAULT=true
@@ -230,6 +232,11 @@ s/ .*//p
         CACHEMODE_IS_DEFAULT=false
         cachemode=false
         continue
+    elif $aiomode
+    then
+        AIOMODE="$r"
+        aiomode=false
+        continue
     fi
 
     xpand=true
@@ -265,7 +272,6 @@ image protocol options
     -nbd                test nbd
     -ssh                test ssh
     -nfs                test nfs
-    -vxhs               test vxhs
 
 other options
     -xdiff              graphical mode diff
@@ -274,6 +280,7 @@ other options
     -n                  show me, do not run tests
     -o options          -o options to pass to qemu-img create/convert
     -c mode             cache mode
+    -i mode             AIO mode
     -makecheck          pretty print output for make check
 
 testlist options
@@ -375,11 +382,6 @@ testlist options
             xpand=false
             ;;
 
-        -vxhs)
-            IMGPROTO=vxhs
-            xpand=false
-            ;;
-
         -ssh)
             IMGPROTO=ssh
             xpand=false
@@ -438,10 +440,13 @@ testlist options
             cachemode=true
             xpand=false
             ;;
+        -i)
+            aiomode=true
+            xpand=false
+            ;;
         -T)        # deprecated timestamp option
             xpand=false
             ;;
-
         -v)
             verbose=true
             xpand=false
@@ -520,6 +525,8 @@ done
 
 # Set qemu-io cache mode with $CACHEMODE we have
 QEMU_IO_OPTIONS="$QEMU_IO_OPTIONS --cache $CACHEMODE"
+# Set qemu-io aio mode with $AIOMODE we have
+QEMU_IO_OPTIONS="$QEMU_IO_OPTIONS --aio $AIOMODE"
 
 QEMU_IO_OPTIONS_NO_FMT="$QEMU_IO_OPTIONS"
 if [ "$IMGOPTSSYNTAX" != "true" ]; then
@@ -532,6 +539,9 @@ if [ "$IMGFMT" == "qcow2" ] && ! (echo "$IMGOPTS" | grep "compat=" > /dev/null);
 fi
 if [ "$IMGFMT" == "luks" ] && ! (echo "$IMGOPTS" | grep "iter-time=" > /dev/null); then
     IMGOPTS=$(_optstr_add "$IMGOPTS" "iter-time=10")
+fi
+if [ "$IMGFMT" == "vmdk" ] && ! (echo "$IMGOPTS" | grep "zeroed_grain=" > /dev/null); then
+    IMGOPTS=$(_optstr_add "$IMGOPTS" "zeroed_grain=on")
 fi
 
 if [ -z "$SAMPLE_IMG_DIR" ]; then
@@ -585,15 +595,19 @@ then
 fi
 export QEMU_PROG="$(type -p "$QEMU_PROG")"
 
+export QEMU_OPTIONS="-nodefaults -display none -accel qtest"
 case "$QEMU_PROG" in
     *qemu-system-arm|*qemu-system-aarch64)
-        export QEMU_OPTIONS="-nodefaults -display none -machine virt,accel=qtest"
+        export QEMU_OPTIONS="$QEMU_OPTIONS -machine virt"
+        ;;
+    *qemu-system-avr)
+        export QEMU_OPTIONS="$QEMU_OPTIONS -machine mega2560"
+        ;;
+    *qemu-system-rx)
+        export QEMU_OPTIONS="$QEMU_OPTIONS -machine gdbsim-r5f562n8"
         ;;
     *qemu-system-tricore)
-        export QEMU_OPTIONS="-nodefaults -display none -machine tricore_testboard,accel=qtest"
-        ;;
-    *)
-        export QEMU_OPTIONS="-nodefaults -display none -machine accel=qtest"
+        export QEMU_OPTIONS="-$QEMU_OPTIONS -machine tricore_testboard"
         ;;
 esac
 
@@ -630,10 +644,6 @@ if [ -z $QEMU_NBD_PROG ]; then
 fi
 export QEMU_NBD_PROG="$(type -p "$QEMU_NBD_PROG")"
 
-if [ -z "$QEMU_VXHS_PROG" ]; then
-    export QEMU_VXHS_PROG="$(set_prog_path qnio_server)"
-fi
-
 if [ -x "$build_iotests/socket_scm_helper" ]
 then
     export SOCKET_SCM_HELPER="$build_iotests/socket_scm_helper"
@@ -642,7 +652,15 @@ fi
 python_usable=false
 if $PYTHON -c 'import sys; sys.exit(0 if sys.version_info >= (3,6) else 1)'
 then
-    python_usable=true
+    # Our python framework also requires virtio-blk
+    if "$QEMU_PROG" -M none -device help | grep -q virtio-blk >/dev/null 2>&1
+    then
+        python_usable=true
+    else
+        python_unusable_because="Missing virtio-blk in QEMU binary"
+    fi
+else
+    python_unusable_because="Unsupported Python version"
 fi
 
 default_machine=$($QEMU_PROG -machine help | sed -n '/(default)/ s/ .*//p')
@@ -825,12 +843,12 @@ do
 
         start=$(_wallclock)
 
-        if [ "$(head -n 1 "$source_iotests/$seq")" == "#!/usr/bin/env python" ]; then
+        if [ "$(head -n 1 "$source_iotests/$seq")" == "#!/usr/bin/env python3" ]; then
             if $python_usable; then
                 run_command="$PYTHON $seq"
             else
                 run_command="false"
-                echo "Unsupported Python version" > $seq.notrun
+                echo "$python_unusable_because" > $seq.notrun
             fi
         else
             run_command="./$seq"

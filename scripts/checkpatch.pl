@@ -49,7 +49,7 @@ Version: $V
 
 Options:
   -q, --quiet                quiet
-  --no-tree                  run without a kernel tree
+  --no-tree                  run without a qemu tree
   --no-signoff               do not check for 'Signed-off-by' line
   --patch                    treat FILE as patchfile
   --branch                   treat args as GIT revision list
@@ -57,7 +57,7 @@ Options:
   --terse                    one line per report
   -f, --file                 treat FILE as regular source file
   --strict                   fail if only warnings are found
-  --root=PATH                PATH to the kernel tree root
+  --root=PATH                PATH to the qemu tree root
   --no-summary               suppress the per-file summary
   --mailback                 only produce a report in case of warnings/errors
   --summary-file             include the filename in summary
@@ -203,7 +203,7 @@ if ($tree) {
 	}
 
 	if (!defined $root) {
-		print "Must be run from the top-level dir. of a kernel tree\n";
+		print "Must be run from the top-level dir. of a qemu tree\n";
 		exit(2);
 	}
 }
@@ -462,7 +462,7 @@ sub top_of_kernel_tree {
 	my @tree_check = (
 		"COPYING", "MAINTAINERS", "Makefile",
 		"README.rst", "docs", "VERSION",
-		"vl.c"
+		"linux-user", "softmmu"
 	);
 
 	foreach my $check (@tree_check) {
@@ -1256,6 +1256,29 @@ sub WARN {
 	}
 }
 
+# According to tests/qtest/bios-tables-test.c: do not
+# change expected file in the same commit with adding test
+sub checkfilename {
+	my ($name, $acpi_testexpected, $acpi_nontestexpected) = @_;
+
+        # Note: shell script that rebuilds the expected files is in the same
+        # directory as files themselves.
+        # Note: allowed diff list can be changed both when changing expected
+        # files and when changing tests.
+	if ($name =~ m#^tests/data/acpi/# and not $name =~ m#^\.sh$#) {
+		$$acpi_testexpected = $name;
+	} elsif ($name !~ m#^tests/qtest/bios-tables-test-allowed-diff.h$#) {
+		$$acpi_nontestexpected = $name;
+	}
+	if (defined $$acpi_testexpected and defined $$acpi_nontestexpected) {
+		ERROR("Do not add expected files together with tests, " .
+		      "follow instructions in " .
+		      "tests/qtest/bios-tables-test.c: both " .
+		      $$acpi_testexpected . " and " .
+		      $$acpi_nontestexpected . " found\n");
+	}
+}
+
 sub process {
 	my $filename = shift;
 
@@ -1301,6 +1324,9 @@ sub process {
 	my %suppress_ifbraces;
 	my %suppress_whiletrailers;
 	my %suppress_export;
+
+        my $acpi_testexpected;
+        my $acpi_nontestexpected;
 
 	# Pre-scan the patch sanitizing the lines.
 
@@ -1431,9 +1457,11 @@ sub process {
 		if ($line =~ /^diff --git.*?(\S+)$/) {
 			$realfile = $1;
 			$realfile =~ s@^([^/]*)/@@ if (!$file);
+	                checkfilename($realfile, \$acpi_testexpected, \$acpi_nontestexpected);
 		} elsif ($line =~ /^\+\+\+\s+(\S+)/) {
 			$realfile = $1;
 			$realfile =~ s@^([^/]*)/@@ if (!$file);
+	                checkfilename($realfile, \$acpi_testexpected, \$acpi_nontestexpected);
 
 			$p1_prefix = $1;
 			if (!$file && $tree && $p1_prefix ne '' &&
@@ -1458,6 +1486,12 @@ sub process {
 			if ($realfile =~ /(\bMakefile(?:\.objs)?|\.c|\.cc|\.cpp|\.h|\.mak|\.[sS])$/) {
 				ERROR("do not set execute permissions for source files\n" . $permhere);
 			}
+		}
+
+# Only allow Python 3 interpreter
+		if ($realline == 1 &&
+			$line =~ /^\+#!\ *\/usr\/bin\/(?:env )?python$/) {
+			ERROR("please use python3 interpreter\n" . $herecurr);
 		}
 
 # Accept git diff extended headers as valid patches
@@ -1822,6 +1856,11 @@ sub process {
 # 'do ... while (0/false)' only makes sense in macros, without trailing ';'
 		if ($line =~ /while\s*\((0|false)\);/) {
 			ERROR("suspicious ; after while (0)\n" . $herecurr);
+		}
+
+# Check superfluous trailing ';'
+		if ($line =~ /;;$/) {
+			ERROR("superfluous trailing semicolon\n" . $herecurr);
 		}
 
 # Check relative indent for conditionals and blocks.

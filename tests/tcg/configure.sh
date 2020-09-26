@@ -36,28 +36,39 @@ TMPC="${TMPDIR1}/qemu-conf.c"
 TMPE="${TMPDIR1}/qemu-conf.exe"
 
 container="no"
-if has "docker" || has "podman"; then
-  container=$($python $source_path/tests/docker/docker.py probe)
+if test $use_containers = "yes"; then
+    if has "docker" || has "podman"; then
+        container=$($python $source_path/tests/docker/docker.py probe)
+    fi
 fi
 
 # cross compilers defaults, can be overridden with --cross-cc-ARCH
 : ${cross_cc_aarch64="aarch64-linux-gnu-gcc"}
 : ${cross_cc_aarch64_be="$cross_cc_aarch64"}
 : ${cross_cc_cflags_aarch64_be="-mbig-endian"}
+: $(cross_cc_alpha="alpha-linux-gnu-gcc")
 : ${cross_cc_arm="arm-linux-gnueabihf-gcc"}
 : ${cross_cc_cflags_armeb="-mbig-endian"}
+: ${cross_cc_hppa="hppa-linux-gnu-gcc"}
 : ${cross_cc_i386="i386-pc-linux-gnu-gcc"}
 : ${cross_cc_cflags_i386="-m32"}
-: ${cross_cc_x86_64="x86_64-pc-linux-gnu-gcc"}
-: ${cross_cc_cflags_x86_64="-m64"}
+: ${cross_cc_m68k="m68k-linux-gnu-gcc"}
+: $(cross_cc_mips64el="mips64el-linux-gnuabi64-gcc")
+: $(cross_cc_mips64="mips64-linux-gnuabi64-gcc")
+: $(cross_cc_mipsel="mipsel-linux-gnu-gcc")
+: $(cross_cc_mips="mips-linux-gnu-gcc")
 : ${cross_cc_ppc="powerpc-linux-gnu-gcc"}
 : ${cross_cc_cflags_ppc="-m32"}
-: ${cross_cc_ppc64="powerpc-linux-gnu-gcc"}
-: ${cross_cc_cflags_ppc64="-m64"}
+: ${cross_cc_ppc64="powerpc64-linux-gnu-gcc"}
 : ${cross_cc_ppc64le="powerpc64le-linux-gnu-gcc"}
-: ${cross_cc_cflags_s390x="-m64"}
+: $(cross_cc_riscv64="riscv64-linux-gnu-gcc")
+: ${cross_cc_s390x="s390x-linux-gnu-gcc"}
+: $(cross_cc_sh4="sh4-linux-gnu-gcc")
 : ${cross_cc_cflags_sparc="-m32 -mv8plus -mcpu=ultrasparc"}
+: ${cross_cc_sparc64="sparc64-linux-gnu-gcc"}
 : ${cross_cc_cflags_sparc64="-m64 -mcpu=ultrasparc"}
+: ${cross_cc_x86_64="x86_64-pc-linux-gnu-gcc"}
+: ${cross_cc_cflags_x86_64="-m64"}
 
 for target in $target_list; do
   arch=${target%%-*}
@@ -95,8 +106,8 @@ for target in $target_list; do
   case $target in
     aarch64-*)
       # We don't have any bigendian build tools so we only use this for AArch64
-      container_image=debian-arm64-cross
-      container_cross_cc=aarch64-linux-gnu-gcc
+      container_image=debian-arm64-test-cross
+      container_cross_cc=aarch64-linux-gnu-gcc-10
       ;;
     alpha-*)
       container_image=debian-alpha-cross
@@ -171,7 +182,7 @@ for target in $target_list; do
       container_image=debian-xtensa-cross
 
       # default to the dc232b cpu
-      container_cross_cc=/opt/2018.02/xtensa-dc232b-elf/bin/xtensa-dc232b-elf-gcc
+      container_cross_cc=/opt/2020.07/xtensa-dc232b-elf/bin/xtensa-dc232b-elf-gcc
       ;;
   esac
 
@@ -214,6 +225,24 @@ for target in $target_list; do
       echo "CROSS_CC_GUEST_STATIC=y" >> $config_target_mak
     fi
     echo "CROSS_CC_GUEST=$target_compiler" >> $config_target_mak
+
+    # Test for compiler features for optional tests. We only do this
+    # for cross compilers because ensuring the docker containers based
+    # compilers is a requirememt for adding a new test that needs a
+    # compiler feature.
+    case $target in
+        aarch64-*)
+            if do_compiler "$target_compiler" $target_compiler_cflags \
+               -march=armv8.1-a+sve -o $TMPE $TMPC; then
+                echo "CROSS_CC_HAS_SVE=y" >> $config_target_mak
+            fi
+            if do_compiler "$target_compiler" $target_compiler_cflags \
+               -march=armv8.3-a -o $TMPE $TMPC; then
+                echo "CROSS_CC_HAS_ARMV8_3=y" >> $config_target_mak
+            fi
+        ;;
+    esac
+
     enabled_cross_compilers="$enabled_cross_compilers $target_compiler"
     got_cross_cc=yes
     break

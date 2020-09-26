@@ -27,7 +27,7 @@
  * THE SOFTWARE.
  */
 
-#include "tcg-pool.inc.c"
+#include "../tcg-pool.inc.c"
 
 #ifdef CONFIG_DEBUG_TCG
 static const char * const tcg_target_reg_names[TCG_TARGET_NB_REGS] = {
@@ -502,10 +502,8 @@ static bool patch_reloc(tcg_insn_unit *code_ptr, int type,
         break;
     case R_RISCV_JAL:
         return reloc_jimm20(code_ptr, (tcg_insn_unit *)value);
-        break;
     case R_RISCV_CALL:
         return reloc_call(code_ptr, (tcg_insn_unit *)value);
-        break;
     default:
         tcg_abort();
     }
@@ -921,7 +919,7 @@ static void tcg_out_mb(TCGContext *s, TCGArg a0)
  */
 
 #if defined(CONFIG_SOFTMMU)
-#include "tcg-ldst.inc.c"
+#include "../tcg-ldst.inc.c"
 
 /* helper signature: helper_ret_ld_mmu(CPUState *env, target_ulong addr,
  *                                     TCGMemOpIdx oi, uintptr_t ra)

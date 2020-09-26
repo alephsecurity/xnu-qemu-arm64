@@ -70,7 +70,7 @@ void cpu_set_fpcsr(CPUOpenRISCState *env, uint32_t val)
         float_round_down
     };
 
-    env->fpcsr = val & 0x7ff;
+    env->fpcsr = val & 0xfff;
     set_float_rounding_mode(rm_to_sf[extract32(val, 1, 2)], &env->fp_status);
 }
 
@@ -155,13 +155,13 @@ FLOAT_CMP(un, unordered_quiet)
 target_ulong helper_float_ ## name ## _d(CPUOpenRISCState *env,           \
                                          uint64_t fdt0, uint64_t fdt1)    \
 {                                                                         \
-    int r = float64_compare_quiet(fdt0, fdt1, &env->fp_status);           \
+    FloatRelation r = float64_compare_quiet(fdt0, fdt1, &env->fp_status); \
     return expr;                                                          \
 }                                                                         \
 target_ulong helper_float_ ## name ## _s(CPUOpenRISCState *env,           \
                                          uint32_t fdt0, uint32_t fdt1)    \
 {                                                                         \
-    int r = float32_compare_quiet(fdt0, fdt1, &env->fp_status);           \
+    FloatRelation r = float32_compare_quiet(fdt0, fdt1, &env->fp_status); \
     return expr;                                                          \
 }
 

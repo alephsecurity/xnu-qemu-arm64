@@ -562,7 +562,7 @@ out1:
     qemu_mutex_destroy(&card->event_list_mutex);
 }
 
-static void emulated_unrealize(CCIDCardState *base, Error **errp)
+static void emulated_unrealize(CCIDCardState *base)
 {
     EmulatedState *card = EMULATED_CCID_CARD(base);
     VEvent *vevent = vevent_new(VEVENT_LAST, NULL, NULL);
@@ -603,7 +603,7 @@ static void emulated_class_initfn(ObjectClass *klass, void *data)
     cc->apdu_from_guest = emulated_apdu_from_guest;
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     dc->desc = "emulated smartcard";
-    dc->props = emulated_card_properties;
+    device_class_set_props(dc, emulated_card_properties);
 }
 
 static const TypeInfo emulated_card_info = {

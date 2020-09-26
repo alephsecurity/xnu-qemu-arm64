@@ -117,6 +117,6 @@ void allocate_ram(MemoryRegion *top, const char *name, hwaddr addr,
                   hwaddr size)
 {
         MemoryRegion *sec = g_new(MemoryRegion, 1);
-        memory_region_allocate_system_memory(sec, NULL, name, size);
+        memory_region_init_ram(sec, NULL, name, size, &error_fatal);
         memory_region_add_subregion(top, addr, sec);
 }

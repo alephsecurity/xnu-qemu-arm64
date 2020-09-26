@@ -170,6 +170,7 @@ static void tulip_copy_rx_bytes(TULIPState *s, struct tulip_descriptor *desc)
         } else {
             len = s->rx_frame_len;
         }
+
         pci_dma_write(&s->dev, desc->buf_addr1, s->rx_frame +
             (s->rx_frame_size - s->rx_frame_len), len);
         s->rx_frame_len -= len;
@@ -181,6 +182,7 @@ static void tulip_copy_rx_bytes(TULIPState *s, struct tulip_descriptor *desc)
         } else {
             len = s->rx_frame_len;
         }
+
         pci_dma_write(&s->dev, desc->buf_addr2, s->rx_frame +
             (s->rx_frame_size - s->rx_frame_len), len);
         s->rx_frame_len -= len;
@@ -227,7 +229,8 @@ static ssize_t tulip_receive(TULIPState *s, const uint8_t *buf, size_t size)
 
     trace_tulip_receive(buf, size);
 
-    if (size < 14 || size > 2048 || s->rx_frame_len || tulip_rx_stopped(s)) {
+    if (size < 14 || size > sizeof(s->rx_frame) - 4
+        || s->rx_frame_len || tulip_rx_stopped(s)) {
         return 0;
     }
 
@@ -274,7 +277,6 @@ static ssize_t tulip_receive_nc(NetClientState *nc,
 {
     return tulip_receive(qemu_get_nic_opaque(nc), buf, size);
 }
-
 
 static NetClientInfo net_tulip_info = {
     .type = NET_CLIENT_DRIVER_NIC,
@@ -558,7 +560,7 @@ static void tulip_tx(TULIPState *s, struct tulip_descriptor *desc)
         if ((s->csr[6] >> CSR6_OM_SHIFT) & CSR6_OM_MASK) {
             /* Internal or external Loopback */
             tulip_receive(s, s->tx_frame, s->tx_frame_len);
-        } else {
+        } else if (s->tx_frame_len <= sizeof(s->tx_frame)) {
             qemu_send_packet(qemu_get_queue(s->nic),
                 s->tx_frame, s->tx_frame_len);
         }
@@ -570,23 +572,37 @@ static void tulip_tx(TULIPState *s, struct tulip_descriptor *desc)
     }
 }
 
-static void tulip_copy_tx_buffers(TULIPState *s, struct tulip_descriptor *desc)
+static int tulip_copy_tx_buffers(TULIPState *s, struct tulip_descriptor *desc)
 {
     int len1 = (desc->control >> TDES1_BUF1_SIZE_SHIFT) & TDES1_BUF1_SIZE_MASK;
     int len2 = (desc->control >> TDES1_BUF2_SIZE_SHIFT) & TDES1_BUF2_SIZE_MASK;
 
+    if (s->tx_frame_len + len1 > sizeof(s->tx_frame)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: descriptor overflow (ofs: %u, len:%d, size:%zu)\n",
+                      __func__, s->tx_frame_len, len1, sizeof(s->tx_frame));
+        return -1;
+    }
     if (len1) {
         pci_dma_read(&s->dev, desc->buf_addr1,
             s->tx_frame + s->tx_frame_len, len1);
         s->tx_frame_len += len1;
     }
 
+    if (s->tx_frame_len + len2 > sizeof(s->tx_frame)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: descriptor overflow (ofs: %u, len:%d, size:%zu)\n",
+                      __func__, s->tx_frame_len, len2, sizeof(s->tx_frame));
+        return -1;
+    }
     if (len2) {
         pci_dma_read(&s->dev, desc->buf_addr2,
             s->tx_frame + s->tx_frame_len, len2);
         s->tx_frame_len += len2;
     }
     desc->status = (len1 + len2) ? 0 : 0x7fffffff;
+
+    return 0;
 }
 
 static void tulip_setup_filter_addr(TULIPState *s, uint8_t *buf, int n)
@@ -651,13 +667,15 @@ static uint32_t tulip_ts(TULIPState *s)
 
 static void tulip_xmit_list_update(TULIPState *s)
 {
+#define TULIP_DESC_MAX 128
+    uint8_t i = 0;
     struct tulip_descriptor desc;
 
     if (tulip_ts(s) != CSR5_TS_SUSPENDED) {
         return;
     }
 
-    for (;;) {
+    for (i = 0; i < TULIP_DESC_MAX; i++) {
         tulip_desc_read(s, s->current_tx_desc, &desc);
         tulip_dump_tx_descriptor(s, &desc);
 
@@ -675,10 +693,10 @@ static void tulip_xmit_list_update(TULIPState *s)
                 s->tx_frame_len = 0;
             }
 
-            tulip_copy_tx_buffers(s, &desc);
-
-            if (desc.control & TDES1_LS) {
-                tulip_tx(s, &desc);
+            if (!tulip_copy_tx_buffers(s, &desc)) {
+                if (desc.control & TDES1_LS) {
+                    tulip_tx(s, &desc);
+                }
             }
         }
         tulip_desc_write(s, s->current_tx_desc, &desc);
@@ -983,7 +1001,7 @@ static void tulip_instance_init(Object *obj)
 
     device_add_bootindex_property(obj, &d->c.bootindex,
                                   "bootindex", "/ethernet-phy@0",
-                                  &pci_dev->qdev, NULL);
+                                  &pci_dev->qdev);
 }
 
 static Property tulip_properties[] = {
@@ -1004,7 +1022,7 @@ static void tulip_class_init(ObjectClass *klass, void *data)
     k->subsystem_id = 0x104f;
     k->class_id = PCI_CLASS_NETWORK_ETHERNET;
     dc->vmsd = &vmstate_pci_tulip;
-    dc->props = tulip_properties;
+    device_class_set_props(dc, tulip_properties);
     dc->reset = tulip_qdev_reset;
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
 }

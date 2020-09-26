@@ -60,15 +60,13 @@ static void ipack_device_realize(DeviceState *dev, Error **errp)
     k->realize(dev, errp);
 }
 
-static void ipack_device_unrealize(DeviceState *dev, Error **errp)
+static void ipack_device_unrealize(DeviceState *dev)
 {
     IPackDevice *idev = IPACK_DEVICE(dev);
     IPackDeviceClass *k = IPACK_DEVICE_GET_CLASS(dev);
-    Error *err = NULL;
 
     if (k->unrealize) {
-        k->unrealize(dev, &err);
-        error_propagate(errp, err);
+        k->unrealize(dev);
         return;
     }
 
@@ -88,7 +86,7 @@ static void ipack_device_class_init(ObjectClass *klass, void *data)
     k->bus_type = TYPE_IPACK_BUS;
     k->realize = ipack_device_realize;
     k->unrealize = ipack_device_unrealize;
-    k->props = ipack_device_props;
+    device_class_set_props(k, ipack_device_props);
 }
 
 const VMStateDescription vmstate_ipack_device = {

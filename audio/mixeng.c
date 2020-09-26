@@ -267,11 +267,82 @@ f_sample *mixeng_clip[2][2][2][3] = {
     }
 };
 
+#ifdef FLOAT_MIXENG
+#define CONV_NATURAL_FLOAT(x) (x)
+#define CLIP_NATURAL_FLOAT(x) (x)
+#else
+/* macros to map [-1.f, 1.f] <-> [INT32_MIN, INT32_MAX + 1] */
+static const float float_scale = (int64_t)INT32_MAX + 1;
+#define CONV_NATURAL_FLOAT(x) ((x) * float_scale)
 
-void audio_sample_to_uint64(void *samples, int pos,
+#ifdef RECIPROCAL
+static const float float_scale_reciprocal = 1.f / ((int64_t)INT32_MAX + 1);
+#define CLIP_NATURAL_FLOAT(x) ((x) * float_scale_reciprocal)
+#else
+#define CLIP_NATURAL_FLOAT(x) ((x) / float_scale)
+#endif
+#endif
+
+static void conv_natural_float_to_mono(struct st_sample *dst, const void *src,
+                                       int samples)
+{
+    float *in = (float *)src;
+
+    while (samples--) {
+        dst->r = dst->l = CONV_NATURAL_FLOAT(*in++);
+        dst++;
+    }
+}
+
+static void conv_natural_float_to_stereo(struct st_sample *dst, const void *src,
+                                         int samples)
+{
+    float *in = (float *)src;
+
+    while (samples--) {
+        dst->l = CONV_NATURAL_FLOAT(*in++);
+        dst->r = CONV_NATURAL_FLOAT(*in++);
+        dst++;
+    }
+}
+
+t_sample *mixeng_conv_float[2] = {
+    conv_natural_float_to_mono,
+    conv_natural_float_to_stereo,
+};
+
+static void clip_natural_float_from_mono(void *dst, const struct st_sample *src,
+                                         int samples)
+{
+    float *out = (float *)dst;
+
+    while (samples--) {
+        *out++ = CLIP_NATURAL_FLOAT(src->l + src->r);
+        src++;
+    }
+}
+
+static void clip_natural_float_from_stereo(
+    void *dst, const struct st_sample *src, int samples)
+{
+    float *out = (float *)dst;
+
+    while (samples--) {
+        *out++ = CLIP_NATURAL_FLOAT(src->l);
+        *out++ = CLIP_NATURAL_FLOAT(src->r);
+        src++;
+    }
+}
+
+f_sample *mixeng_clip_float[2] = {
+    clip_natural_float_from_mono,
+    clip_natural_float_from_stereo,
+};
+
+void audio_sample_to_uint64(const void *samples, int pos,
                             uint64_t *left, uint64_t *right)
 {
-    struct st_sample *sample = samples;
+    const struct st_sample *sample = samples;
     sample += pos;
 #ifdef FLOAT_MIXENG
     error_report(

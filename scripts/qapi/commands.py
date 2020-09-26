@@ -47,6 +47,7 @@ def gen_call(name, arg_type, boxed, ret_type):
     ret = mcgen('''
 
     %(lhs)sqmp_%(c_name)s(%(args)s&err);
+    error_propagate(errp, err);
 ''',
                 c_name=c_name(name), args=argstr, lhs=lhs)
     if ret_type:
@@ -55,7 +56,7 @@ def gen_call(name, arg_type, boxed, ret_type):
         goto out;
     }
 
-    qmp_marshal_output_%(c_name)s(retval, ret, &err);
+    qmp_marshal_output_%(c_name)s(retval, ret, errp);
 ''',
                      c_name=ret_type.c_name())
     return ret
@@ -66,15 +67,12 @@ def gen_marshal_output(ret_type):
 
 static void qmp_marshal_output_%(c_name)s(%(c_type)s ret_in, QObject **ret_out, Error **errp)
 {
-    Error *err = NULL;
     Visitor *v;
 
     v = qobject_output_visitor_new(ret_out);
-    visit_type_%(c_name)s(v, "unused", &ret_in, &err);
-    if (!err) {
+    if (visit_type_%(c_name)s(v, "unused", &ret_in, errp)) {
         visit_complete(v, ret_out);
     }
-    error_propagate(errp, err);
     visit_free(v);
     v = qapi_dealloc_visitor_new();
     visit_type_%(c_name)s(v, "unused", &ret_in, NULL);
@@ -104,6 +102,8 @@ def gen_marshal(name, arg_type, boxed, ret_type):
 %(proto)s
 {
     Error *err = NULL;
+    bool ok = false;
+    Visitor *v;
 ''',
                 proto=build_marshal_proto(name))
 
@@ -114,43 +114,35 @@ def gen_marshal(name, arg_type, boxed, ret_type):
                      c_type=ret_type.c_type())
 
     if have_args:
-        visit_members = ('visit_type_%s_members(v, &arg, &err);'
-                         % arg_type.c_name())
         ret += mcgen('''
-    Visitor *v;
     %(c_name)s arg = {0};
-
 ''',
                      c_name=arg_type.c_name())
-    else:
-        visit_members = ''
-        ret += mcgen('''
-    Visitor *v = NULL;
-
-    if (args) {
-''')
-        push_indent()
 
     ret += mcgen('''
+
     v = qobject_input_visitor_new(QOBJECT(args));
-    visit_start_struct(v, NULL, NULL, 0, &err);
-    if (err) {
+    if (!visit_start_struct(v, NULL, NULL, 0, errp)) {
         goto out;
     }
-    %(visit_members)s
-    if (!err) {
-        visit_check_struct(v, &err);
-    }
-    visit_end_struct(v, NULL);
-    if (err) {
-        goto out;
+''')
+
+    if have_args:
+        ret += mcgen('''
+    if (visit_type_%(c_arg_type)s_members(v, &arg, errp)) {
+        ok = visit_check_struct(v, errp);
     }
 ''',
-                 visit_members=visit_members)
-
-    if not have_args:
-        pop_indent()
+                     c_arg_type=arg_type.c_name())
+    else:
         ret += mcgen('''
+    ok = visit_check_struct(v, errp);
+''')
+
+    ret += mcgen('''
+    visit_end_struct(v, NULL);
+    if (!ok) {
+        goto out;
     }
 ''')
 
@@ -159,33 +151,23 @@ def gen_marshal(name, arg_type, boxed, ret_type):
     ret += mcgen('''
 
 out:
-    error_propagate(errp, err);
     visit_free(v);
 ''')
-
-    if have_args:
-        visit_members = ('visit_type_%s_members(v, &arg, NULL);'
-                         % arg_type.c_name())
-    else:
-        visit_members = ''
-        ret += mcgen('''
-    if (args) {
-''')
-        push_indent()
 
     ret += mcgen('''
     v = qapi_dealloc_visitor_new();
     visit_start_struct(v, NULL, NULL, 0, NULL);
-    %(visit_members)s
+''')
+
+    if have_args:
+        ret += mcgen('''
+    visit_type_%(c_arg_type)s_members(v, &arg, NULL);
+''',
+                     c_arg_type=arg_type.c_name())
+
+    ret += mcgen('''
     visit_end_struct(v, NULL);
     visit_free(v);
-''',
-                 visit_members=visit_members)
-
-    if not have_args:
-        pop_indent()
-        ret += mcgen('''
-    }
 ''')
 
     ret += mcgen('''
@@ -237,9 +219,9 @@ void %(c_prefix)sqmp_init_marshal(QmpCommandList *cmds)
 class QAPISchemaGenCommandVisitor(QAPISchemaModularCVisitor):
 
     def __init__(self, prefix):
-        QAPISchemaModularCVisitor.__init__(
-            self, prefix, 'qapi-commands',
-            ' * Schema-defined QAPI/QMP commands', __doc__)
+        super().__init__(
+            prefix, 'qapi-commands',
+            ' * Schema-defined QAPI/QMP commands', None, __doc__)
         self._regy = QAPIGenCCode(None)
         self._visited_ret_types = {}
 
@@ -263,22 +245,29 @@ class QAPISchemaGenCommandVisitor(QAPISchemaModularCVisitor):
                              commands=commands, visit=visit))
         self._genh.add(mcgen('''
 #include "%(types)s.h"
-#include "qapi/qmp/dispatch.h"
 
 ''',
                              types=types))
 
     def visit_end(self):
-        (genc, genh) = self._module[self._main_module]
-        genh.add(mcgen('''
+        self._add_system_module('init', ' * QAPI Commands initialization')
+        self._genh.add(mcgen('''
+#include "qapi/qmp/dispatch.h"
+
 void %(c_prefix)sqmp_init_marshal(QmpCommandList *cmds);
 ''',
-                       c_prefix=c_name(self._prefix, protect=False)))
-        genc.add(gen_registry(self._regy.get_content(), self._prefix))
+                             c_prefix=c_name(self._prefix, protect=False)))
+        self._genc.preamble_add(mcgen('''
+#include "qemu/osdep.h"
+#include "%(prefix)sqapi-commands.h"
+#include "%(prefix)sqapi-init-commands.h"
+''',
+                                      prefix=self._prefix))
+        self._genc.add(gen_registry(self._regy.get_content(), self._prefix))
 
-    def visit_command(self, name, info, ifcond, arg_type, ret_type, gen,
-                      success_response, boxed, allow_oob, allow_preconfig,
-                      features):
+    def visit_command(self, name, info, ifcond, features,
+                      arg_type, ret_type, gen, success_response, boxed,
+                      allow_oob, allow_preconfig):
         if not gen:
             return
         # FIXME: If T is a user-defined type, the user is responsible

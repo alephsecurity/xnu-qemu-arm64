@@ -17,10 +17,18 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "trace.h"
+#include "qemu/units.h"
+#include "qemu/cutils.h"
+#include "qapi/visitor.h"
 
 /* Protection Key Register */
 #define R_PROT            (0x00 / 4)
+#define   PROT_UNLOCKED      0x01
+#define   PROT_HARDLOCKED    0x10  /* AST2600 */
+#define   PROT_SOFTLOCKED    0x00
+
 #define   PROT_KEY_UNLOCK     0xFC600309
+#define   PROT_KEY_HARDLOCK   0xDEADDEAD /* AST2600 */
 
 /* Configuration Register */
 #define R_CONF            (0x04 / 4)
@@ -127,16 +135,6 @@ static void aspeed_sdmc_write(void *opaque, hwaddr addr, uint64_t data,
         return;
     }
 
-    if (addr == R_PROT) {
-        s->regs[addr] = (data == PROT_KEY_UNLOCK) ? 1 : 0;
-        return;
-    }
-
-    if (!s->regs[R_PROT]) {
-        qemu_log_mask(LOG_GUEST_ERROR, "%s: SDMC is locked!\n", __func__);
-        return;
-    }
-
     asc->write(s, addr, data);
 }
 
@@ -160,14 +158,9 @@ static int ast2400_rambits(AspeedSDMCState *s)
     case 512:
         return ASPEED_SDMC_DRAM_512MB;
     default:
+        g_assert_not_reached();
         break;
     }
-
-    /* use a common default */
-    warn_report("Invalid RAM size 0x%" PRIx64 ". Using default 256M",
-                s->ram_size);
-    s->ram_size = 256 << 20;
-    return ASPEED_SDMC_DRAM_256MB;
 }
 
 static int ast2500_rambits(AspeedSDMCState *s)
@@ -182,14 +175,9 @@ static int ast2500_rambits(AspeedSDMCState *s)
     case 1024:
         return ASPEED_SDMC_AST2500_1024MB;
     default:
+        g_assert_not_reached();
         break;
     }
-
-    /* use a common default */
-    warn_report("Invalid RAM size 0x%" PRIx64 ". Using default 512M",
-                s->ram_size);
-    s->ram_size = 512 << 20;
-    return ASPEED_SDMC_AST2500_512MB;
 }
 
 static int ast2600_rambits(AspeedSDMCState *s)
@@ -204,14 +192,9 @@ static int ast2600_rambits(AspeedSDMCState *s)
     case 2048:
         return ASPEED_SDMC_AST2600_2048MB;
     default:
+        g_assert_not_reached();
         break;
     }
-
-    /* use a common default */
-    warn_report("Invalid RAM size 0x%" PRIx64 ". Using default 512M",
-                s->ram_size);
-    s->ram_size = 512 << 20;
-    return ASPEED_SDMC_AST2600_512MB;
 }
 
 static void aspeed_sdmc_reset(DeviceState *dev)
@@ -225,12 +208,54 @@ static void aspeed_sdmc_reset(DeviceState *dev)
     s->regs[R_CONF] = asc->compute_conf(s, 0);
 }
 
+static void aspeed_sdmc_get_ram_size(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    AspeedSDMCState *s = ASPEED_SDMC(obj);
+    int64_t value = s->ram_size;
+
+    visit_type_int(v, name, &value, errp);
+}
+
+static void aspeed_sdmc_set_ram_size(Object *obj, Visitor *v, const char *name,
+                                     void *opaque, Error **errp)
+{
+    int i;
+    char *sz;
+    int64_t value;
+    AspeedSDMCState *s = ASPEED_SDMC(obj);
+    AspeedSDMCClass *asc = ASPEED_SDMC_GET_CLASS(s);
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+
+    for (i = 0; asc->valid_ram_sizes[i]; i++) {
+        if (value == asc->valid_ram_sizes[i]) {
+            s->ram_size = value;
+            return;
+        }
+    }
+
+    sz = size_to_str(value);
+    error_setg(errp, "Invalid RAM size %s", sz);
+    g_free(sz);
+}
+
+static void aspeed_sdmc_initfn(Object *obj)
+{
+    object_property_add(obj, "ram-size", "int",
+                        aspeed_sdmc_get_ram_size, aspeed_sdmc_set_ram_size,
+                        NULL, NULL);
+}
+
 static void aspeed_sdmc_realize(DeviceState *dev, Error **errp)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     AspeedSDMCState *s = ASPEED_SDMC(dev);
     AspeedSDMCClass *asc = ASPEED_SDMC_GET_CLASS(s);
 
+    assert(asc->max_ram_size < 4 * GiB); /* 32-bit address bus */
     s->max_ram_size = asc->max_ram_size;
 
     memory_region_init_io(&s->iomem, OBJECT(s), &aspeed_sdmc_ops, s,
@@ -249,7 +274,6 @@ static const VMStateDescription vmstate_aspeed_sdmc = {
 };
 
 static Property aspeed_sdmc_properties[] = {
-    DEFINE_PROP_UINT64("ram-size", AspeedSDMCState, ram_size, 0),
     DEFINE_PROP_UINT64("max-ram-size", AspeedSDMCState, max_ram_size, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
@@ -261,13 +285,14 @@ static void aspeed_sdmc_class_init(ObjectClass *klass, void *data)
     dc->reset = aspeed_sdmc_reset;
     dc->desc = "ASPEED SDRAM Memory Controller";
     dc->vmsd = &vmstate_aspeed_sdmc;
-    dc->props = aspeed_sdmc_properties;
+    device_class_set_props(dc, aspeed_sdmc_properties);
 }
 
 static const TypeInfo aspeed_sdmc_info = {
     .name = TYPE_ASPEED_SDMC,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(AspeedSDMCState),
+    .instance_init = aspeed_sdmc_initfn,
     .class_init = aspeed_sdmc_class_init,
     .class_size = sizeof(AspeedSDMCClass),
     .abstract   = true,
@@ -287,6 +312,16 @@ static uint32_t aspeed_2400_sdmc_compute_conf(AspeedSDMCState *s, uint32_t data)
 static void aspeed_2400_sdmc_write(AspeedSDMCState *s, uint32_t reg,
                                    uint32_t data)
 {
+    if (reg == R_PROT) {
+        s->regs[reg] = (data == PROT_KEY_UNLOCK) ? PROT_UNLOCKED : PROT_SOFTLOCKED;
+        return;
+    }
+
+    if (!s->regs[R_PROT]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: SDMC is locked!\n", __func__);
+        return;
+    }
+
     switch (reg) {
     case R_CONF:
         data = aspeed_2400_sdmc_compute_conf(s, data);
@@ -298,15 +333,19 @@ static void aspeed_2400_sdmc_write(AspeedSDMCState *s, uint32_t reg,
     s->regs[reg] = data;
 }
 
+static const uint64_t
+aspeed_2400_ram_sizes[] = { 64 * MiB, 128 * MiB, 256 * MiB, 512 * MiB, 0};
+
 static void aspeed_2400_sdmc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSDMCClass *asc = ASPEED_SDMC_CLASS(klass);
 
     dc->desc = "ASPEED 2400 SDRAM Memory Controller";
-    asc->max_ram_size = 512 << 20;
+    asc->max_ram_size = 512 * MiB;
     asc->compute_conf = aspeed_2400_sdmc_compute_conf;
     asc->write = aspeed_2400_sdmc_write;
+    asc->valid_ram_sizes = aspeed_2400_ram_sizes;
 }
 
 static const TypeInfo aspeed_2400_sdmc_info = {
@@ -331,6 +370,16 @@ static uint32_t aspeed_2500_sdmc_compute_conf(AspeedSDMCState *s, uint32_t data)
 static void aspeed_2500_sdmc_write(AspeedSDMCState *s, uint32_t reg,
                                    uint32_t data)
 {
+    if (reg == R_PROT) {
+        s->regs[reg] = (data == PROT_KEY_UNLOCK) ? PROT_UNLOCKED : PROT_SOFTLOCKED;
+        return;
+    }
+
+    if (!s->regs[R_PROT]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: SDMC is locked!\n", __func__);
+        return;
+    }
+
     switch (reg) {
     case R_CONF:
         data = aspeed_2500_sdmc_compute_conf(s, data);
@@ -351,15 +400,19 @@ static void aspeed_2500_sdmc_write(AspeedSDMCState *s, uint32_t reg,
     s->regs[reg] = data;
 }
 
+static const uint64_t
+aspeed_2500_ram_sizes[] = { 128 * MiB, 256 * MiB, 512 * MiB, 1024 * MiB, 0};
+
 static void aspeed_2500_sdmc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSDMCClass *asc = ASPEED_SDMC_CLASS(klass);
 
     dc->desc = "ASPEED 2500 SDRAM Memory Controller";
-    asc->max_ram_size = 1024 << 20;
+    asc->max_ram_size = 1 * GiB;
     asc->compute_conf = aspeed_2500_sdmc_compute_conf;
     asc->write = aspeed_2500_sdmc_write;
+    asc->valid_ram_sizes = aspeed_2500_ram_sizes;
 }
 
 static const TypeInfo aspeed_2500_sdmc_info = {
@@ -383,7 +436,27 @@ static uint32_t aspeed_2600_sdmc_compute_conf(AspeedSDMCState *s, uint32_t data)
 static void aspeed_2600_sdmc_write(AspeedSDMCState *s, uint32_t reg,
                                    uint32_t data)
 {
+    if (s->regs[R_PROT] == PROT_HARDLOCKED) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: SDMC is locked until system reset!\n",
+                __func__);
+        return;
+    }
+
+    if (reg != R_PROT && s->regs[R_PROT] == PROT_SOFTLOCKED) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: SDMC is locked!\n", __func__);
+        return;
+    }
+
     switch (reg) {
+    case R_PROT:
+        if (data == PROT_KEY_UNLOCK)  {
+            data = PROT_UNLOCKED;
+        } else if (data == PROT_KEY_HARDLOCK) {
+            data = PROT_HARDLOCKED;
+        } else {
+            data = PROT_SOFTLOCKED;
+        }
+        break;
     case R_CONF:
         data = aspeed_2600_sdmc_compute_conf(s, data);
         break;
@@ -404,15 +477,19 @@ static void aspeed_2600_sdmc_write(AspeedSDMCState *s, uint32_t reg,
     s->regs[reg] = data;
 }
 
+static const uint64_t
+aspeed_2600_ram_sizes[] = { 256 * MiB, 512 * MiB, 1024 * MiB, 2048 * MiB, 0};
+
 static void aspeed_2600_sdmc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     AspeedSDMCClass *asc = ASPEED_SDMC_CLASS(klass);
 
     dc->desc = "ASPEED 2600 SDRAM Memory Controller";
-    asc->max_ram_size = 2048 << 20;
+    asc->max_ram_size = 2 * GiB;
     asc->compute_conf = aspeed_2600_sdmc_compute_conf;
     asc->write = aspeed_2600_sdmc_write;
+    asc->valid_ram_sizes = aspeed_2600_ram_sizes;
 }
 
 static const TypeInfo aspeed_2600_sdmc_info = {

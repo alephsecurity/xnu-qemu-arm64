@@ -144,6 +144,48 @@ QCryptoBlock *qcrypto_block_create(QCryptoBlockCreateOptions *options,
                                    void *opaque,
                                    Error **errp);
 
+/**
+ * qcrypto_block_amend_options:
+ * @block: the block encryption object
+ *
+ * @readfunc: callback for reading data from the volume header
+ * @writefunc: callback for writing data to the volume header
+ * @opaque: data to pass to @readfunc and @writefunc
+ * @options: the new/amended encryption options
+ * @force: hint for the driver to allow unsafe operation
+ * @errp: error pointer
+ *
+ * Changes the crypto options of the encryption format
+ *
+ */
+int qcrypto_block_amend_options(QCryptoBlock *block,
+                                QCryptoBlockReadFunc readfunc,
+                                QCryptoBlockWriteFunc writefunc,
+                                void *opaque,
+                                QCryptoBlockAmendOptions *options,
+                                bool force,
+                                Error **errp);
+
+
+/**
+ * qcrypto_block_calculate_payload_offset:
+ * @create_opts: the encryption options
+ * @optprefix: name prefix for options
+ * @len: output for number of header bytes before payload
+ * @errp: pointer to a NULL-initialized error object
+ *
+ * Calculate the number of header bytes before the payload in an encrypted
+ * storage volume.  The header is an area before the payload that is reserved
+ * for encryption metadata.
+ *
+ * Returns: true on success, false on error
+ */
+bool
+qcrypto_block_calculate_payload_offset(QCryptoBlockCreateOptions *create_opts,
+                                       const char *optprefix,
+                                       size_t *len,
+                                       Error **errp);
+
 
 /**
  * qcrypto_block_get_info:
@@ -269,5 +311,7 @@ uint64_t qcrypto_block_get_sector_size(QCryptoBlock *block);
 void qcrypto_block_free(QCryptoBlock *block);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(QCryptoBlock, qcrypto_block_free)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(QCryptoBlockCreateOptions,
+                              qapi_free_QCryptoBlockCreateOptions)
 
 #endif /* QCRYPTO_BLOCK_H */

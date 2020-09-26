@@ -923,7 +923,7 @@ static void usb_audio_handle_data(USBDevice *dev, USBPacket *p)
     }
 }
 
-static void usb_audio_unrealize(USBDevice *dev, Error **errp)
+static void usb_audio_unrealize(USBDevice *dev)
 {
     USBAudioState *s = USB_AUDIO(dev);
 
@@ -1002,7 +1002,7 @@ static void usb_audio_class_init(ObjectClass *klass, void *data)
     USBDeviceClass *k = USB_DEVICE_CLASS(klass);
 
     dc->vmsd          = &vmstate_usb_audio;
-    dc->props         = usb_audio_properties;
+    device_class_set_props(dc, usb_audio_properties);
     set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
     k->product_desc   = "QEMU USB Audio Interface";
     k->realize        = usb_audio_realize;

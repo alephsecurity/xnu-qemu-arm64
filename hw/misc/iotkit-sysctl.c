@@ -84,7 +84,7 @@ static void set_init_vtor(uint64_t cpuid, uint32_t vtor)
 
     if (cpuobj) {
         if (object_property_find(cpuobj, "init-svtor", NULL)) {
-            object_property_set_uint(cpuobj, vtor, "init-svtor", &error_abort);
+            object_property_set_uint(cpuobj, "init-svtor", vtor, &error_abort);
         }
     }
 }
@@ -508,7 +508,7 @@ static void iotkit_sysctl_class_init(ObjectClass *klass, void *data)
 
     dc->vmsd = &iotkit_sysctl_vmstate;
     dc->reset = iotkit_sysctl_reset;
-    dc->props = iotkit_sysctl_props;
+    device_class_set_props(dc, iotkit_sysctl_props);
     dc->realize = iotkit_sysctl_realize;
 }
 

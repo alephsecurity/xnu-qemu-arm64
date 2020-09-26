@@ -14,13 +14,13 @@
  */
 
 #include "qemu/osdep.h"
+#include "block/qdict.h"
 #include "hw/qdev-core.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-qdev.h"
 #include "qapi/qapi-commands-qom.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qerror.h"
-#include "qapi/qobject-input-visitor.h"
 #include "qemu/cutils.h"
 #include "qom/object_interfaces.h"
 #include "qom/qom-qobject.h"
@@ -71,7 +71,7 @@ void qmp_qom_set(const char *path, const char *property, QObject *value,
         return;
     }
 
-    object_property_set_qobject(obj, value, property, errp);
+    object_property_set_qobject(obj, property, value, errp);
 }
 
 QObject *qmp_qom_get(const char *path, const char *property, Error **errp)
@@ -116,61 +116,10 @@ ObjectTypeInfoList *qmp_qom_list_types(bool has_implements,
 {
     ObjectTypeInfoList *ret = NULL;
 
+    module_load_qom_all();
     object_class_foreach(qom_list_types_tramp, implements, abstract, &ret);
 
     return ret;
-}
-
-/* Return a DevicePropertyInfo for a qdev property.
- *
- * If a qdev property with the given name does not exist, use the given default
- * type.  If the qdev property info should not be shown, return NULL.
- *
- * The caller must free the return value.
- */
-static ObjectPropertyInfo *make_device_property_info(ObjectClass *klass,
-                                                  const char *name,
-                                                  const char *default_type,
-                                                  const char *description)
-{
-    ObjectPropertyInfo *info;
-    Property *prop;
-
-    do {
-        for (prop = DEVICE_CLASS(klass)->props; prop && prop->name; prop++) {
-            if (strcmp(name, prop->name) != 0) {
-                continue;
-            }
-
-            /*
-             * TODO Properties without a parser are just for dirty hacks.
-             * qdev_prop_ptr is the only such PropertyInfo.  It's marked
-             * for removal.  This conditional should be removed along with
-             * it.
-             */
-            if (!prop->info->set && !prop->info->create) {
-                return NULL;           /* no way to set it, don't show */
-            }
-
-            info = g_malloc0(sizeof(*info));
-            info->name = g_strdup(prop->name);
-            info->type = default_type ? g_strdup(default_type)
-                                      : g_strdup(prop->info->name);
-            info->has_description = !!prop->info->description;
-            info->description = g_strdup(prop->info->description);
-            return info;
-        }
-        klass = object_class_get_parent(klass);
-    } while (klass != object_class_by_name(TYPE_DEVICE));
-
-    /* Not a qdev property, use the default type */
-    info = g_malloc0(sizeof(*info));
-    info->name = g_strdup(name);
-    info->type = g_strdup(default_type);
-    info->has_description = !!description;
-    info->description = g_strdup(description);
-
-    return info;
 }
 
 ObjectPropertyInfoList *qmp_device_list_properties(const char *typename,
@@ -182,7 +131,7 @@ ObjectPropertyInfoList *qmp_device_list_properties(const char *typename,
     ObjectPropertyIterator iter;
     ObjectPropertyInfoList *prop_list = NULL;
 
-    klass = object_class_by_name(typename);
+    klass = module_object_class_by_name(typename);
     if (klass == NULL) {
         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
                   "Device '%s' not found", typename);
@@ -224,11 +173,13 @@ ObjectPropertyInfoList *qmp_device_list_properties(const char *typename,
             continue;
         }
 
-        info = make_device_property_info(klass, prop->name, prop->type,
-                                         prop->description);
-        if (!info) {
-            continue;
-        }
+        info = g_new0(ObjectPropertyInfo, 1);
+        info->name = g_strdup(prop->name);
+        info->type = g_strdup(prop->type);
+        info->has_description = !!prop->description;
+        info->description = g_strdup(prop->description);
+        info->default_value = qobject_ref(prop->defval);
+        info->has_default_value = !!info->default_value;
 
         entry = g_malloc0(sizeof(*entry));
         entry->value = info;
@@ -290,13 +241,12 @@ ObjectPropertyInfoList *qmp_qom_list_properties(const char *typename,
     return prop_list;
 }
 
-void qmp_object_add(const char *type, const char *id,
-                    bool has_props, QObject *props, Error **errp)
+void qmp_object_add(QDict *qdict, QObject **ret_data, Error **errp)
 {
+    QObject *props;
     QDict *pdict;
-    Visitor *v;
-    Object *obj;
 
+    props = qdict_get(qdict, "props");
     if (props) {
         pdict = qobject_to(QDict, props);
         if (!pdict) {
@@ -304,17 +254,17 @@ void qmp_object_add(const char *type, const char *id,
             return;
         }
         qobject_ref(pdict);
-    } else {
-        pdict = qdict_new();
+        qdict_del(qdict, "props");
+        qdict_join(qdict, pdict, false);
+        if (qdict_size(pdict) != 0) {
+            error_setg(errp, "Option in 'props' conflicts with top level");
+            qobject_unref(pdict);
+            return;
+        }
+        qobject_unref(pdict);
     }
 
-    v = qobject_input_visitor_new(QOBJECT(pdict));
-    obj = user_creatable_add_type(type, id, pdict, v, errp);
-    visit_free(v);
-    if (obj) {
-        object_unref(obj);
-    }
-    qobject_unref(pdict);
+    user_creatable_add_dict(qdict, false, errp);
 }
 
 void qmp_object_del(const char *id, Error **errp)

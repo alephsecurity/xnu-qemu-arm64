@@ -47,18 +47,13 @@ build_qemu()
 check_qemu()
 {
     # default to make check unless the caller specifies
-    if test -z "$@"; then
+    if [ $# = 0 ]; then
         INVOCATION="check"
     else
         INVOCATION="$@"
     fi
 
-    if command -v gtester > /dev/null 2>&1 && \
-           gtester --version > /dev/null 2>&1; then
-        make $MAKEFLAGS $INVOCATION
-    else
-        echo "No working gtester, skipping make $INVOCATION"
-    fi
+    make $MAKEFLAGS $INVOCATION
 }
 
 test_fail()

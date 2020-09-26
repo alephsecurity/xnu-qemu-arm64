@@ -37,7 +37,7 @@
 
 #include "qemu.h"
 #include "flat.h"
-#include <target_flat.h>
+#include "target_flat.h"
 
 //#define DEBUG
 
@@ -440,6 +440,12 @@ static int load_flat_file(struct linux_binprm * bprm,
        misalign the  doesn't misalign the data segment.  */
     indx_len = MAX_SHARED_LIBS * sizeof(abi_ulong);
     indx_len = (indx_len + 15) & ~(abi_ulong)15;
+
+    /*
+     * Alloate the address space.
+     */
+    probe_guest_base(bprm->filename, 0,
+                     text_len + data_len + extra + indx_len);
 
     /*
      * there are a couple of cases here,  the separate code/data

@@ -74,7 +74,7 @@ static ssize_t filter_buffer_receive_iov(NetFilterState *nf,
      * the filter can still accept packets until its internal queue is full.
      * For example:
      *   For some reason, receiver could not receive more packets
-     * (.can_receive() returns zero). Without a filter, at most one packet
+     * (.can_receive() returns false). Without a filter, at most one packet
      * will be queued in incoming queue and sender's poll will be disabled
      * unit its sent_cb() was called. With a filter, it will keep receiving
      * the packets without caring about the receiver. This is suboptimal.
@@ -170,29 +170,24 @@ static void filter_buffer_set_interval(Object *obj, Visitor *v,
                                        Error **errp)
 {
     FilterBufferState *s = FILTER_BUFFER(obj);
-    Error *local_err = NULL;
     uint32_t value;
 
-    visit_type_uint32(v, name, &value, &local_err);
-    if (local_err) {
-        goto out;
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
     }
     if (!value) {
-        error_setg(&local_err, "Property '%s.%s' requires a positive value",
+        error_setg(errp, "Property '%s.%s' requires a positive value",
                    object_get_typename(obj), name);
-        goto out;
+        return;
     }
     s->interval = value;
-
-out:
-    error_propagate(errp, local_err);
 }
 
 static void filter_buffer_init(Object *obj)
 {
     object_property_add(obj, "interval", "uint32",
                         filter_buffer_get_interval,
-                        filter_buffer_set_interval, NULL, NULL, NULL);
+                        filter_buffer_set_interval, NULL, NULL);
 }
 
 static const TypeInfo filter_buffer_info = {

@@ -79,6 +79,7 @@ enum {
     VIRT_SECURE_MEM,
     VIRT_PCDIMM_ACPI,
     VIRT_ACPI_GED,
+    VIRT_NVDIMM_ACPI,
     VIRT_LOWMEMMAP_LAST,
 };
 
@@ -95,6 +96,20 @@ typedef enum VirtIOMMUType {
     VIRT_IOMMU_VIRTIO,
 } VirtIOMMUType;
 
+typedef enum VirtMSIControllerType {
+    VIRT_MSI_CTRL_NONE,
+    VIRT_MSI_CTRL_GICV2M,
+    VIRT_MSI_CTRL_ITS,
+} VirtMSIControllerType;
+
+typedef enum VirtGICType {
+    VIRT_GIC_VERSION_MAX,
+    VIRT_GIC_VERSION_HOST,
+    VIRT_GIC_VERSION_2,
+    VIRT_GIC_VERSION_3,
+    VIRT_GIC_VERSION_NOSEL,
+} VirtGICType;
+
 typedef struct MemMapEntry {
     hwaddr base;
     hwaddr size;
@@ -109,6 +124,8 @@ typedef struct {
     bool smbios_old_sys_ver;
     bool no_highmem_ecam;
     bool no_ged;   /* Machines < 4.2 has no support for ACPI GED device */
+    bool kvm_no_adjvtime;
+    bool acpi_expose_flash;
 } VirtMachineClass;
 
 typedef struct {
@@ -122,10 +139,16 @@ typedef struct {
     bool highmem_ecam;
     bool its;
     bool virt;
-    int32_t gic_version;
+    bool ras;
+    bool mte;
+    OnOffAuto acpi;
+    VirtGICType gic_version;
     VirtIOMMUType iommu;
+    VirtMSIControllerType msi_controller;
+    uint16_t virtio_iommu_bdf;
     struct arm_boot_info bootinfo;
     MemMapEntry *memmap;
+    char *pciehb_nodename;
     const int *irqmap;
     int smp_cpus;
     void *fdt;
@@ -136,6 +159,7 @@ typedef struct {
     uint32_t iommu_phandle;
     int psci_conduit;
     hwaddr highest_gpa;
+    DeviceState *gic;
     DeviceState *acpi_dev;
     Notifier powerdown_notifier;
 } VirtMachineState;
@@ -151,6 +175,7 @@ typedef struct {
     OBJECT_CLASS_CHECK(VirtMachineClass, klass, TYPE_VIRT_MACHINE)
 
 void virt_acpi_setup(VirtMachineState *vms);
+bool virt_is_acpi_enabled(VirtMachineState *vms);
 
 /* Return the number of used redistributor regions  */
 static inline int virt_gicv3_redist_region_count(VirtMachineState *vms)
@@ -158,7 +183,7 @@ static inline int virt_gicv3_redist_region_count(VirtMachineState *vms)
     uint32_t redist0_capacity =
                 vms->memmap[VIRT_GIC_REDIST].size / GICV3_REDIST_SIZE;
 
-    assert(vms->gic_version == 3);
+    assert(vms->gic_version == VIRT_GIC_VERSION_3);
 
     return vms->smp_cpus > redist0_capacity ? 2 : 1;
 }

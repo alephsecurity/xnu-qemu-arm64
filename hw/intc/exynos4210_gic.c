@@ -23,6 +23,7 @@
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "migration/vmstate.h"
+#include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -293,13 +294,14 @@ static void exynos4210_gic_realize(DeviceState *dev, Error **errp)
     char cpu_alias_name[sizeof(cpu_prefix) + 3];
     char dist_alias_name[sizeof(cpu_prefix) + 3];
     SysBusDevice *gicbusdev;
+    uint32_t n = s->num_cpu;
     uint32_t i;
 
-    s->gic = qdev_create(NULL, "arm_gic");
+    s->gic = qdev_new("arm_gic");
     qdev_prop_set_uint32(s->gic, "num-cpu", s->num_cpu);
     qdev_prop_set_uint32(s->gic, "num-irq", EXYNOS4210_GIC_NIRQ);
-    qdev_init_nofail(s->gic);
     gicbusdev = SYS_BUS_DEVICE(s->gic);
+    sysbus_realize_and_unref(gicbusdev, &error_fatal);
 
     /* Pass through outbound IRQ lines from the GIC */
     sysbus_pass_irq(sbd, gicbusdev);
@@ -313,7 +315,13 @@ static void exynos4210_gic_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->dist_container, obj, "exynos4210-dist-container",
             EXYNOS4210_EXT_GIC_DIST_REGION_SIZE);
 
-    for (i = 0; i < s->num_cpu; i++) {
+    /*
+     * This clues in gcc that our on-stack buffers do, in fact have
+     * enough room for the cpu numbers.  gcc 9.2.1 on 32-bit x86
+     * doesn't figure this out, otherwise and gives spurious warnings.
+     */
+    assert(n <= EXYNOS4210_NCPUS);
+    for (i = 0; i < n; i++) {
         /* Map CPU interface per SMP Core */
         sprintf(cpu_alias_name, "%s%x", cpu_prefix, i);
         memory_region_init_alias(&s->cpu_alias[i], obj,
@@ -348,7 +356,7 @@ static void exynos4210_gic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = exynos4210_gic_properties;
+    device_class_set_props(dc, exynos4210_gic_properties);
     dc->realize = exynos4210_gic_realize;
 }
 
@@ -455,7 +463,7 @@ static void exynos4210_irq_gate_class_init(ObjectClass *klass, void *data)
 
     dc->reset = exynos4210_irq_gate_reset;
     dc->vmsd = &vmstate_exynos4210_irq_gate;
-    dc->props = exynos4210_irq_gate_properties;
+    device_class_set_props(dc, exynos4210_irq_gate_properties);
     dc->realize = exynos4210_irq_gate_realize;
 }
 

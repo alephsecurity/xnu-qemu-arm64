@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
+#include "hw/qdev-properties.h"
 
 #define ASPEED_SDHCI_INFO            0x00
 #define  ASPEED_SDHCI_INFO_RESET     0x00030000
@@ -114,39 +115,32 @@ static void aspeed_sdhci_set_irq(void *opaque, int n, int level)
 
 static void aspeed_sdhci_realize(DeviceState *dev, Error **errp)
 {
-    Error *err = NULL;
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     AspeedSDHCIState *sdhci = ASPEED_SDHCI(dev);
 
     /* Create input irqs for the slots */
     qdev_init_gpio_in_named_with_opaque(DEVICE(sbd), aspeed_sdhci_set_irq,
-                                        sdhci, NULL, ASPEED_SDHCI_NUM_SLOTS);
+                                        sdhci, NULL, sdhci->num_slots);
 
     sysbus_init_irq(sbd, &sdhci->irq);
     memory_region_init_io(&sdhci->iomem, OBJECT(sdhci), &aspeed_sdhci_ops,
                           sdhci, TYPE_ASPEED_SDHCI, 0x1000);
     sysbus_init_mmio(sbd, &sdhci->iomem);
 
-    for (int i = 0; i < ASPEED_SDHCI_NUM_SLOTS; ++i) {
+    for (int i = 0; i < sdhci->num_slots; ++i) {
         Object *sdhci_slot = OBJECT(&sdhci->slots[i]);
         SysBusDevice *sbd_slot = SYS_BUS_DEVICE(&sdhci->slots[i]);
 
-        object_property_set_int(sdhci_slot, 2, "sd-spec-version", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!object_property_set_int(sdhci_slot, "sd-spec-version", 2, errp)) {
             return;
         }
 
-        object_property_set_uint(sdhci_slot, ASPEED_SDHCI_CAPABILITIES,
-                                 "capareg", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!object_property_set_uint(sdhci_slot, "capareg",
+                                      ASPEED_SDHCI_CAPABILITIES, errp)) {
             return;
         }
 
-        object_property_set_bool(sdhci_slot, true, "realized", &err);
-        if (err) {
-            error_propagate(errp, err);
+        if (!sysbus_realize(sbd_slot, errp)) {
             return;
         }
 
@@ -174,6 +168,11 @@ static const VMStateDescription vmstate_aspeed_sdhci = {
     },
 };
 
+static Property aspeed_sdhci_properties[] = {
+    DEFINE_PROP_UINT8("num-slots", AspeedSDHCIState, num_slots, 0),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void aspeed_sdhci_class_init(ObjectClass *classp, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(classp);
@@ -181,6 +180,7 @@ static void aspeed_sdhci_class_init(ObjectClass *classp, void *data)
     dc->realize = aspeed_sdhci_realize;
     dc->reset = aspeed_sdhci_reset;
     dc->vmsd = &vmstate_aspeed_sdhci;
+    device_class_set_props(dc, aspeed_sdhci_properties);
 }
 
 static TypeInfo aspeed_sdhci_info = {

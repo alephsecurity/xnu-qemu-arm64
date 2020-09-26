@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 #
 # Mini-Kconfig parser
 #
@@ -10,7 +11,6 @@
 # or, at your option, any later version.  See the COPYING file in
 # the top-level directory.
 
-from __future__ import print_function
 import os
 import sys
 import re
@@ -402,7 +402,7 @@ class KconfigParser:
         if incl_abs_fname in self.data.previously_included:
             return
         try:
-            fp = open(incl_abs_fname, 'r')
+            fp = open(incl_abs_fname, 'rt', encoding='utf-8')
         except IOError as e:
             raise KconfigParserError(self,
                                 '%s: %s' % (e.strerror, include))
@@ -645,7 +645,7 @@ class KconfigParser:
             self.cursor = self.src.find('\n', self.cursor)
             self.val = self.src[start:self.cursor]
             return TOK_SOURCE
-        elif self.tok.isalpha():
+        elif self.tok.isalnum():
             # identifier
             while self.src[self.cursor].isalnum() or self.src[self.cursor] == '_':
                 self.cursor += 1
@@ -696,7 +696,7 @@ if __name__ == '__main__':
             parser.do_assignment(name, value == 'y')
             external_vars.add(name[7:])
         else:
-            fp = open(arg, 'r')
+            fp = open(arg, 'rt', encoding='utf-8')
             parser.parse_file(fp)
             fp.close()
 
@@ -705,7 +705,7 @@ if __name__ == '__main__':
         if key not in external_vars and config[key]:
             print ('CONFIG_%s=y' % key)
 
-    deps = open(argv[2], 'w')
+    deps = open(argv[2], 'wt', encoding='utf-8')
     for fname in data.previously_included:
         print ('%s: %s' % (argv[1], fname), file=deps)
     deps.close()
