@@ -30,11 +30,12 @@
 #include "hw/arm/xnu.h"
 #include "hw/loader.h"
 
+//TODO: JOANTHANA get as input? different for different versions?
 const char *KEEP_COMP[] = {"uart-1,samsung\0$",
                            "N66AP\0iPhone8,2\0AppleARM\0$",
                            "wdt,s8000\0wdt,s5l8960x\0$", "arm-io,s8000\0$"};
 
-const char *REM_NAMES[] = {"backlight\0$"};
+const char *REM_NAMES[] = {"backlight\0$", "dockchannel-uart\0$"};
 
 const char *REM_DEV_TYPES[] = {"backlight\0$"};
 
@@ -138,25 +139,31 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         //first fetch the uart mmio address
         DTBNode *child = get_dtb_child_node_by_name(root, "arm-io");
         if (NULL == child) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"arm-io\"\n");
             abort();
         }
         DTBProp *prop = get_dtb_prop(child, "ranges");
         if (NULL == prop) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"ranges\"\n");
             abort();
         }
         hwaddr *ranges = (hwaddr *)prop->value;
         hwaddr soc_base_pa = ranges[1];
         child = get_dtb_child_node_by_name(child, "uart0");
         if (NULL == child) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"uart0\"\n");
             abort();
         }
         //make sure this node has the boot-console prop
         prop = get_dtb_prop(child, "boot-console");
         if (NULL == prop) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"boot-console\"\n");
             abort();
         }
         prop = get_dtb_prop(child, "reg");
         if (NULL == prop) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"reg\"\n");
             abort();
         }
         hwaddr *uart_offset = (hwaddr *)prop->value;
@@ -168,22 +175,42 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         //in PE that never happens
         prop = get_dtb_prop(root, "secure-root-prefix");
         if (NULL == prop) {
+            fprintf(stderr,
+                  "macho_load_dtb(): failed to find \"secure-root-prefix\"\n");
             abort();
         }
         remove_dtb_prop(root, prop);
 
         //need to set the cpu freqs instead of iboot
-        uint64_t freq = 24000000;
         child = get_dtb_child_node_by_name(root, "cpus");
         if (NULL == child) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"cpus\"\n");
             abort();
         }
         child = get_dtb_child_node_by_name(child, "cpu0");
         if (NULL == child) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"cpu0\"\n");
             abort();
         }
+
+        //TODO: JONATHANA review this as this is only for the new device
+        prop = get_dtb_prop(child, "state");
+        if (NULL == prop) {
+            fprintf(stderr,
+                  "macho_load_dtb(): failed to find \"state\"\n");
+            abort();
+        }
+        remove_dtb_prop(child, prop);
+        add_dtb_prop(child, "state", strlen("running") + 1,
+                     (uint8_t *)&"running");
+        //TODO: JONATHANA: restore this?
+        /*
+        uint64_t freq = 24000000;
+
         prop = get_dtb_prop(child, "timebase-frequency");
         if (NULL == prop) {
+            fprintf(stderr,
+                  "macho_load_dtb(): failed to find \"timebase-frequency\"\n");
             abort();
         }
         remove_dtb_prop(child, prop);
@@ -191,21 +218,34 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                      (uint8_t *)&freq);
         prop = get_dtb_prop(child, "fixed-frequency");
         if (NULL == prop) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"fixed-frequency\"\n");
             abort();
         }
         remove_dtb_prop(child, prop);
         add_dtb_prop(child, "fixed-frequency", sizeof(uint64_t),
                      (uint8_t *)&freq);
+        */
 
-        //need to set the random seed insread of iboot
-        uint64_t seed[8] = {0xdead000d, 0xdead000d, 0xdead000d, 0xdead000d,
-                            0xdead000d, 0xdead000d, 0xdead000d, 0xdead000d};
         child = get_dtb_child_node_by_name(root, "chosen");
         if (NULL == child) {
+            fprintf(stderr, "macho_load_dtb(): failed to find \"chosen\"\n");
             abort();
         }
+
+        //TODO: JONATHANA: these are specific to n104
+        uint64_t data64 = 0x40000000;
+        add_dtb_prop(child, "dram-base", sizeof(data64), (uint8_t *)&data64);
+        data64 = 0x80000000;
+        add_dtb_prop(child, "dram-size", sizeof(data64), (uint8_t *)&data64);
+
+        //need to set the random seed instead of iboot
+        uint64_t seed[8] = {0xdead000d, 0xdead000d, 0xdead000d, 0xdead000d,
+                            0xdead000d, 0xdead000d, 0xdead000d, 0xdead000d};
         prop = get_dtb_prop(child, "random-seed");
         if (NULL == prop) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"random-seed\"\n");
             abort();
         }
         remove_dtb_prop(child, prop);
@@ -215,6 +255,8 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         uint32_t display_rotation = 0;
         prop = get_dtb_prop(child, "display-rotation");
         if (NULL == prop) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"display-rotation\"\n");
             abort();
         }
         remove_dtb_prop(child, prop);
@@ -223,13 +265,15 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         uint32_t display_scale = 1;
         prop = get_dtb_prop(child, "display-scale");
         if (NULL == prop) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"display-scale\"\n");
             abort();
         }
         remove_dtb_prop(child, prop);
         add_dtb_prop(child, "display-scale", sizeof(display_scale),
                      (uint8_t *)&display_scale);
 
-        //these are needed by the image4 parser module$
+        //these are needed by the image4 parser module
         uint32_t data = 0;
         add_dtb_prop(child, "security-domain", sizeof(data), (uint8_t *)&data);
         add_dtb_prop(child, "chip-epoch", sizeof(data), (uint8_t *)&data);
@@ -238,6 +282,8 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
 
         child = get_dtb_child_node_by_name(child, "memory-map");
         if (NULL == child) {
+            fprintf(stderr,
+                    "macho_load_dtb(): failed to find \"meemory-map\"\n");
             abort();
         }
 
@@ -263,6 +309,7 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         g_free(buf);
         *size = size_n;
     } else {
+        fprintf(stderr, "macho_load_dtb(): failed to load dtb file\n");
         abort();
     }
 }
@@ -308,6 +355,7 @@ void macho_load_raw_file(const char *filename, AddressSpace *as, MemoryRegion *m
         allocate_and_copy(mem, as, name, file_pa, *size, file_data);
         g_free(file_data);
     } else {
+        fprintf(stderr, "macho_load_raw_file(): failed to load file\n");
         abort();
     }
 }
@@ -404,6 +452,7 @@ static void macho_file_highest_lowest(const char *filename, hwaddr *lowest,
     gsize len;
     uint8_t *data = NULL;
     if (!g_file_get_contents(filename, (char **)&data, &len, NULL)) {
+        fprintf(stderr, "macho_file_highest_lowest(): failed to load file\n");
         abort();
     }
     struct mach_header_64* mh = (struct mach_header_64*)data;
@@ -450,6 +499,7 @@ void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
     uint8_t* rom_buf = NULL;
 
     if (!g_file_get_contents(filename, (char **)&data, &len, NULL)) {
+        fprintf(stderr, "arm_load_macho(): failed to load file\n");
         abort();
     }
     struct mach_header_64* mh = (struct mach_header_64*)data;
