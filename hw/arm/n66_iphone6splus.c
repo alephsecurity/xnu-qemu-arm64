@@ -341,7 +341,7 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     //now account for device tree
     macho_load_dtb(nms->dtb_filename, nsas, sysmem, "dtb.n66", phys_ptr,
                    &dtb_size, nms->ramdisk_file_dev.pa,
-                   ramdisk_size, &nms->uart_mmio_pa);
+                   ramdisk_size, 0, 0, &nms->uart_mmio_pa);
     dtb_va = ptov_static(phys_ptr);
     phys_ptr += align_64k_high(dtb_size);
     used_ram_for_blobs += align_64k_high(dtb_size);

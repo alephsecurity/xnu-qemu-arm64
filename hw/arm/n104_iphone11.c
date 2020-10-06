@@ -44,10 +44,12 @@
 #define NOP_INST (0xaa0003e0)
 #define MOV_W0_01_INST (0x52800020)
 #define CMP_X9_x9_INST (0xeb09013f)
+#define RET_INST (0xd65f03c0)
 //compiled  instruction: mov w7, #0
 #define W7_ZERO_INST (0x52800007)
 
-#define MSR_STRANGE_INST_VADDR_18A5342e (0xFFFFFFF007B66BC4)
+#define SPR_LOCKDOWN_FUNC_VADDR_18A5342e (0xFFFFFFF007B72350)
+#define GXF_ENABLE_FUNC_VADDR_18A5342e (0xFFFFFFF008131E90)
 
 //TODO: JONATHANA remove this section? its content?
 /*
@@ -143,6 +145,8 @@ N104_CPREG_FUNCS(ARM64_REG_APPL_12)
 N104_CPREG_FUNCS(ARM64_REG_APPL_13)
 N104_CPREG_FUNCS(ARM64_REG_VMSA_LOCK_EL1)
 N104_CPREG_FUNCS(ARM64_REG_APPL_14)
+N104_CPREG_FUNCS(ARM64_REG_APPL_15)
+N104_CPREG_FUNCS(ARM64_REG_APPL_16)
 
 static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
 //TODO: JONATHANA: rstore/review this removal?
@@ -193,6 +197,8 @@ static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
     N104_CPREG_DEF(ARM64_REG_APPL_13, 3, 6, 15, 8, 2, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_VMSA_LOCK_EL1, 3, 4, 15, 1, 2, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_14, 1, 0, 8, 2, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_15, 3, 4, 15, 1, 3, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_16, 3, 6, 15, 3, 1, PL1_RW),
     REGINFO_SENTINEL,
 };
 
@@ -248,12 +254,15 @@ static const ARMCPRegInfo n104_cp_reginfo_tcg[] = {
     N104_CPREG_DEF(ARM64_REG_APPL_13, 3, 6, 15, 8, 2, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_VMSA_LOCK_EL1, 3, 4, 15, 1, 2, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_14, 1, 0, 8, 2, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_15, 3, 4, 15, 1, 3, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_16, 3, 6, 15, 3, 1, PL1_RW),
     REGINFO_SENTINEL,
 };
 
-static uint32_t g_nop_inst = NOP_INST;
+static uint32_t g_ret_inst = RET_INST;
 //TODO: JONATHANA: rstore/review this removal?
     /*
+static uint32_t g_nop_inst = NOP_INST;
 static uint32_t g_mov_w0_01_inst = MOV_W0_01_INST;
 static uint32_t g_compare_true_inst = CMP_X9_x9_INST;
 static uint32_t g_w7_zero_inst = W7_ZERO_INST;
@@ -309,6 +318,8 @@ static void n104_add_cpregs(N104MachineState *nms)
     nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_13) = 0;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_VMSA_LOCK_EL1) = 0;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_14) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_15) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_16) = 0;
 
     if (kvm_enabled()) {
         define_arm_cp_regs_with_opaque(cpu, n104_cp_reginfo_kvm, nms);
@@ -341,10 +352,17 @@ static void n104_create_s3c_uart(const N104MachineState *nms, Chardev *chr)
 static void n104_patch_kernel(AddressSpace *nsas)
 {
 
+    address_space_rw(nsas, vtop_static(SPR_LOCKDOWN_FUNC_VADDR_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+    address_space_rw(nsas, vtop_static(GXF_ENABLE_FUNC_VADDR_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
     //WTF is this MSR intruction?? hope we can just ignore it..
-    address_space_rw(nsas, vtop_static(MSR_STRANGE_INST_VADDR_18A5342e),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-                     sizeof(g_nop_inst), 1);
+    //address_space_rw(nsas, vtop_static(MSR_STRANGE_INST_VADDR_18A5342e),
+    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+    //                 sizeof(g_nop_inst), 1);
     //TODO: JONATHANA: remove this function? its content?
     /*
     //patch the initial branch with instructions that set up CPACR
@@ -419,13 +437,18 @@ static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
 
     //setup the memory layout:
 
-    //At the beginning of the non-secure ram we have the raw kernel file.
     //After that we have the static trust cache.
     //After that we have all the kernel sections.
     //After that we have ramdosk
     //After that we have the device tree
     //After that we have the kernel boot args
     //After that we have the rest of the RAM
+
+    //TODO: JONATHANA make sure there is no overlap with lowest kernel section
+    hwaddr tc_pa = N104_PHYS_BASE + 0x2000000;
+    uint64_t tc_size = 0;
+    macho_setup_trustcache("trustcache.n104", nsas,
+                           sysmem, tc_pa, &tc_size);
 
     macho_file_highest_lowest_base(nms->kernel_filename, N104_PHYS_BASE,
                                    &virt_base, &kernel_low, &kernel_high);
@@ -462,8 +485,8 @@ static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
 
     //now account for device tree
     macho_load_dtb(nms->dtb_filename, nsas, sysmem, "dtb.n104", phys_ptr,
-                   &dtb_size, nms->ramdisk_file_dev.pa,
-                   ramdisk_size, &nms->uart_mmio_pa);
+                   &dtb_size, nms->ramdisk_file_dev.pa, ramdisk_size,
+                   tc_pa, tc_size, &nms->uart_mmio_pa);
     dtb_va = ptov_static(phys_ptr);
     phys_ptr += align_64k_high(dtb_size);
     used_ram_for_blobs += align_64k_high(dtb_size);
@@ -546,6 +569,10 @@ static void n104_cpu_reset(void *opaque)
     CPUARMState *env = &cpu->env;
 
     cpu_reset(cs);
+
+    //enable PAN before we begin, checked and required in context switch code
+    //in XNU (iOS 14 for iPhone 11)
+    env->pstate |= PSTATE_PAN;
 
     env->xregs[0] = nms->kbootargs_pa;
     env->pc = nms->kpc_pa;

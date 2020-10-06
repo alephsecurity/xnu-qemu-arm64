@@ -121,6 +121,9 @@ void macho_tz_setup_bootargs(const char *name, AddressSpace *as,
                              hwaddr mem_size, hwaddr kern_args,
                              hwaddr kern_entry, hwaddr kern_phys_base);
 
+void macho_setup_trustcache(const char *name, AddressSpace *as,
+                            MemoryRegion *mem, hwaddr pa, uint64_t *size);
+
 void macho_setup_bootargs(const char *name, AddressSpace *as,
                           MemoryRegion *mem, hwaddr bootargs_pa,
                           hwaddr virt_base, hwaddr phys_base, hwaddr mem_size,
@@ -141,5 +144,6 @@ void macho_load_raw_file(const char *filename, AddressSpace *as, MemoryRegion *m
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size,
+                    hwaddr trustcache_addr, hwaddr trustcache_size,
                     hwaddr *uart_mmio_pa);
 #endif
