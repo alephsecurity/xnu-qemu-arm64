@@ -105,8 +105,11 @@ hwaddr pt_tte_el1(ARMCPU *cpu, AddressSpace *as, hwaddr va, bool make_exe)
     uint64_t tg = 0;
     uint64_t tsz = 0;
 
+    //fprintf(stderr, "pt_tte_el1: va: 0x%016llx\n", va);
+
     //currently only support 40bit addresses configuration
     if (TCR_IPS_40_ADDR_SIZE != tcr_ips) {
+       fprintf(stderr, "11 pt_tte_el1: tcr_ips: 0x%016llx\n", tcr_ips);
         abort();
     }
     //fprintf(stderr, "pt_tte_el1: tcr: 0x%016llx tcr_ips: 0x%016llx tcr_tg1: 0x%016llx tcr_t1sz: 0x%016llx tcr_tg0: %016llx tcr_t0sz: 0x%016llx va: 0x%016llx\n",
@@ -222,6 +225,7 @@ hwaddr pt_tte_el1(ARMCPU *cpu, AddressSpace *as, hwaddr va, bool make_exe)
 
 void va_make_exec(ARMCPU *cpu, AddressSpace *as, hwaddr va, hwaddr size)
 {
+    //fprintf(stderr, "va_make_exec: va: 0x%016llx\n", va);
     hwaddr curr_va = va & PAGE_MASK_16K;
     while (curr_va < va + size) {
         pt_tte_el1(cpu, as, curr_va, true);

@@ -2772,6 +2772,7 @@ static uint64_t gt_tval_read(CPUARMState *env, const ARMCPRegInfo *ri,
 {
     uint64_t offset = 0;
 
+
     switch (timeridx) {
     case GTIMER_VIRT:
     case GTIMER_HYPVIRT:
@@ -9841,6 +9842,46 @@ static void handle_semihosting(CPUState *cs)
 }
 #endif
 
+static uint64_t get_curr_bsd_info(CPUARMState *env)
+{
+    CPUState *cs = env_cpu(env);
+    uint64_t task_addr = 0;
+    uint64_t bsd_info_addr = 0;
+    if (cpu_memory_rw_debug(cs, env->cp15.tpidr_el[1] + 0x340,
+                            (uint8_t *)&task_addr, 8, 0)) {
+        return 0;
+    }
+    if (cpu_memory_rw_debug(cs, task_addr + 0x3a0,
+                            (uint8_t *)&bsd_info_addr, 8, 0)) {
+        return 0;
+    }
+    return bsd_info_addr;
+}
+
+static uint64_t get_curr_pid(CPUARMState *env, uint64_t bsd_info_addr)
+{
+    CPUState *cs = env_cpu(env);
+    uint64_t pid = 0;
+    if (cpu_memory_rw_debug(cs, bsd_info_addr + 0x48, (uint8_t *)&pid, 8, 0)) {
+        return 0;
+    }
+    return pid;
+}
+
+static uint8_t *get_curr_name(CPUARMState *env, uint64_t bsd_info_addr,
+                               uint8_t *name, uint64_t size)
+{
+    CPUState *cs = env_cpu(env);
+    if (0x20 < size) {
+        size = 0x20;
+    }
+    if (cpu_memory_rw_debug(cs, bsd_info_addr + 0x251, (uint8_t *)name,
+                            size, 0)) {
+        return NULL;
+    }
+    return name;
+}
+
 /* Handle a CPU exception for A and R profile CPUs.
  * Do any appropriate logging, handle PSCI calls, and then hand off
  * to the AArch64-entry or AArch32-entry function depending on the
@@ -9854,6 +9895,11 @@ void arm_cpu_do_interrupt(CPUState *cs)
 
     assert(!arm_feature(env, ARM_FEATURE_M));
 
+    uint64_t bsd_info_addr = get_curr_bsd_info(env);
+    uint64_t pid = get_curr_pid(env, bsd_info_addr);
+    uint8_t name[0x20] = {0};
+    get_curr_name(env, bsd_info_addr, &name[0], 0x20);
+
     arm_log_exception(cs->exception_index);
     qemu_log_mask(CPU_LOG_INT, "...from EL%d to EL%d\n", arm_current_el(env),
                   new_el);
@@ -9863,6 +9909,10 @@ void arm_cpu_do_interrupt(CPUState *cs)
                       syn_get_ec(env->exception.syndrome),
                       env->exception.syndrome);
     }
+    qemu_log_mask(CPU_LOG_INT, "...with TPIDR_EL1 0x%016llx",
+                  env->cp15.tpidr_el[1]);
+    qemu_log_mask(CPU_LOG_INT, " pid: 0x%016llx name: %s\n",
+                  pid, &name[0]);
 
     if (arm_is_psci_call(cpu, cs->exception_index)) {
         arm_handle_psci_call(cpu);

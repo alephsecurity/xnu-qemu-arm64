@@ -32,8 +32,11 @@
 
 //TODO: JOANTHANA get as input? different for different versions?
 const char *KEEP_COMP[] = {"uart-1,samsung\0$",
+                           "N104AP\0iPhone12,1\0AppleARM\0$",
                            "N66AP\0iPhone8,2\0AppleARM\0$",
-                           "wdt,s8000\0wdt,s5l8960x\0$", "arm-io,s8000\0$"};
+                           "wdt,s8000\0wdt,s5l8960x\0$",
+                           "arm-io,s8000\0$",
+                           "arm-io,s5l8960x\0$"};
 
 const char *REM_NAMES[] = {"backlight\0$", "dockchannel-uart\0$"};
 
@@ -125,6 +128,8 @@ static void macho_dtb_node_process(DTBNode *node)
 
 }
 
+//TODO: JONATHANA need this function/code/logic to be device specific. change accordingly
+
 void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     const char *name, hwaddr dtb_pa, uint64_t *size,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size,
@@ -194,7 +199,7 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
             abort();
         }
 
-        //TODO: JONATHANA review this as this is only for the new device
+        //TODO: JONATHANA review this as this is only for the new device (iPhone 11, iOS 14)
         prop = get_dtb_prop(child, "state");
         if (NULL == prop) {
             fprintf(stderr,
@@ -204,7 +209,7 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         remove_dtb_prop(child, prop);
         add_dtb_prop(child, "state", strlen("running") + 1,
                      (uint8_t *)&"running");
-        //TODO: JONATHANA: restore this?
+        //TODO: JONATHANA: restore this for iOS 12?
         /*
         uint64_t freq = 24000000;
 
@@ -257,11 +262,11 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
         add_dtb_prop(amcc, "aperture-count", sizeof(data), (uint8_t *)&data);
         data = 1;
         add_dtb_prop(amcc, "aperture-size", sizeof(data), (uint8_t *)&data);
-        data = 0;
+        data = 1;
         add_dtb_prop(amcc, "plane-count", sizeof(data), (uint8_t *)&data);
-        data = 0;
+        data = 1;
         add_dtb_prop(amcc, "plane-stride", sizeof(data), (uint8_t *)&data);
-        data64 = 0;
+        data64 = 0x40000000;
         add_dtb_prop(amcc, "aperture-phys-addr", sizeof(data64),
                      (uint8_t *)&data64);
         data = 0;
@@ -485,50 +490,6 @@ void macho_load_raw_file(const char *filename, AddressSpace *as, MemoryRegion *m
     }
 }
 
-void macho_tz_setup_bootargs(const char *name, AddressSpace *as,
-                             MemoryRegion *mem, hwaddr bootargs_addr,
-                             hwaddr virt_base, hwaddr phys_base,
-                             hwaddr mem_size, hwaddr kern_args,
-                             hwaddr kern_entry, hwaddr kern_phys_base)
-{
-    struct xnu_arm64_monitor_boot_args boot_args;
-    memset(&boot_args, 0, sizeof(boot_args));
-    boot_args.version = xnu_arm64_kBootArgsVersion2;
-    boot_args.virtBase = virt_base;
-    boot_args.physBase = phys_base;
-    boot_args.memSize = mem_size;
-    boot_args.kernArgs = kern_args;
-    boot_args.kernEntry = kern_entry;
-    boot_args.kernPhysBase = kern_phys_base;
-
-    boot_args.kernPhysSlide = 0;
-    boot_args.kernVirtSlide = 0;
-
-    allocate_and_copy(mem, as, name, bootargs_addr, sizeof(boot_args),
-                      &boot_args);
-}
-
-void macho_setup_trustcache(const char *name, AddressSpace *as,
-                            MemoryRegion *mem, hwaddr pa, uint64_t *size)
-{
-    uint32_t trust_cache_blob[8] = {0};
-    trust_cache_blob[0] = 1;
-    trust_cache_blob[1] = 8;
-    trust_cache_blob[2] = 1;
-    trust_cache_blob[3] = 0;
-    trust_cache_blob[4] = 0;
-    trust_cache_blob[5] = 0;
-    trust_cache_blob[6] = 0;
-    trust_cache_blob[7] = 0;
-
-    allocate_and_copy(mem, as, name, pa, sizeof(trust_cache_blob),
-                      &trust_cache_blob[0]);
-
-    if (NULL != size) {
-        *size = sizeof(trust_cache_blob);
-    }
-}
-
 void macho_setup_bootargs(const char *name, AddressSpace *as,
                           MemoryRegion *mem, hwaddr bootargs_pa,
                           hwaddr virt_base, hwaddr phys_base, hwaddr mem_size,
@@ -681,5 +642,113 @@ void arm_load_macho(char *filename, AddressSpace *as, MemoryRegion *mem,
     }
     if (rom_buf) {
         g_free(rom_buf);
+    }
+}
+
+//hooks arg is expected like this:
+//"hookfilepath@va@scratch_reg#hookfilepath@va@scratch_reg#..."
+
+uint64_t parse_hooks(KernelTrHookParams *hooks, char *hook_funcs_cfg,
+                     MoreAllocatedData *md)
+{
+    uint64_t i = 0;
+    char *orig_pos = NULL;
+    size_t orig_len = 0;
+    char *pos = NULL;
+    char *next_pos = NULL;
+    size_t len = 0;
+    char *elem = NULL;
+    char *next_elem = NULL;
+    size_t elem_len = 0;
+    char *end;
+
+    pos = hook_funcs_cfg;
+    if ((NULL == pos) || (0 == strlen(pos))) {
+        //fprintf(stderr, "no function hooks configured\n");
+        return i;
+    }
+
+    orig_pos = pos;
+    orig_len = strlen(pos);
+
+    do {
+        next_pos = memchr(pos, '#', strlen(pos));
+        if (NULL != next_pos) {
+            len = next_pos - pos;
+        } else {
+            len = strlen(pos);
+        }
+
+        elem = pos;
+        next_elem = memchr(elem, '@', len);
+        if (NULL == next_elem) {
+            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
+            abort();
+        }
+        elem_len = next_elem - elem;
+        elem[elem_len] = 0;
+
+        uint8_t *code = NULL;
+        size_t size = 0;
+        if (!g_file_get_contents(elem, (char **)&code, &size, NULL)) {
+            fprintf(stderr, "hook[%llu] failed to read filepath: %s\n",
+                    i, elem);
+            abort();
+        }
+
+        elem += elem_len + 1;
+        next_elem = memchr(elem, '@', len);
+        if (NULL == next_elem) {
+            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
+            abort();
+        }
+        elem_len = next_elem - elem;
+        elem[elem_len] = 0;
+
+        hooks[i].va = strtoull(elem, &end, 16);
+        hooks[i].pa = vtop_static(hooks[i].va);
+        hooks[i].buf_va =
+                ptov_static((hwaddr)&md->hook_funcs_code[i][0]);
+        hooks[i].buf_pa = (hwaddr)&md->hook_funcs_code[i][0];
+        hooks[i].buf_size = HOOK_CODE_ALLOC_SIZE;
+        hooks[i].code = (uint8_t *)code;
+        hooks[i].code_size = size;
+
+        elem += elem_len + 1;
+        if (NULL != next_pos) {
+            elem_len = next_pos - elem;
+        } else {
+            elem_len = strlen(elem);
+        }
+        elem[elem_len] = 0;
+
+        hooks[i].scratch_reg = (uint8_t)strtoul(elem, &end, 10);
+
+        i++;
+        pos += len + 1;
+    } while ((NULL != pos) && (pos < (orig_pos + orig_len)));
+
+    return i;
+}
+
+//setup an empty truscache as itt seems iOS 14 requires a TC
+void macho_setup_trustcache(const char *name, AddressSpace *as,
+                            MemoryRegion *mem, hwaddr pa, uint64_t *size)
+{
+    uint32_t trust_cache_blob[8] = {0};
+    trust_cache_blob[0] = 1;
+    trust_cache_blob[1] = 8;
+    trust_cache_blob[2] = 1;
+    trust_cache_blob[3] = 0;
+    trust_cache_blob[4] = 0;
+    trust_cache_blob[5] = 0;
+    trust_cache_blob[6] = 0;
+    trust_cache_blob[7] = 0;
+
+    allocate_and_copy(mem, as, name, pa, sizeof(trust_cache_blob),
+                      &trust_cache_blob[0]);
+
+    if (NULL != size) {
+        *size = sizeof(trust_cache_blob);
     }
 }

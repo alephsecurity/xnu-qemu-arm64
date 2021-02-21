@@ -956,6 +956,46 @@ static int el_from_spsr(uint32_t spsr)
     }
 }
 
+static uint64_t get_curr_bsd_info(CPUARMState *env)
+{
+    CPUState *cs = env_cpu(env);
+    uint64_t task_addr = 0;
+    uint64_t bsd_info_addr = 0;
+    if (cpu_memory_rw_debug(cs, env->cp15.tpidr_el[1] + 0x340,
+                            (uint8_t *)&task_addr, 8, 0)) {
+        return 0;
+    }
+    if (cpu_memory_rw_debug(cs, task_addr + 0x3a0,
+                            (uint8_t *)&bsd_info_addr, 8, 0)) {
+        return 0;
+    }
+    return bsd_info_addr;
+}
+
+static uint64_t get_curr_pid(CPUARMState *env, uint64_t bsd_info_addr)
+{
+    CPUState *cs = env_cpu(env);
+    uint64_t pid = 0;
+    if (cpu_memory_rw_debug(cs, bsd_info_addr + 0x48, (uint8_t *)&pid, 8, 0)) {
+        return 0;
+    }
+    return pid;
+}
+
+static uint8_t *get_curr_name(CPUARMState *env, uint64_t bsd_info_addr,
+                               uint8_t *name, uint64_t size)
+{
+    CPUState *cs = env_cpu(env);
+    if (0x20 < size) {
+        size = 0x20;
+    }
+    if (cpu_memory_rw_debug(cs, bsd_info_addr + 0x251, (uint8_t *)name,
+                            size, 0)) {
+        return NULL;
+    }
+    return name;
+}
+
 void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
 {
     int cur_el = arm_current_el(env);
@@ -1062,9 +1102,16 @@ void HELPER(exception_return)(CPUARMState *env, uint64_t new_pc)
         }
         env->pc = new_pc;
 
+        uint64_t bsd_info_addr = get_curr_bsd_info(env);
+        uint64_t pid = get_curr_pid(env, bsd_info_addr);
+        uint8_t name[0x20] = {0};
+        get_curr_name(env, bsd_info_addr, &name[0], 0x20);
+
         qemu_log_mask(CPU_LOG_INT, "Exception return from AArch64 EL%d to "
-                      "AArch64 EL%d PC 0x%" PRIx64 "\n",
-                      cur_el, new_el, env->pc);
+                      "AArch64 EL%d PC 0x%" PRIx64 " TPIDR_EL1 0x%016llx",
+                      cur_el, new_el, env->pc, env->cp15.tpidr_el[1]);
+        qemu_log_mask(CPU_LOG_INT, " pid: 0x%016llx name: %s\n",
+                      pid, &name[0]);
     }
 
     /*

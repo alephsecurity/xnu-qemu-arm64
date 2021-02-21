@@ -31,83 +31,99 @@
 #include "sysemu/sysemu.h"
 #include "qemu/error-report.h"
 #include "hw/platform-bus.h"
+#include "cpu.h"
 
-#include "hw/arm/n66_iphone6splus.h"
 #include "hw/arm/guest-services/general.h"
-#include "hw/arm/xnu_trampoline_hook.h"
 
 int32_t guest_svcs_errno = 0;
+qemu_call_callback_t g_callback = NULL;
+qemu_call_value_callback_t g_value_cb = NULL;
+void *g_value_cb_opaque = NULL;
+hwaddr g_vaddr_qemu_call = 0;
+hwaddr g_paddr_qemu_call = 0;
+
+void qemu_call_set_cmd_vaddr(hwaddr vaddr)
+{
+    g_vaddr_qemu_call = vaddr;
+}
+
+void qemu_call_set_cmd_paddr(hwaddr paddr)
+{
+    g_paddr_qemu_call = paddr;
+}
+
+void qemu_call_install_callback(qemu_call_callback_t callback)
+{
+    g_callback = callback;
+}
+
+void qemu_call_install_value_callback(qemu_call_value_callback_t callback,
+                                      void *opaque)
+{
+    g_value_cb = callback;
+    g_value_cb_opaque = opaque;
+}
 
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri)
 {
-    // NOT USED FOR NOW
-    return 0;
+    //we want to make sure that the qcall address is set by the
+    //machine before it is being used by the gueset
+    assert(0 != g_vaddr_qemu_call);
+    assert(0 != g_paddr_qemu_call);
+
+    return g_vaddr_qemu_call;
 }
 
 void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 {
-    CPUState *cpu = qemu_get_cpu(0);
+    CPUState *cs = env_cpu(env);
+    AddressSpace *as = cpu_get_address_space(cs, ARMASIdx_NS);
     qemu_call_t qcall;
-    uint64_t i = 0;
-
-    static uint8_t hooks_installed = false;
 
     if (!value) {
-        // Special case: not a regular QEMU call. This is used by our
-        // kernel task port patch to notify of the readiness for the
-        // hook installation.
-
-        N66MachineState *nms = N66_MACHINE(qdev_get_machine());
-        KernelTrHookParams *hook = &nms->hook;
-
-        if (0 != hook->va) {
-            //install the hook here because we need the MMU to be already
-            //configured and all the memory mapped before installing the hook
-            xnu_hook_tr_copy_install(hook->va, hook->pa, hook->buf_va,
-                                     hook->buf_pa, hook->code, hook->code_size,
-                                     hook->buf_size, hook->scratch_reg);
-
+        // Special case: not a regular QEMU call.
+        if (NULL == g_callback) {
+            fprintf(stderr,
+                    "qemu_call withh value 0 but no callback installed\n");
+            abort();
         }
 
-        if (!hooks_installed) {
-            for (i = 0; i < nms->hook_funcs_count; i++) {
-                xnu_hook_tr_copy_install(nms->hook_funcs[i].va,
-                                         nms->hook_funcs[i].pa,
-                                         nms->hook_funcs[i].buf_va,
-                                         nms->hook_funcs[i].buf_pa,
-                                         nms->hook_funcs[i].code,
-                                         nms->hook_funcs[i].code_size,
-                                         nms->hook_funcs[i].buf_size,
-                                         nms->hook_funcs[i].scratch_reg);
-            }
-            hooks_installed = true;
-        }
-
-        //emulate original opcode: str x20, [x23]
-        value = env->xregs[20];
-        cpu_memory_rw_debug(cpu, env->xregs[23], (uint8_t*) &value,
-                            sizeof(value), 1);
-
+        g_callback();
         return;
     }
 
+    //TODO: JONATHANA to support multi-CPU need to lock here or to not use
+    //a static qemu address for all transactions but use a different allocated
+    //one for each transaction.
+
+
+    //we want to make sure that the qcall address is set by the
+    //machine before it is being used by the gueset
+    assert(0 != g_vaddr_qemu_call);
+    assert(0 != g_paddr_qemu_call);
+
+    //we expect the value pasased is the same as the value configured by
+    //the machine
+    assert(value == g_vaddr_qemu_call);
+
     // Read the request
-    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 0);
+    address_space_rw(as, g_paddr_qemu_call, MEMTXATTRS_UNSPECIFIED,
+                     (uint8_t *)&qcall, sizeof(qcall), 0);
 
     switch (qcall.call_number) {
         // File Descriptors
         case QC_CLOSE:
-            qcall.retval = qc_handle_close(cpu, qcall.args.close.fd);
+            qcall.retval = qc_handle_close(cs, qcall.args.close.fd);
             break;
         case QC_FCNTL:
             switch (qcall.args.fcntl.cmd) {
                 case F_GETFL:
                     qcall.retval = qc_handle_fcntl_getfl(
-                        cpu, qcall.args.fcntl.fd);
+                        cs, qcall.args.fcntl.fd);
                     break;
                 case F_SETFL:
                     qcall.retval = qc_handle_fcntl_setfl(
-                        cpu, qcall.args.fcntl.fd, qcall.args.fcntl.flags);
+                        cs, qcall.args.fcntl.fd, qcall.args.fcntl.flags);
                     break;
                 default:
                     guest_svcs_errno = EINVAL;
@@ -117,57 +133,63 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
 
         // Socket API
         case QC_SOCKET:
-            qcall.retval = qc_handle_socket(cpu, qcall.args.socket.domain,
+            qcall.retval = qc_handle_socket(cs, qcall.args.socket.domain,
                                             qcall.args.socket.type,
                                             qcall.args.socket.protocol);
             break;
         case QC_ACCEPT:
-            qcall.retval = qc_handle_accept(cpu, qcall.args.accept.socket,
+            qcall.retval = qc_handle_accept(cs, qcall.args.accept.socket,
                                             qcall.args.accept.addr,
                                             qcall.args.accept.addrlen);
             break;
         case QC_BIND:
-            qcall.retval = qc_handle_bind(cpu, qcall.args.bind.socket,
+            qcall.retval = qc_handle_bind(cs, qcall.args.bind.socket,
                                           qcall.args.bind.addr,
                                           qcall.args.bind.addrlen);
             break;
         case QC_CONNECT:
-            qcall.retval = qc_handle_connect(cpu, qcall.args.connect.socket,
+            qcall.retval = qc_handle_connect(cs, qcall.args.connect.socket,
                                              qcall.args.connect.addr,
                                              qcall.args.connect.addrlen);
             break;
         case QC_LISTEN:
-            qcall.retval = qc_handle_listen(cpu, qcall.args.listen.socket,
+            qcall.retval = qc_handle_listen(cs, qcall.args.listen.socket,
                                             qcall.args.listen.backlog);
             break;
         case QC_RECV:
-            qcall.retval = qc_handle_recv(cpu, qcall.args.recv.socket,
+            qcall.retval = qc_handle_recv(cs, qcall.args.recv.socket,
                                           qcall.args.recv.buffer,
                                           qcall.args.recv.length,
                                           qcall.args.recv.flags);
             break;
         case QC_SEND:
-            qcall.retval = qc_handle_send(cpu, qcall.args.send.socket,
+            qcall.retval = qc_handle_send(cs, qcall.args.send.socket,
                                           qcall.args.send.buffer,
                                           qcall.args.send.length,
                                           qcall.args.send.flags);
             break;
         case QC_WRITE_FILE:
-            qcall.retval = qc_handle_write_file(cpu,
-                                       qcall.args.write_file.buffer_guest_ptr,
-                                       qcall.args.write_file.length,
-                                       qcall.args.write_file.offset,
-                                       qcall.args.write_file.index);
+            qcall.retval = qc_handle_write_file(cs,
+                                     qcall.args.write_file.buffer_guest_paddr,
+                                     qcall.args.write_file.length,
+                                     qcall.args.write_file.offset,
+                                     qcall.args.write_file.index);
             break;
         case QC_READ_FILE:
-            qcall.retval = qc_handle_read_file(cpu,
-                                       qcall.args.read_file.buffer_guest_ptr,
-                                       qcall.args.read_file.length,
-                                       qcall.args.read_file.offset,
-                                       qcall.args.read_file.index);
+            qcall.retval = qc_handle_read_file(cs,
+                                     qcall.args.read_file.buffer_guest_paddr,
+                                     qcall.args.read_file.length,
+                                     qcall.args.read_file.offset,
+                                     qcall.args.read_file.index);
             break;
         case QC_SIZE_FILE:
             qcall.retval = qc_handle_size_file(qcall.args.size_file.index);
+            break;
+
+        // General value callback
+        case QC_VALUE_CB:
+            assert(NULL != g_value_cb);
+            qcall.retval = g_value_cb(&qcall.args.general, g_value_cb_opaque);
             break;
         default:
             // TODO: handle unknown call numbers
@@ -177,5 +199,6 @@ void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
     qcall.error = guest_svcs_errno;
 
     // Write the response
-    cpu_memory_rw_debug(cpu, value, (uint8_t*) &qcall, sizeof(qcall), 1);
+    address_space_rw(as, g_paddr_qemu_call, MEMTXATTRS_UNSPECIFIED,
+                     (uint8_t *)&qcall, sizeof(qcall), 1);
 }

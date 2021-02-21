@@ -33,13 +33,7 @@
 #include "exec/memory.h"
 #include "cpu.h"
 #include "sysemu/kvm.h"
-
-//TODO: JOANATHANA restore these
-/*
-#define MAX_CUSTOM_HOOKS (30)
-
-#define CUSTOM_HOOKS_GLOBALS_SIZE (0x400)
-*/
+#include "hw/display/xnu_iomfb_ramfb.h"
 
 #define TYPE_N104 "iPhone11-n104"
 
@@ -55,19 +49,17 @@ typedef struct {
     MachineClass parent;
 } N104MachineClass;
 
-//TODO: JONATHANA: review struct and remove non-relevant items
 typedef struct {
     MachineState parent;
-    //uint64_t hook_funcs_count;
+    uint64_t hook_funcs_count;
     hwaddr extra_data_pa;
+    hwaddr more_extra_data_pa;
     hwaddr kpc_pa;
     hwaddr kbootargs_pa;
     hwaddr uart_mmio_pa;
     ARMCPU *cpu;
-    /*
     KernelTrHookParams hook;
     KernelTrHookParams hook_funcs[MAX_CUSTOM_HOOKS];
-    */
     struct arm_boot_info bootinfo;
     char ramdisk_filename[1024];
     char kernel_filename[1024];
@@ -76,25 +68,10 @@ typedef struct {
     char driver_filename[1024];
     char qc_file_0_filename[1024];
     char qc_file_1_filename[1024];
-    char qc_file_log_filename[1024];
     char kern_args[1024];
-    //uint16_t tunnel_port;
+    uint16_t tunnel_port;
+    xnu_iomfb_ramfb_state xnu_ramfb_state;
     FileMmioDev ramdisk_file_dev;
-    bool use_ramfb;
-    /*
-    N104_CPREG_VAR_DEF(ARM64_REG_HID11);
-    N104_CPREG_VAR_DEF(ARM64_REG_HID3);
-    N104_CPREG_VAR_DEF(ARM64_REG_HID5);
-    N104_CPREG_VAR_DEF(ARM64_REG_HID4);
-    N104_CPREG_VAR_DEF(ARM64_REG_HID8);
-    N104_CPREG_VAR_DEF(ARM64_REG_HID7);
-    N104_CPREG_VAR_DEF(ARM64_REG_LSU_ERR_STS);
-    N104_CPREG_VAR_DEF(PMC0);
-    N104_CPREG_VAR_DEF(PMC1);
-    N104_CPREG_VAR_DEF(PMCR1);
-    N104_CPREG_VAR_DEF(PMSR);
-    N104_CPREG_VAR_DEF(L2ACTLR_EL1);
-    */
     N104_CPREG_VAR_DEF(ARM64_REG_MIGSTS_EL1);
     N104_CPREG_VAR_DEF(ARM64_REG_KERNELKEYLO_EL1);
     N104_CPREG_VAR_DEF(ARM64_REG_KERNELKEYHI_EL1);
@@ -119,16 +96,10 @@ typedef struct {
     N104_CPREG_VAR_DEF(ARM64_REG_APPL_14);
     N104_CPREG_VAR_DEF(ARM64_REG_APPL_15);
     N104_CPREG_VAR_DEF(ARM64_REG_APPL_16);
+    N104_CPREG_VAR_DEF(ARM64_REG_APPL_17);
+    N104_CPREG_VAR_DEF(ARM64_REG_IPI_SR);
+    N104_CPREG_VAR_DEF(ARM64_REG_UPMPCM);
+    N104_CPREG_VAR_DEF(ARM64_REG_UPMCR0);
 } N104MachineState;
-
-//TODO: JONATHANA restore this
-/*
-typedef struct {
-    uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
-    uint8_t hook_funcs_code[MAX_CUSTOM_HOOKS][HOOK_CODE_ALLOC_SIZE];
-    uint8_t ramfb[RAMFB_SIZE];
-    uint8_t hook_globals[CUSTOM_HOOKS_GLOBALS_SIZE];
-} __attribute__((packed)) AllocatedData;
-*/
 
 #endif

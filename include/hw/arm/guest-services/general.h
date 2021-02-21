@@ -50,7 +50,22 @@ typedef enum {
     QC_WRITE_FILE,
     QC_READ_FILE,
     QC_SIZE_FILE,
+
+    // General value callback
+    QC_VALUE_CB = 0x1000,
 } qemu_call_number_t;
+
+typedef struct __attribute__((packed)) {
+    uint64_t id;
+    uint64_t data1;
+    uint64_t data2;
+    uint64_t data3;
+    uint64_t data4;
+    uint64_t data5;
+    uint64_t data6;
+    uint64_t data7;
+} qc_general_cb_args_t;
+
 
 typedef struct __attribute__((packed)) {
     // Request
@@ -70,6 +85,7 @@ typedef struct __attribute__((packed)) {
         qc_write_file_args_t write_file;
         qc_read_file_args_t read_file;
         qc_size_file_args_t size_file;
+        qc_general_cb_args_t general;
     } args;
 
     // Response
@@ -80,8 +96,16 @@ typedef struct __attribute__((packed)) {
 #ifndef OUT_OF_TREE_BUILD
 uint64_t qemu_call_status(CPUARMState *env, const ARMCPRegInfo *ri);
 void qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value);
+typedef void (*qemu_call_callback_t)(void);
+void qemu_call_install_callback(qemu_call_callback_t callback);
+typedef int64_t (*qemu_call_value_callback_t)(qc_general_cb_args_t *args,
+                                              void *opaque);
+void qemu_call_install_value_callback(qemu_call_value_callback_t callback,
+                                      void *opaque);
+void qemu_call_set_cmd_paddr(hwaddr paddr);
+void qemu_call_set_cmd_vaddr(hwaddr vaddr);
 #else
-uint64_t qemu_call_status(qemu_call_t *qcall);
+uint64_t qemu_call_status(void);
 void qemu_call(qemu_call_t *qcall);
 #endif
 

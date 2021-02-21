@@ -40,7 +40,7 @@ extern int32_t guest_svcs_errno;
 #pragma GCC diagnostic pop
 
 typedef struct __attribute__((packed)) {
-    uint64_t buffer_guest_ptr;
+    uint64_t buffer_guest_paddr;
     uint64_t length;
     uint64_t offset;
     uint64_t index;
@@ -59,11 +59,11 @@ int64_t qc_handle_read_file(CPUState *cpu, uint64_t buffer_guest_ptr,
                             uint64_t length, uint64_t offset, uint64_t index);
 int64_t qc_handle_size_file(uint64_t index);
 #else
-int64_t qc_write_file(void *buffer_guest_ptr, uint64_t length,
-                      uint64_t offset, uint64_t index);
-int64_t qc_read_file(void *buffer_guest_ptr, uint64_t length,
-                     uint64_t offset, uint64_t index);
-int64_t qc_size_file(uint64_t index);
+int64_t qc_write_file(uint64_t buffer_guest_paddr, uint64_t length,
+                      uint64_t offset, uint64_t index, void *qcall);
+int64_t qc_read_file(uint64_t buffer_guest_paddr, uint64_t length,
+                     uint64_t offset, uint64_t index, void *qcall);
+int64_t qc_size_file(uint64_t index, void *qcall);
 #endif
 
 #endif

@@ -34,8 +34,6 @@
 #include "cpu.h"
 #include "sysemu/kvm.h"
 
-#define MAX_CUSTOM_HOOKS (30)
-
 #define CUSTOM_HOOKS_GLOBALS_SIZE (0x400)
 
 #define TYPE_N66 "iPhone6splus-n66-s8000"
@@ -88,12 +86,5 @@ typedef struct {
     N66_CPREG_VAR_DEF(PMSR);
     N66_CPREG_VAR_DEF(L2ACTLR_EL1);
 } N66MachineState;
-
-typedef struct {
-    uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
-    uint8_t hook_funcs_code[MAX_CUSTOM_HOOKS][HOOK_CODE_ALLOC_SIZE];
-    uint8_t ramfb[RAMFB_SIZE];
-    uint8_t hook_globals[CUSTOM_HOOKS_GLOBALS_SIZE];
-} __attribute__((packed)) AllocatedData;
 
 #endif

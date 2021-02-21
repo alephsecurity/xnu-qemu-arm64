@@ -22,6 +22,9 @@
  * THE SOFTWARE.
  */
 
+ //TODO: JONATHTANA this module is now borken, needs o be updated as per the
+ // changes done to support iOS 14 on iPhone 11
+
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu-common.h"
@@ -294,7 +297,6 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr allocated_ram_pa;
     hwaddr phys_ptr;
     hwaddr phys_pc;
-    hwaddr ramfb_pa = 0;
     video_boot_args v_bootargs = {0};
     N66MachineState *nms = N66_MACHINE(machine);
 
@@ -353,12 +355,6 @@ static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     phys_ptr += align_64k_high(sizeof(struct xnu_arm64_boot_args));
     nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
-
-    if (nms->use_ramfb){
-        ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]);
-        xnu_define_ramfb_device(nsas,ramfb_pa);
-        xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
-    }
 
     phys_ptr += align_64k_high(sizeof(AllocatedData));
     top_of_kernel_data_pa = phys_ptr;
@@ -432,7 +428,8 @@ static void n66_cpu_reset(void *opaque)
 static void n66_machine_init_hook_funcs(N66MachineState *nms,
                                         AddressSpace *nsas)
 {
-    AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
+    //TODO: JONATHANA must fix this
+    //AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
     uint64_t i = 0;
     char *orig_pos = NULL;
     size_t orig_len = 0;
@@ -443,15 +440,6 @@ static void n66_machine_init_hook_funcs(N66MachineState *nms,
     char *next_elem = NULL;
     size_t elem_len = 0;
     char *end;
-
-    //ugly solution but a simple one for now, use this memory which is fixed at
-    //(pa: 0x0000000049BF4C00 va: 0xFFFFFFF009BF4C00) for globals to be common
-    //between drivers/hooks. Please adjust address if anything changes in
-    //the layout of the memory the "boot loader" sets up
-    uint64_t zero_var = 0;
-    address_space_rw(nsas, (hwaddr)&allocated_data->hook_globals[0],
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&zero_var,
-                     sizeof(zero_var), 1);
 
     nms->hook_funcs_count = 0;
 
@@ -500,10 +488,11 @@ static void n66_machine_init_hook_funcs(N66MachineState *nms,
 
         nms->hook_funcs[i].va = strtoull(elem, &end, 16);
         nms->hook_funcs[i].pa = vtop_static(nms->hook_funcs[i].va);
-        nms->hook_funcs[i].buf_va =
-                   ptov_static((hwaddr)&allocated_data->hook_funcs_code[i][0]);
-        nms->hook_funcs[i].buf_pa =
-                                (hwaddr)&allocated_data->hook_funcs_code[i][0];
+        //TODO: JONATHANA must fix this
+        //nms->hook_funcs[i].buf_va =
+        //           ptov_static((hwaddr)&allocated_data->hook_funcs_code[i][0]);
+        //nms->hook_funcs[i].buf_pa =
+        //                        (hwaddr)&allocated_data->hook_funcs_code[i][0];
         nms->hook_funcs[i].buf_size = HOOK_CODE_ALLOC_SIZE;
         nms->hook_funcs[i].code = (uint8_t *)code;
         nms->hook_funcs[i].code_size = size;

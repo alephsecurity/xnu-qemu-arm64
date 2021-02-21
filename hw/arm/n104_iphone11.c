@@ -21,6 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+ 
+ //TODO: JONATHANA restore global hook data and log file if we want to revive the
+ // IPC messages sniffer that was implemented for iOS 12 for use of sharing the global locks
+
+ //TODO: JONATHANA implement the TFP0 hooks for iOS 14
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -38,38 +43,90 @@
 #include "hw/arm/exynos4210.h"
 #include "hw/arm/guest-services/general.h"
 
+#include "hw/arm/guest-services/xnu_general.h"
+
 #define N104_PHYS_BASE (0x40000000)
+#define ONE_MB (0x100000)
+#define N104_MORE_ALLOC_DATA_PADDR (N104_PHYS_BASE + ONE_MB)
+#define N104_MORE_ALLOC_DATA_SIZE (64 * ONE_MB)
 
 //compiled nop instruction: mov x0, x0
 #define NOP_INST (0xaa0003e0)
 #define MOV_W0_01_INST (0x52800020)
+#define MOV_X0_00_INST (0xD2800000)
+#define MOV_X8_00_INST (0xD2800008)
 #define CMP_X9_x9_INST (0xeb09013f)
 #define RET_INST (0xd65f03c0)
+#define RETAB_INST (0xd65f0fff)
+#define MOV_X14_0_INST (0xd280000e)
 //compiled  instruction: mov w7, #0
 #define W7_ZERO_INST (0x52800007)
+#define J_170_INST (0x1400005c)
+//TODO: JONATHANA QEMU doesn't know this instruction??
+//so for now move to "tlbi vmalle1is" instead of "tlbi vmalls12e1is"
+//as in QEMU it seems to do the same but will need to do differently with
+//KVM
+//#define TLBI_VMALLS12E1IS (0xd50c83df)
+#define TLBI_VMALLE1IS (0xd508831f)
 
+//TODO: JONATHANA implement a more general and correct patch mechanism that
+//includes a patch finder - maybe take one from an open source JB??
+//Also make the patch mechanism cleaner and general and in a different module.
+//no need for a different static variable to hold the patch values
+#define FAULT_PPL_LOCKED_DOWN_CHECK_M1_INST_VADDR_18A5342e (0xFFFFFFF008131C60)
+#define FAULT_PPL_LOCKED_DOWN_CHECK_INST_VADDR_18A5342e (0xFFFFFFF008131C64)
+#define RORGN_STASH_RANGE_2ND_INST_VADDR_18A5342e (0xFFFFFFF007B622F0)
+#define RORGN_LOCKDOWN_2ND_INST_VADDR_18A5342e (0xFFFFFFF007B62C80)
 #define SPR_LOCKDOWN_FUNC_VADDR_18A5342e (0xFFFFFFF007B72350)
 #define GXF_ENABLE_FUNC_VADDR_18A5342e (0xFFFFFFF008131E90)
 
-//TODO: JONATHANA remove this section? its content?
-/*
-#define INITIAL_BRANCH_VADDR_16B92 (0xfffffff0070a5098)
-#define BZERO_COND_BRANCH_VADDR_16B92 (0xfffffff0070996d8)
-#define SMC_INST_VADDR_16B92 (0xfffffff0070a7d3c)
-#define SLIDE_SET_INST_VADDR_16B92 (0xfffffff00748ef30)
-#define NOTIFY_KERNEL_TASK_PTR_16B92 (0xfffffff0070f4d90)
-#define CORE_TRUST_CHECK_16B92 (0xfffffff0061e136c)
-#define TFP0_TASK_FOR_PID_16B92 (0xfffffff0074a27bc)
-#define TFP0_CNVRT_PORT_TO_TASK_16B92 (0xfffffff0070d7cb8)
-#define TFP0_PORT_NAME_TO_TASK_16B92 (0xfffffff0070d82d8)
-#define TFP0_KERNEL_TASK_CMP_1_16B92 (0xfffffff0070d7b04)
-#define TFP0_KERNEL_TASK_CMP_2_16B92 (0xfffffff0070d810c)
-*/
+#define UNKNOWN_INST_18A5342e (0xFFFFFFF0097FF8B0)
+#define UNKNOWN_INST2_18A5342e (0xFFFFFFF007B58F40)
+
+//TODO: JONATHANA can probably find bettter patches.
+//all related to code signing and to allow execution
+#define CORE_TRUST_CHECK_18A5342e (0xFFFFFFF0083052B0)
+#define CS_ASSOC_MAP_1_18A5342e (0xFFFFFFF007ED54F0)
+#define CS_ASSOC_MAP_2_18A5342e (0xFFFFFFF007ED54F4)
+#define PMAP_CS_ENF_1_18A5342e (0xFFFFFFF0098035A8)
+#define PMAP_CS_ENF_2_18A5342e (0xFFFFFFF0098035AC)
+#define CS_INVALID_PAGE_1_18A5342e (0xFFFFFFF007E56D88)
+#define CS_INVALID_PAGE_2_18A5342e (0xFFFFFFF007E56D8C)
+#define CS_PAGE_VAL_1_18A5342e (0xFFFFFFF007AE370C)
+#define CS_PAGE_VAL_2_18A5342e (0xFFFFFFF007AE3710)
+
+//SANDBOX bypass
+#define SB_EVALUAET_INTERNAL_1_18A5342e (0xFFFFFFF0092C5A24)
+#define SB_EVALUAET_INTERNAL_2_18A5342e (0xFFFFFFF0092C5A28)
+
+//memory mapping patches
+#define VM_MAP_PROTECT_1_18A5342e (0xFFFFFFF007AF719C)
+#define VM_MAP_PROTECT_2_18A5342e (0xFFFFFFF007AF71A8)
+#define VM_MAP_PROTECT_3_18A5342e (0xFFFFFFF007AF71B0)
+#define VM_MAP_PROTECT_4_18A5342e (0xFFFFFFF007AF71B4)
+#define VM_MAP_PROTECT_5_18A5342e (0xFFFFFFF007AF71C0)
+#define VM_MAP_PROTECT_6_18A5342e (0xFFFFFFF007AF71CC)
+
+//TODO: JONATHANA
+//#define CHECK_FOR_SIG_1_18A5342e (0xFFFFFFF007E7A1B4)
+//#define CHECK_FOR_SIG_2_18A5342e (0xFFFFFFF007E7A1B8)
+//#define MAC_CRED_LAB_EXECVE_1_18A5342e (0xFFFFFFF008116818)
+//#define MAC_CRED_LAB_EXECVE_2_18A5342e (0xFFFFFFF00811681C)
+
+#define IS_IMGPF_DISABLE_ASLR_18A5342e (0xFFFFFFF007F068F0)
+#define MAP_SLIDE_2_DISABLE_ASLR_18A5342e (0xFFFFFFF007F1F768)
+
+#define BSD_INIT_SP_SUB_18A5342e (0xFFFFFFF007E45E14)
+
+#define UNUSED_BCM_DRIVER_SECTION (0xFFFFFFF009424000)
+
+#define STATIC_PTABLE_VADDR (0xFFFFFFF007734000)
+#define STATIC_PTABLE_SIZE (0x38000)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
 //yet mounted.
-//We chose this place in the beginning of ubc_init() inlined in bsd_init()
+//We chose this place in the beginning net_init_run() in bsd_init()
 //because enough things are up and running for our driver to properly setup,
 //This means that global IOKIT locks and dictionaries are already initialized
 //and in general, the IOKIT system is already initialized.
@@ -84,9 +141,11 @@
 //them elsewhere.
 //We also need a register to use as a scratch register that its value is
 //disregarded right after the hook and does not affect anything.
-//TODO: JONATHANA: find the relevant address for this iOS/iPhone version
-//#define UBC_INIT_VADDR_16B92 (0xfffffff0073dec10)
+#define NET_INIT_RUN_VADDR_18A5342e (0xFFFFFFF007C5F228)
 
+
+//TODO: JONATHANA move these MACROs to a common file
+//(common between ios devices)
 #define N104_CPREG_FUNCS(name) \
 static uint64_t n104_cpreg_read_##name(CPUARMState *env, \
                                       const ARMCPRegInfo *ri) \
@@ -108,21 +167,6 @@ static void n104_cpreg_write_##name(CPUARMState *env, const ARMCPRegInfo *ri, \
       .state = ARM_CP_STATE_AA64, .readfn = n104_cpreg_read_##p_name, \
       .writefn = n104_cpreg_write_##p_name }
 
-//TODO: JONATHANA: rstore/review this removal?
-/*
-N104_CPREG_FUNCS(ARM64_REG_HID11)
-N104_CPREG_FUNCS(ARM64_REG_HID3)
-N104_CPREG_FUNCS(ARM64_REG_HID5)
-N104_CPREG_FUNCS(ARM64_REG_HID4)
-N104_CPREG_FUNCS(ARM64_REG_HID8)
-N104_CPREG_FUNCS(ARM64_REG_HID7)
-N104_CPREG_FUNCS(ARM64_REG_LSU_ERR_STS)
-N104_CPREG_FUNCS(PMC0)
-N104_CPREG_FUNCS(PMC1)
-N104_CPREG_FUNCS(PMCR1)
-N104_CPREG_FUNCS(PMSR)
-N104_CPREG_FUNCS(L2ACTLR_EL1)
-*/
 N104_CPREG_FUNCS(ARM64_REG_MIGSTS_EL1)
 N104_CPREG_FUNCS(ARM64_REG_KERNELKEYLO_EL1)
 N104_CPREG_FUNCS(ARM64_REG_KERNELKEYHI_EL1)
@@ -147,23 +191,12 @@ N104_CPREG_FUNCS(ARM64_REG_VMSA_LOCK_EL1)
 N104_CPREG_FUNCS(ARM64_REG_APPL_14)
 N104_CPREG_FUNCS(ARM64_REG_APPL_15)
 N104_CPREG_FUNCS(ARM64_REG_APPL_16)
+N104_CPREG_FUNCS(ARM64_REG_APPL_17)
+N104_CPREG_FUNCS(ARM64_REG_IPI_SR)
+N104_CPREG_FUNCS(ARM64_REG_UPMPCM)
+N104_CPREG_FUNCS(ARM64_REG_UPMCR0)
 
 static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
-//TODO: JONATHANA: rstore/review this removal?
-    /*
-    // Apple-specific registers
-    N104_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID4, 3, 0, 15, 4, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID8, 3, 0, 15, 8, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID7, 3, 0, 15, 7, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_LSU_ERR_STS, 3, 3, 15, 0, 0, PL1_RW),
-    N104_CPREG_DEF(PMC0, 3, 2, 15, 0, 0, PL1_RW),
-    N104_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
-    N104_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
-    N104_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
-    N104_CPREG_DEF(L2ACTLR_EL1, 3, 1, 15, 0, 0, PL1_RW),
 
     // Aleph-specific registers for communicating with QEMU
 
@@ -174,7 +207,6 @@ static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
       .readfn = qemu_call_status,
       .writefn = qemu_call },
 
-    */
     N104_CPREG_DEF(ARM64_REG_MIGSTS_EL1, 3, 4, 15, 0, 4, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_KERNELKEYLO_EL1, 3, 4, 15, 1, 0, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_KERNELKEYHI_EL1, 3, 4, 15, 1, 1, PL1_RW),
@@ -199,6 +231,11 @@ static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
     N104_CPREG_DEF(ARM64_REG_APPL_14, 1, 0, 8, 2, 1, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_15, 3, 4, 15, 1, 3, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_16, 3, 6, 15, 3, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_17, 3, 6, 15, 8, 0, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_IPI_SR, 3, 5, 15, 1, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_UPMPCM, 3, 7, 15, 5, 4, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_UPMCR0, 3, 7, 15, 0, 4, PL1_RW),
+
     REGINFO_SENTINEL,
 };
 
@@ -207,21 +244,6 @@ static const ARMCPRegInfo n104_cp_reginfo_kvm[] = {
 // Duplicating this list isn't a perfect solution,
 // but it's quick and reliable.
 static const ARMCPRegInfo n104_cp_reginfo_tcg[] = {
-//TODO: JONATHANA: rstore/review this removal?
-    /*
-    // Apple-specific registers
-    N104_CPREG_DEF(ARM64_REG_HID11, 3, 0, 15, 13, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID3, 3, 0, 15, 3, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID5, 3, 0, 15, 5, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID4, 3, 0, 15, 4, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID8, 3, 0, 15, 8, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_HID7, 3, 0, 15, 7, 0, PL1_RW),
-    N104_CPREG_DEF(ARM64_REG_LSU_ERR_STS, 3, 3, 15, 0, 0, PL1_RW),
-    N104_CPREG_DEF(PMC0, 3, 2, 15, 0, 0, PL1_RW),
-    N104_CPREG_DEF(PMC1, 3, 2, 15, 1, 0, PL1_RW),
-    N104_CPREG_DEF(PMCR1, 3, 1, 15, 1, 0, PL1_RW),
-    N104_CPREG_DEF(PMSR, 3, 1, 15, 13, 0, PL1_RW),
-
     // Aleph-specific registers for communicating with QEMU
 
     // REG_QEMU_CALL:
@@ -231,7 +253,7 @@ static const ARMCPRegInfo n104_cp_reginfo_tcg[] = {
       .readfn = qemu_call_status,
       .writefn = qemu_call },
 
-    */
+    // Apple-specific registers
     N104_CPREG_DEF(ARM64_REG_MIGSTS_EL1, 3, 4, 15, 0, 4, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_KERNELKEYLO_EL1, 3, 4, 15, 1, 0, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_KERNELKEYHI_EL1, 3, 4, 15, 1, 1, PL1_RW),
@@ -256,46 +278,30 @@ static const ARMCPRegInfo n104_cp_reginfo_tcg[] = {
     N104_CPREG_DEF(ARM64_REG_APPL_14, 1, 0, 8, 2, 1, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_15, 3, 4, 15, 1, 3, PL1_RW),
     N104_CPREG_DEF(ARM64_REG_APPL_16, 3, 6, 15, 3, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_APPL_17, 3, 6, 15, 8, 0, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_IPI_SR, 3, 5, 15, 1, 1, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_UPMPCM, 3, 7, 15, 5, 4, PL1_RW),
+    N104_CPREG_DEF(ARM64_REG_UPMCR0, 3, 7, 15, 0, 4, PL1_RW),
+
     REGINFO_SENTINEL,
 };
 
-static uint32_t g_ret_inst = RET_INST;
-//TODO: JONATHANA: rstore/review this removal?
-    /*
+//TODO: JONATHANA make a better mechanism for this w/o these vars
 static uint32_t g_nop_inst = NOP_INST;
+static uint32_t g_ret_inst = RET_INST;
+static uint32_t g_retab_inst = RETAB_INST;
+static uint32_t g_mov_x14_0_inst = MOV_X14_0_INST;
+static uint32_t g_flush_tlb_inst = TLBI_VMALLE1IS;
 static uint32_t g_mov_w0_01_inst = MOV_W0_01_INST;
-static uint32_t g_compare_true_inst = CMP_X9_x9_INST;
-static uint32_t g_w7_zero_inst = W7_ZERO_INST;
-static uint32_t g_set_cpacr_and_branch_inst[] = {
-    //  91400c21       add x1, x1, 3, lsl 12    # x1 = x1 + 0x3000
-    //  d378dc21       lsl x1, x1, 8            # x1 = x1 * 0x100 (x1 = 0x300000)
-    //  d5181041       msr cpacr_el1, x1        # cpacr_el1 = x1 (enable FP)
-    //  aa1f03e1       mov x1, xzr              # x1 = 0
-    //  140007ec       b 0x1fc0                 # branch to regular start
-    0x91400c21, 0xd378dc21, 0xd5181041, 0xaa1f03e1, 0x140007ec
-};
-static uint32_t g_bzero_branch_unconditionally_inst = 0x14000039;
+static uint32_t g_mov_x0_00_inst = MOV_X0_00_INST;
+static uint32_t g_mov_x8_00_inst = MOV_X8_00_INST;
+static uint32_t g_j_170_inst = J_170_INST;
 static uint32_t g_qemu_call = 0xd51bff1f;
-*/
 
 static void n104_add_cpregs(N104MachineState *nms)
 {
     ARMCPU *cpu = nms->cpu;
 
-//TODO: JONATHANA: rstore/review this removal?
-    /*
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_HID11) = 0;
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_HID3) = 0;
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_HID5) = 0;
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_HID8) = 0;
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_HID7) = 0;
-    nms->N104_CPREG_VAR_NAME(ARM64_REG_LSU_ERR_STS) = 0;
-    nms->N104_CPREG_VAR_NAME(PMC0) = 0;
-    nms->N104_CPREG_VAR_NAME(PMC1) = 0;
-    nms->N104_CPREG_VAR_NAME(PMCR1) = 0;
-    nms->N104_CPREG_VAR_NAME(PMSR) = 0;
-    nms->N104_CPREG_VAR_NAME(L2ACTLR_EL1) = 0;
-    */
     nms->N104_CPREG_VAR_NAME(ARM64_REG_MIGSTS_EL1) = 2;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_KERNELKEYLO_EL1) = 0;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_KERNELKEYHI_EL1) = 0;
@@ -320,12 +326,34 @@ static void n104_add_cpregs(N104MachineState *nms)
     nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_14) = 0;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_15) = 0;
     nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_16) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_APPL_17) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_IPI_SR) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_UPMPCM) = 0;
+    nms->N104_CPREG_VAR_NAME(ARM64_REG_UPMCR0) = 0;
 
+    //TODO: currently KVM is not yet supported
     if (kvm_enabled()) {
         define_arm_cp_regs_with_opaque(cpu, n104_cp_reginfo_kvm, nms);
     } else {
         define_arm_cp_regs_with_opaque(cpu, n104_cp_reginfo_tcg, nms);
     }
+}
+
+static int64_t n104_qemu_call_fb(qc_general_cb_args_t *args, void *opaque)
+{
+    if (XNU_FB_GET_VADDR_QEMU_CALL == args->id) {
+        N104MachineState *nms = (N104MachineState *)opaque;
+        MoreAllocatedData *md = (MoreAllocatedData *)nms->more_extra_data_pa;
+        args->data1 = ptov_static((hwaddr)&md->framebuffer);
+        return 0;
+    }
+    if (XNU_GET_MORE_ALLOCATED_DATA == args->id) {
+        N104MachineState *nms = (N104MachineState *)opaque;
+        args->data1 = ptov_static(nms->more_extra_data_pa);
+        args->data2 = N104_MORE_ALLOC_DATA_SIZE;
+        return 0;
+    }
+    assert(false);
 }
 
 static void n104_create_s3c_uart(const N104MachineState *nms, Chardev *chr)
@@ -352,6 +380,8 @@ static void n104_create_s3c_uart(const N104MachineState *nms, Chardev *chr)
 static void n104_patch_kernel(AddressSpace *nsas)
 {
 
+    //TODO: JONATHANA write a patch wraper  (xnu.c) that doesn't need the intetrmidiate
+    //variables to hold the const inst bytes and move all the consts to a common file
     address_space_rw(nsas, vtop_static(SPR_LOCKDOWN_FUNC_VADDR_18A5342e),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
                      sizeof(g_ret_inst), 1);
@@ -359,59 +389,133 @@ static void n104_patch_kernel(AddressSpace *nsas)
     address_space_rw(nsas, vtop_static(GXF_ENABLE_FUNC_VADDR_18A5342e),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
                      sizeof(g_ret_inst), 1);
-    //WTF is this MSR intruction?? hope we can just ignore it..
-    //address_space_rw(nsas, vtop_static(MSR_STRANGE_INST_VADDR_18A5342e),
-    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-    //                 sizeof(g_nop_inst), 1);
-    //TODO: JONATHANA: remove this function? its content?
-    /*
-    //patch the initial branch with instructions that set up CPACR
-    address_space_rw(nsas, vtop_static(INITIAL_BRANCH_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_set_cpacr_and_branch_inst,
-                     sizeof(g_set_cpacr_and_branch_inst), 1);
 
-    //patch bzero to avoid "dc zva", which zeroes out different amount of bytes
-    //under different CPUs
-    address_space_rw(nsas, vtop_static(BZERO_COND_BRANCH_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_bzero_branch_unconditionally_inst,
-                     sizeof(g_bzero_branch_unconditionally_inst), 1);
+    address_space_rw(nsas,
+                   vtop_static(RORGN_STASH_RANGE_2ND_INST_VADDR_18A5342e),
+                   MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_retab_inst,
+                   sizeof(g_retab_inst), 1);
 
-    //patch the smc instruction to nop since we no longer use a secure
-    //monitor because we disabled KPP this way
-    address_space_rw(nsas, vtop_static(SMC_INST_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-                     sizeof(g_nop_inst), 1);
+    address_space_rw(nsas,
+                     vtop_static(RORGN_LOCKDOWN_2ND_INST_VADDR_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_retab_inst,
+                     sizeof(g_retab_inst), 1);
 
-    //patch the slide set instruction when creating a new process
-    //in parse_machfile() in order to disable aslr for user mode apps
-    address_space_rw(nsas, vtop_static(SLIDE_SET_INST_VADDR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_w7_zero_inst,
-                     sizeof(g_w7_zero_inst), 1);
+    //in arm_fast_fault_ppl there seems to be a check related to flushing
+    //MMU cache. Make sure we flush all TLBs at this point by execuing
+    //TLBI_VMALLS12E1IS instead.
+    address_space_rw(nsas,
+               vtop_static(FAULT_PPL_LOCKED_DOWN_CHECK_M1_INST_VADDR_18A5342e),
+               MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_flush_tlb_inst,
+               sizeof(g_flush_tlb_inst), 1);
+    //make sure pmap_ppl_locked_down is always 0 when checked
+    //in arm_fast_fault_ppl
+    address_space_rw(nsas,
+                  vtop_static(FAULT_PPL_LOCKED_DOWN_CHECK_INST_VADDR_18A5342e),
+                  MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x14_0_inst,
+                  sizeof(g_mov_x14_0_inst), 1);
 
-    //patch the instruction that writes the kernel task port pointer
-    //in task_create_internal so we can catch it without MMIO
-    address_space_rw(nsas, vtop_static(NOTIFY_KERNEL_TASK_PTR_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_qemu_call,
-                     sizeof(g_qemu_call), 1);
-    address_space_rw(nsas, vtop_static(TFP0_TASK_FOR_PID_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
-                     sizeof(g_nop_inst), 1);
-    address_space_rw(nsas, vtop_static(TFP0_CNVRT_PORT_TO_TASK_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
-                     sizeof(g_compare_true_inst), 1);
-    address_space_rw(nsas, vtop_static(TFP0_PORT_NAME_TO_TASK_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
-                     sizeof(g_compare_true_inst), 1);
-    address_space_rw(nsas, vtop_static(TFP0_KERNEL_TASK_CMP_1_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
-                     sizeof(g_compare_true_inst), 1);
-    address_space_rw(nsas, vtop_static(TFP0_KERNEL_TASK_CMP_2_16B92),
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_compare_true_inst,
-                     sizeof(g_compare_true_inst), 1);
-    address_space_rw(nsas, vtop_static(CORE_TRUST_CHECK_16B92),
+    address_space_rw(nsas, vtop_static(CORE_TRUST_CHECK_18A5342e),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w0_01_inst,
                      sizeof(g_mov_w0_01_inst), 1);
-    */
+
+    //in context switch code change an unknown instruction to flushing
+    //the TLB cache
+    address_space_rw(nsas, vtop_static(UNKNOWN_INST_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED,
+                     (uint8_t *)&g_flush_tlb_inst,
+                     sizeof(g_flush_tlb_inst), 1);
+
+    //in flush_mmu_tlb_region_asid_async()an unsupported instruction for
+    //flushing TLBs
+    address_space_rw(nsas, vtop_static(UNKNOWN_INST2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED,
+                     (uint8_t *)&g_flush_tlb_inst,
+                     sizeof(g_flush_tlb_inst), 1);
+
+    address_space_rw(nsas, vtop_static(IS_IMGPF_DISABLE_ASLR_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_j_170_inst,
+                     sizeof(g_j_170_inst), 1);
+
+    //disable ASLR for dyld cache
+    address_space_rw(nsas, vtop_static(MAP_SLIDE_2_DISABLE_ASLR_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x8_00_inst,
+                     sizeof(MOV_X8_00_INST), 1);
+
+    //a few code sign relaed patches. Some might not be necessary
+    address_space_rw(nsas, vtop_static(CS_ASSOC_MAP_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+                     sizeof(g_mov_x0_00_inst), 1);
+    address_space_rw(nsas, vtop_static(CS_ASSOC_MAP_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+    address_space_rw(nsas, vtop_static(PMAP_CS_ENF_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+                     sizeof(g_mov_x0_00_inst), 1);
+    address_space_rw(nsas, vtop_static(PMAP_CS_ENF_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+   address_space_rw(nsas, vtop_static(CS_INVALID_PAGE_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+                     sizeof(g_mov_x0_00_inst), 1);
+    address_space_rw(nsas, vtop_static(CS_INVALID_PAGE_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+    address_space_rw(nsas, vtop_static(CS_PAGE_VAL_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w0_01_inst,
+                     sizeof(g_mov_w0_01_inst), 1);
+    address_space_rw(nsas, vtop_static(CS_PAGE_VAL_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+    //disable sandbox
+   address_space_rw(nsas, vtop_static(SB_EVALUAET_INTERNAL_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+                     sizeof(g_mov_x0_00_inst), 1);
+    address_space_rw(nsas, vtop_static(SB_EVALUAET_INTERNAL_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+                     sizeof(g_ret_inst), 1);
+
+//memory mapping patches
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_1_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_2_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_3_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_4_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_5_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+   address_space_rw(nsas, vtop_static(VM_MAP_PROTECT_6_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_nop_inst,
+                     sizeof(g_nop_inst), 1);
+
+    //TODO: JONATHANA
+    //address_space_rw(nsas, vtop_static(CHECK_FOR_SIG_1_18A5342e),
+    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+    //                 sizeof(g_mov_x0_00_inst), 1);
+    //address_space_rw(nsas, vtop_static(CHECK_FOR_SIG_2_18A5342e),
+    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+    //                 sizeof(g_ret_inst), 1);
+    //address_space_rw(nsas, vtop_static(MAC_CRED_LAB_EXECVE_1_18A5342e),
+    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_x0_00_inst,
+    //                 sizeof(g_mov_x0_00_inst), 1);
+    //address_space_rw(nsas, vtop_static(MAC_CRED_LAB_EXECVE_2_18A5342e),
+    //                 MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_ret_inst,
+    //                 sizeof(g_ret_inst), 1);
+
+    //patch the beginning of bsd_init() to install our hooks
+    address_space_rw(nsas, vtop_static(BSD_INIT_SP_SUB_18A5342e),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_qemu_call,
+                     sizeof(g_qemu_call), 1);
 }
 
 static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
@@ -430,23 +534,17 @@ static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     hwaddr allocated_ram_pa;
     hwaddr phys_ptr;
     hwaddr phys_pc;
-    //TODO: JONATHANA restore this?
-    //hwaddr ramfb_pa = 0;
     video_boot_args v_bootargs = {0};
     N104MachineState *nms = N104_MACHINE(machine);
 
-    //setup the memory layout:
+    allocate_ram(sysmem, "n104.more_extra_data",
+                 N104_MORE_ALLOC_DATA_PADDR, N104_MORE_ALLOC_DATA_SIZE);
+    used_ram_for_blobs += N104_MORE_ALLOC_DATA_SIZE;
 
-    //After that we have the static trust cache.
-    //After that we have all the kernel sections.
-    //After that we have ramdosk
-    //After that we have the device tree
-    //After that we have the kernel boot args
-    //After that we have the rest of the RAM
-
-    //TODO: JONATHANA make sure there is no overlap with lowest kernel section
-    hwaddr tc_pa = N104_PHYS_BASE + 0x2000000;
+    hwaddr tc_pa = N104_MORE_ALLOC_DATA_PADDR + N104_MORE_ALLOC_DATA_SIZE;
     uint64_t tc_size = 0;
+    //it seems that iOS 14 requires a trustcache in the device tree
+    //so we create an empty one just for the parsing
     macho_setup_trustcache("trustcache.n104", nsas,
                            sysmem, tc_pa, &tc_size);
 
@@ -496,19 +594,7 @@ static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
     kbootargs_pa = phys_ptr;
     nms->kbootargs_pa = kbootargs_pa;
     phys_ptr += align_64k_high(sizeof(struct xnu_arm64_boot_args));
-    nms->extra_data_pa = phys_ptr;
     allocated_ram_pa = phys_ptr;
-
-    //TODO: JONATHANA: restore this code?
-    /*
-    if (nms->use_ramfb){
-        ramfb_pa = ((hwaddr)&((AllocatedData *)nms->extra_data_pa)->ramfb[0]);
-        xnu_define_ramfb_device(nsas,ramfb_pa);
-        xnu_get_video_bootargs(&v_bootargs, ramfb_pa);
-    }
-
-    phys_ptr += align_64k_high(sizeof(AllocatedData));
-    */
     top_of_kernel_data_pa = phys_ptr;
     remaining_mem_size = machine->ram_size - used_ram_for_blobs;
     mem_size = allocated_ram_pa - N104_PHYS_BASE + remaining_mem_size;
@@ -518,6 +604,13 @@ static void n104_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
                          v_bootargs, nms->kern_args);
 
     allocate_ram(sysmem, "n104.ram", allocated_ram_pa, remaining_mem_size);
+
+    //TODO: JONATHANA hack for now, can't find a place with static mapping
+    //to add extra code so overiding driver code that is unused
+    //Note: make sure this address is page aligned - the loaded driver
+    //code assumes to be in a page aligned address
+    nms->extra_data_pa = vtop_static(UNUSED_BCM_DRIVER_SECTION);
+    nms->more_extra_data_pa = N104_MORE_ALLOC_DATA_PADDR;
 }
 
 static void n104_memory_setup(MachineState *machine,
@@ -578,131 +671,65 @@ static void n104_cpu_reset(void *opaque)
     env->pc = nms->kpc_pa;
 }
 
-//TODO: JONATHANA: move a common version of this func to xnu.c
-
-//TODO: JONATHANA: restore this function
-/*
-//hooks arg is expected like this:
-//"hookfilepath@va@scratch_reg#hookfilepath@va@scratch_reg#..."
-
-static void n104_machine_init_hook_funcs(N104MachineState *nms,
-                                         AddressSpace *nsas)
+static void n104_qemu_call_install_hooks_callback(void)
 {
-    AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
-    uint64_t i = 0;
-    char *orig_pos = NULL;
-    size_t orig_len = 0;
-    char *pos = NULL;
-    char *next_pos = NULL;
-    size_t len = 0;
-    char *elem = NULL;
-    char *next_elem = NULL;
-    size_t elem_len = 0;
-    char *end;
 
-    //ugly solution but a simple one for now, use this memory which is fixed at
-    //(pa: 0x0000000049BF4C00 va: 0xFFFFFFF009BF4C00) for globals to be common
-    //between drivers/hooks. Please adjust address if anything changes in
-    //the layout of the memory the "boot loader" sets up
-    uint64_t zero_var = 0;
-    address_space_rw(nsas, (hwaddr)&allocated_data->hook_globals[0],
-                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&zero_var,
-                     sizeof(zero_var), 1);
+    static uint8_t hooks_installed = false;
 
-    nms->hook_funcs_count = 0;
+    N104MachineState *nms = N104_MACHINE(qdev_get_machine());
+    ARMCPU *cpu = nms->cpu;
+    CPUARMState *env = &cpu->env;
+    CPUState *cs = env_cpu(env);
+    AddressSpace *as = cpu_get_address_space(cs, ARMASIdx_NS);
+    KernelTrHookParams *hook = &nms->hook;
 
-    pos = &nms->hook_funcs_cfg[0];
-    if ((NULL == pos) || (0 == strlen(pos))) {
-        //fprintf(stderr, "no function hooks configured\n");
-        return;
+    //install the hook here because we need the MMU to be already
+    //configured and all the memory mapped before installing the hook
+    if (!hooks_installed) {
+        if (0 != hook->va) {
+            xnu_hook_tr_copy_install(hook->va, hook->pa, hook->buf_va,
+                                     hook->buf_pa, hook->code, hook->code_size,
+                                     hook->buf_size, hook->scratch_reg);
+        }
+
+        //TODO: JONATHANA have to move this to after the MoreAllocatedData
+        //is actually allocatetd in the firstt hook
+        //Must make another qcall for this
+        //for (uint64_t i = 0; i < nms->hook_funcs_count; i++) {
+        //    xnu_hook_tr_copy_install(nms->hook_funcs[i].va,
+        //                             nms->hook_funcs[i].pa,
+        //                             nms->hook_funcs[i].buf_va,
+        //                             nms->hook_funcs[i].buf_pa,
+        //                             nms->hook_funcs[i].code,
+        //                             nms->hook_funcs[i].code_size,
+        //                             nms->hook_funcs[i].buf_size,
+        //                             nms->hook_funcs[i].scratch_reg);
+        //}
+
+        //We will later map more static physical addresses in the driver
+        //code so we need to change permissions for the static page table
+        //to be writable
+        va_make_exec(cpu, as, STATIC_PTABLE_VADDR, STATIC_PTABLE_SIZE);
+
+        //The qcall data structure is also in a non-writable section
+        //(overwrite some unused driver code) so we need to make it writable
+        //as well
+        AllocatedData *ad = (AllocatedData *)nms->extra_data_pa;
+        va_make_exec(cpu, as, ptov_static((hwaddr)&ad->qemu_call),
+                     sizeof(ad->qemu_call));
+
+        hooks_installed = true;
     }
 
-    orig_pos = pos;
-    orig_len = strlen(pos);
-
-    do {
-        next_pos = memchr(pos, '#', strlen(pos));
-        if (NULL != next_pos) {
-            len = next_pos - pos;
-        } else {
-            len = strlen(pos);
-        }
-
-        elem = pos;
-        next_elem = memchr(elem, '@', len);
-        if (NULL == next_elem) {
-            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
-            abort();
-        }
-        elem_len = next_elem - elem;
-        elem[elem_len] = 0;
-
-        uint8_t *code = NULL;
-        size_t size = 0;
-        if (!g_file_get_contents(elem, (char **)&code, &size, NULL)) {
-            fprintf(stderr, "hook[%llu] failed to read filepath: %s\n",
-                    i, elem);
-            abort();
-        }
-
-        elem += elem_len + 1;
-        next_elem = memchr(elem, '@', len);
-        if (NULL == next_elem) {
-            fprintf(stderr, "hook[%llu] failed to find '@' in %s\n", i, elem);
-            abort();
-        }
-        elem_len = next_elem - elem;
-        elem[elem_len] = 0;
-
-        nms->hook_funcs[i].va = strtoull(elem, &end, 16);
-        nms->hook_funcs[i].pa = vtop_static(nms->hook_funcs[i].va);
-        nms->hook_funcs[i].buf_va =
-                   ptov_static((hwaddr)&allocated_data->hook_funcs_code[i][0]);
-        nms->hook_funcs[i].buf_pa =
-                                (hwaddr)&allocated_data->hook_funcs_code[i][0];
-        nms->hook_funcs[i].buf_size = HOOK_CODE_ALLOC_SIZE;
-        nms->hook_funcs[i].code = (uint8_t *)code;
-        nms->hook_funcs[i].code_size = size;
-
-        elem += elem_len + 1;
-        if (NULL != next_pos) {
-            elem_len = next_pos - elem;
-        } else {
-            elem_len = strlen(elem);
-        }
-        elem[elem_len] = 0;
-
-        nms->hook_funcs[i].scratch_reg = (uint8_t)strtoul(elem, &end, 10);
-
-        i++;
-        pos += len + 1;
-    } while ((NULL != pos) && (pos < (orig_pos + orig_len)));
-
-    nms->hook_funcs_count = i;
+    //emulate original opcode: SP, SP, #0x210
+    env->xregs[31] -= 0x210;
 }
-*/
 
-static void n104_machine_init(MachineState *machine)
+static void n104_setup_driver_hook(N104MachineState *nms,
+                                   AddressSpace *nsas,
+                                   ARMCPU *cpu)
 {
-    N104MachineState *nms = N104_MACHINE(machine);
-    MemoryRegion *sysmem;
-    MemoryRegion *secure_sysmem;
-    AddressSpace *nsas;
-    ARMCPU *cpu;
-    CPUState *cs;
-    DeviceState *cpudev;
-
-    n104_cpu_setup(machine, &sysmem, &secure_sysmem, &cpu, &nsas);
-
-    nms->cpu = cpu;
-
-    n104_memory_setup(machine, sysmem, secure_sysmem, nsas);
-
-    cpudev = DEVICE(cpu);
-    cs = CPU(cpu);
-    //TODO: JONATHANA restore block device drivers, hooks, etc...
-    /*
-    AllocatedData *allocated_data = (AllocatedData *)nms->extra_data_pa;
+    AllocatedData *ad = (AllocatedData *)nms->extra_data_pa;
 
     if (0 != nms->driver_filename[0]) {
         xnu_hook_tr_setup(nsas, cpu);
@@ -712,11 +739,11 @@ static void n104_machine_init(MachineState *machine)
                                  &size, NULL)) {
             abort();
         }
-        nms->hook.va = UBC_INIT_VADDR_16B92;
-        nms->hook.pa = vtop_static(UBC_INIT_VADDR_16B92);
+        nms->hook.va = NET_INIT_RUN_VADDR_18A5342e;
+        nms->hook.pa = vtop_static(NET_INIT_RUN_VADDR_18A5342e);
         nms->hook.buf_va =
-                        ptov_static((hwaddr)&allocated_data->hook_code[0]);
-        nms->hook.buf_pa = (hwaddr)&allocated_data->hook_code[0];
+                        ptov_static((hwaddr)&ad->hook_code[0]);
+        nms->hook.buf_pa = (hwaddr)&ad->hook_code[0];
         nms->hook.buf_size = HOOK_CODE_ALLOC_SIZE;
         nms->hook.code = (uint8_t *)code;
         nms->hook.code_size = size;
@@ -731,19 +758,56 @@ static void n104_machine_init(MachineState *machine)
         qc_file_open(1, &nms->qc_file_1_filename[0]);
     }
 
-    if (0 != nms->qc_file_log_filename[0]) {
-        qc_file_open(2, &nms->qc_file_log_filename[0]);
-    }
+    qemu_call_install_callback(n104_qemu_call_install_hooks_callback);
+
+    qemu_call_set_cmd_paddr((hwaddr)&ad->qemu_call);
+    qemu_call_set_cmd_vaddr(ptov_static((hwaddr)&ad->qemu_call));
+}
+
+//hooks arg is expected like this:
+//"hookfilepath@va@scratch_reg#hookfilepath@va@scratch_reg#..."
+
+static void n104_machine_init_hook_funcs(N104MachineState *nms,
+                                         AddressSpace *nsas)
+{
+    MoreAllocatedData *md = (MoreAllocatedData *)nms->more_extra_data_pa;
+    nms->hook_funcs_count = parse_hooks(&nms->hook_funcs[0],
+                                        nms->hook_funcs_cfg, md);
+}
+
+static void n104_machine_init(MachineState *machine)
+{
+    N104MachineState *nms = N104_MACHINE(machine);
+    MemoryRegion *sysmem;
+    MemoryRegion *secure_sysmem;
+    AddressSpace *nsas;
+    ARMCPU *cpu;
+    DeviceState *cpudev;
+
+    n104_cpu_setup(machine, &sysmem, &secure_sysmem, &cpu, &nsas);
+
+    nms->cpu = cpu;
+
+    n104_memory_setup(machine, sysmem, secure_sysmem, nsas);
+
+    //TODO: JONATHANA make this conditional based on args?
+    MoreAllocatedData *md = (MoreAllocatedData *)nms->more_extra_data_pa;
+    xnu_iomfb_ramfb_init(&nms->xnu_ramfb_state,
+                         (hwaddr)&md->framebuffer);
+    qemu_call_install_value_callback(&n104_qemu_call_fb, nms);
+
+    cpudev = DEVICE(cpu);
+
+    n104_setup_driver_hook(nms,nsas, cpu);
 
     n104_machine_init_hook_funcs(nms, nsas);
-    */
 
     n104_add_cpregs(nms);
 
     n104_create_s3c_uart(nms, serial_hd(0));
 
     //wire timer to FIQ as expected by Apple's SoCs
-    qdev_connect_gpio_out(cpudev, GTIMER_PHYS,
+    qdev_connect_gpio_out(cpudev, GTIMER_VIRT,
                           qdev_get_gpio_in(cpudev, ARM_CPU_FIQ));
 
     n104_bootargs_setup(machine);
@@ -807,8 +871,6 @@ static char *n104_get_kern_args(Object *obj, Error **errp)
     return g_strdup(nms->kern_args);
 }
 
-//TODO: JONATHANA restore this?
-/*
 static void n104_set_tunnel_port(Object *obj, const char *value,
                                  Error **errp)
 {
@@ -823,7 +885,6 @@ static char *n104_get_tunnel_port(Object *obj, Error **errp)
     snprintf(buf, 128, "%d", nms->tunnel_port);
     return g_strdup(buf);
 }
-*/
 
 static void n104_set_hook_funcs(Object *obj, const char *value, Error **errp)
 {
@@ -838,8 +899,6 @@ static char *n104_get_hook_funcs(Object *obj, Error **errp)
     return g_strdup(nms->hook_funcs_cfg);
 }
 
-//TODO: JONATHANA restore this?
-/*
 static void n104_set_driver_filename(Object *obj, const char *value,
                                      Error **errp)
 {
@@ -853,7 +912,6 @@ static char *n104_get_driver_filename(Object *obj, Error **errp)
     N104MachineState *nms = N104_MACHINE(obj);
     return g_strdup(nms->driver_filename);
 }
-*/
 
 static void n104_set_qc_file_0_filename(Object *obj, const char *value,
                                         Error **errp)
@@ -883,44 +941,6 @@ static char *n104_get_qc_file_1_filename(Object *obj, Error **errp)
     return g_strdup(nms->qc_file_1_filename);
 }
 
-static void n104_set_qc_file_log_filename(Object *obj, const char *value,
-                                          Error **errp)
-{
-    N104MachineState *nms = N104_MACHINE(obj);
-
-    g_strlcpy(nms->qc_file_log_filename, value,
-              sizeof(nms->qc_file_log_filename));
-}
-
-static char *n104_get_qc_file_log_filename(Object *obj, Error **errp)
-{
-    N104MachineState *nms = N104_MACHINE(obj);
-    return g_strdup(nms->qc_file_log_filename);
-}
-
-static void n104_set_xnu_ramfb(Object *obj, const char *value,
-                               Error **errp)
-{
-    N104MachineState *nms = N104_MACHINE(obj);
-    if (strcmp(value,"on") == 0)
-        nms->use_ramfb = true;
-    else {
-        if (strcmp(value,"off") != 0)
-            fprintf(stderr,"NOTE: the value of xnu-ramfb is not valid,\
-the framebuffer will be disabled.\n");
-        nms->use_ramfb = false;
-    }
-}
-
-static char* n104_get_xnu_ramfb(Object *obj, Error **errp)
-{
-    N104MachineState *nms = N104_MACHINE(obj);
-    if (nms->use_ramfb)
-        return g_strdup("on");
-    else 
-        return g_strdup("off");
-}
-
 static void n104_instance_init(Object *obj)
 {
     object_property_add_str(obj, "ramdisk-filename", n104_get_ramdisk_filename,
@@ -943,26 +963,20 @@ static void n104_instance_init(Object *obj)
     object_property_set_description(obj, "kern-cmd-args",
                                     "Set the XNU kernel cmd args");
 
-//TODO: JONATHANA restore this?
-/*
     object_property_add_str(obj, "tunnel-port", n104_get_tunnel_port,
                             n104_set_tunnel_port);
     object_property_set_description(obj, "tunnel-port",
                                     "Set the port for the tunnel connection");
-*/
 
     object_property_add_str(obj, "hook-funcs", n104_get_hook_funcs,
                             n104_set_hook_funcs);
     object_property_set_description(obj, "hook-funcs",
                                     "Set the hook funcs to be loaded");
 
-//TODO: JONATHANA restore this?
-/*
     object_property_add_str(obj, "driver-filename", n104_get_driver_filename,
                             n104_set_driver_filename);
     object_property_set_description(obj, "driver-filename",
                                     "Set the driver filename to be loaded");
-*/
 
     object_property_add_str(obj, "qc-file-0-filename",
                             n104_get_qc_file_0_filename,
@@ -975,18 +989,6 @@ static void n104_instance_init(Object *obj)
                             n104_set_qc_file_1_filename);
     object_property_set_description(obj, "qc-file-1-filename",
                                     "Set the qc file 1 filename to be loaded");
-
-    object_property_add_str(obj, "qc-file-log-filename",
-                            n104_get_qc_file_log_filename,
-                            n104_set_qc_file_log_filename);
-    object_property_set_description(obj, "qc-file-log-filename",
-                                   "Set the qc file log filename to be loaded");
-
-    object_property_add_str(obj, "xnu-ramfb",
-                            n104_get_xnu_ramfb,
-                            n104_set_xnu_ramfb);
-    object_property_set_description(obj, "xnu-ramfb",
-                                    "Turn on the display framebuffer");
 
 }
 

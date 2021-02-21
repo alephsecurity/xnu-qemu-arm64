@@ -34,6 +34,9 @@
 #include "hw/arm/xnu_trampoline_hook.h"
 #include "hw/arm/xnu_file_mmio_dev.h"
 #include "hw/arm/xnu_fb_cfg.h"
+#include "hw/arm/guest-services/xnu_general.h"
+#include "hw/arm/guest-services/general.h"
+#include "hw/display/xnu_iomfb_ramfb.h"
 
 // pexpert/pexpert/arm64/boot.h
 #define xnu_arm64_kBootArgsRevision2 2 /* added boot_args.bootFlags */
@@ -83,18 +86,6 @@ typedef struct xnu_arm64_video_boot_args {
     unsigned long v_depth;    /* Pixel Depth and other parameters */
 } video_boot_args;
 
-typedef struct xnu_arm64_monitor_boot_args {
-	uint64_t	version;                        /* structure version - this is version 2 */
-	uint64_t	virtBase;                       /* virtual base of memory assigned to the monitor */
-	uint64_t	physBase;                       /* physical address corresponding to the virtual base */
-	uint64_t	memSize;                        /* size of memory assigned to the monitor */
-	uint64_t	kernArgs;                       /* physical address of the kernel boot_args structure */
-	uint64_t	kernEntry;                      /* kernel entrypoint */
-	uint64_t	kernPhysBase;                   /* physical base of the kernel's address space */
-	uint64_t	kernPhysSlide;                  /* offset from kernPhysBase to kernel load address */
-	uint64_t	kernVirtSlide;                  /* virtual slide applied to kernel at load time */
-} monitor_boot_args;
-
 struct xnu_arm64_boot_args {
     uint16_t           Revision;                                   /* Revision of boot_args structure */
     uint16_t           Version;                                    /* Version of boot_args structure */
@@ -111,6 +102,18 @@ struct xnu_arm64_boot_args {
     uint64_t           memSizeActual;                              /* Actual size of memory */
 };
 
+#define MAX_CUSTOM_HOOKS (32)
+
+typedef struct {
+    uint8_t hook_code[HOOK_CODE_ALLOC_SIZE];
+    qemu_call_t qemu_call;
+} __attribute__((packed)) AllocatedData;
+
+typedef struct {
+    uint8_t hook_funcs_code[MAX_CUSTOM_HOOKS][HOOK_CODE_ALLOC_SIZE];
+    uint8_t framebuffer[MAX_FB_SIZE];
+} __attribute__((packed)) MoreAllocatedData;
+
 void macho_file_highest_lowest_base(const char *filename, hwaddr phys_base,
                                     hwaddr *virt_base, hwaddr *lowest,
                                     hwaddr *highest);
@@ -120,9 +123,6 @@ void macho_tz_setup_bootargs(const char *name, AddressSpace *as,
                              hwaddr virt_base, hwaddr phys_base,
                              hwaddr mem_size, hwaddr kern_args,
                              hwaddr kern_entry, hwaddr kern_phys_base);
-
-void macho_setup_trustcache(const char *name, AddressSpace *as,
-                            MemoryRegion *mem, hwaddr pa, uint64_t *size);
 
 void macho_setup_bootargs(const char *name, AddressSpace *as,
                           MemoryRegion *mem, hwaddr bootargs_pa,
@@ -146,4 +146,10 @@ void macho_load_dtb(char *filename, AddressSpace *as, MemoryRegion *mem,
                     hwaddr ramdisk_addr, hwaddr ramdisk_size,
                     hwaddr trustcache_addr, hwaddr trustcache_size,
                     hwaddr *uart_mmio_pa);
+
+uint64_t parse_hooks(KernelTrHookParams *hooks, char *hook_funcs_cfg,
+                     MoreAllocatedData *md);
+
+void macho_setup_trustcache(const char *name, AddressSpace *as,
+                            MemoryRegion *mem, hwaddr pa, uint64_t *size);
 #endif

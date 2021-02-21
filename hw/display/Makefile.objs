@@ -65,3 +65,4 @@ common-obj-$(CONFIG_XLNX_ZYNQMP_ARM) += xlnx_dp.o
 common-obj-$(CONFIG_ATI_VGA) += ati.o ati_2d.o ati_dbg.o
 
 obj-y += xnu_ramfb.o
+obj-y += xnu_iomfb_ramfb.o
