@@ -47,6 +47,8 @@
 #define CMP_X9_x9_INST (0xeb09013f)
 //compiled  instruction: mov w7, #0
 #define W7_ZERO_INST (0x52800007)
+//compiled instruction mov w15, #8
+#define MOV_W15_8_INST (0x5280010F)
 
 #define INITIAL_BRANCH_VADDR_16B92 (0xfffffff0070a5098)
 #define BZERO_COND_BRANCH_VADDR_16B92 (0xfffffff0070996d8)
@@ -59,6 +61,8 @@
 #define TFP0_PORT_NAME_TO_TASK_16B92 (0xfffffff0070d82d8)
 #define TFP0_KERNEL_TASK_CMP_1_16B92 (0xfffffff0070d7b04)
 #define TFP0_KERNEL_TASK_CMP_2_16B92 (0xfffffff0070d810c)
+
+#define VM_FAULT_CS_BYPASS_TBZ_16B92 (0xFFFFFFF0071497B8)
 
 //hook the kernel to execute our "driver" code in this function
 //after things are already running in the kernel but the root mount is not
@@ -186,6 +190,8 @@ static uint32_t g_set_cpacr_and_branch_inst[] = {
 static uint32_t g_bzero_branch_unconditionally_inst = 0x14000039;
 static uint32_t g_qemu_call = 0xd51bff1f;
 
+static uint32_t g_mov_w15_08_inst = MOV_W15_8_INST;
+
 static void n66_add_cpregs(N66MachineState *nms)
 {
     ARMCPU *cpu = nms->cpu;
@@ -276,6 +282,13 @@ static void n66_patch_kernel(AddressSpace *nsas)
     address_space_rw(nsas, vtop_static(CORE_TRUST_CHECK_16B92),
                      MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w0_01_inst,
                      sizeof(g_mov_w0_01_inst), 1);
+
+    //patch the instruction that check cs_bypass to bypass the code-signing 
+    // checking - otherwise application like frida will get panic (CS_KILLED)
+    address_space_rw(nsas, vtop_static(VM_FAULT_CS_BYPASS_TBZ_16B92),
+                     MEMTXATTRS_UNSPECIFIED, (uint8_t *)&g_mov_w15_08_inst,
+                     sizeof(g_mov_w15_08_inst), 1);
+    
 }
 
 static void n66_ns_memory_setup(MachineState *machine, MemoryRegion *sysmem,
