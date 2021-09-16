@@ -35,7 +35,7 @@ If you are passionate about iOS and kernel exploitation and want to help us push
 
 - To run iOS 12.1 on QEMU follow this [tutorial](https://github.com/alephsecurity/xnu-qemu-arm64/wiki/Build-iOS-on-QEMU).
 
-- This project works on QEMU with KVM! Check [this blog post]() for more information.
+- This project works on QEMU with KVM! Check [this blog post](https://alephsecurity.com/2020/07/19/xnu-qemu-kvm/) for more information.
 
 - We have implemented multiple GDB [scripts](https://github.com/alephsecurity/xnu-qemu-arm64-tools/tree/master/gdb) that will help you to debug the kernel:
   - List current/user/all tasks in XNU kernel.
